@@ -1,0 +1,34 @@
+import type React from "react"
+import type { Metadata } from "next"
+import { Space_Grotesk, DM_Sans } from "next/font/google"
+import "./globals.css"
+
+const spaceGrotesk = Space_Grotesk({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-space-grotesk",
+})
+
+const dmSans = DM_Sans({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-dm-sans",
+})
+
+export const metadata: Metadata = {
+  title: "Oracle Query Analyzer - AI-Powered SQL Comparison",
+  description: "Modern tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
+  generator: "v0.app",
+}
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode
+}>) {
+  return (
+    <html lang="en" className={`${spaceGrotesk.variable} ${dmSans.variable} antialiased`}>
+      <body className="font-body">{children}</body>
+    </html>
+  )
+}
