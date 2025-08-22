@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
     console.log("[v0] Calling Grok API...")
 
     const { text } = await generateText({
-      model: xai("grok-2-1212", { apiKey }),
+      model: xai("grok-2-1212"),
       system: `You are an expert Oracle SQL analyst. Compare two SQL queries and provide clear explanations of what each change does.
 
 For each changed line, explain:
@@ -47,7 +47,6 @@ Line X: [Explain what this change does and what it relates to in 2-4 sentences]
 
 Focus on what the change accomplishes, not technical details.`,
       temperature: 0.3,
-      maxTokens: 2000,
     })
 
     console.log("[v0] Grok API response received, length:", text?.length)
