@@ -1,162 +1,273 @@
-import { type NextRequest, NextResponse } from "next/server"
-import { generateText } from "ai"
-import { xai } from "@ai-sdk/xai"
+import { NextResponse } from "next/server"
+import { canonicalizeSQL, generateQueryDiff, type ComparisonResult } from "@/lib/query-differ"
 
-export async function POST(request: NextRequest) {
-  try {
-    console.log("[v0] Starting analysis request")
+type ChangeType = "addition" | "modification" | "deletion"
+type Side = "old" | "new" | "both"
 
-    const apiKey = process.env.XAI_API_KEY
-    console.log("[v0] XAI_API_KEY available:", !!apiKey)
+type ChangeItem = {
+  type: ChangeType
+  description: string
+  lineNumber: number           // single anchor used in UI
+  side: Side                   // where to render badges
+}
 
-    if (!apiKey) {
-      console.log("[v0] Missing XAI_API_KEY")
-      return NextResponse.json({ error: "Grok API key is not configured" }, { status: 500 })
-    }
+type ChangeWithExpl = ChangeItem & { explanation: string }
 
-    const { oldQuery, newQuery } = await request.json()
-    console.log("[v0] Received queries - Old length:", oldQuery?.length, "New length:", newQuery?.length)
+type ChangeExplanation = { index: number; explanation: string }
 
-    if (!oldQuery || !newQuery) {
-      console.log("[v0] Missing queries")
-      return NextResponse.json({ error: "Both old and new queries are required" }, { status: 400 })
-    }
+const DEFAULT_XAI_MODEL = "grok-4"
+const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 
-    console.log("[v0] Calling Grok API...")
+// ---------------- utils ----------------
 
-    const { text } = await generateText({
-      model: xai("grok-2-1212"),
-      system: `You are an expert Oracle SQL analyst. Compare two SQL queries and provide clear explanations of what each change does.
+function snippet(s: string, n = 120) {
+  const t = s.replace(/\s+/g, " ").trim()
+  return t.length <= n ? t : t.slice(0, n - 1) + "…"
+}
 
-For each changed line, explain:
-- What the change is (what was added, removed, or modified)
-- What this change accomplishes or affects
-- How it relates to the overall query functionality
-
-Focus on explaining WHAT each change does rather than technical impact. Be conversational and educational.`,
-      prompt: `Compare these Oracle SQL queries and explain what each change does:
-
-OLD QUERY:
-${oldQuery}
-
-NEW QUERY:
-${newQuery}
-
-For each line that changed, provide exactly this format:
-Line X: [Explain what this change does and what it relates to in 2-4 sentences]
-
-Focus on what the change accomplishes, not technical details.`,
-      temperature: 0.3,
-    })
-
-    console.log("[v0] Grok API response received, length:", text?.length)
-
-    const lines1 = oldQuery.split("\n")
-    const lines2 = newQuery.split("\n")
-    const maxLines = Math.max(lines1.length, lines2.length)
-
-    const diffLines = []
-    for (let i = 0; i < maxLines; i++) {
-      const oldLine = lines1[i] || ""
-      const newLine = lines2[i] || ""
-
-      if (oldLine !== newLine) {
-        if (oldLine && !newLine) {
-          diffLines.push({ type: "removed", content: oldLine, lineNumber: i + 1 })
-        } else if (!oldLine && newLine) {
-          diffLines.push({ type: "added", content: newLine, lineNumber: i + 1 })
-        } else {
-          diffLines.push({ type: "modified", oldContent: oldLine, newContent: newLine, lineNumber: i + 1 })
-        }
+function buildStructuredChanges(diff: ComparisonResult): ChangeItem[] {
+  const out: ChangeItem[] = []
+  for (let i = 0; i < diff.diffs.length; i++) {
+    const d = diff.diffs[i]
+    if (d.type === "deletion" && d.oldLineNumber) {
+      const next = diff.diffs[i + 1]
+      if (next && next.type === "addition" && next.newLineNumber) {
+        // modification pair
+        out.push({
+          type: "modification",
+          lineNumber: next.newLineNumber,
+          side: "both",
+          description: `Line ${next.newLineNumber}: changed from "${snippet(d.content)}" to "${snippet(next.content)}"`,
+        })
+        i++ // consume the paired addition
+      } else {
+        // pure deletion
+        out.push({
+          type: "deletion",
+          lineNumber: d.oldLineNumber,
+          side: "old",
+          description: `Line ${d.oldLineNumber}: removed "${snippet(d.content)}"`,
+        })
       }
-    }
-
-    const lineAnalysis = []
-    const lines = text.split("\n")
-    for (const line of lines) {
-      const match = line.match(/Line (\d+):\s*(.+)/)
-      if (match) {
-        lineAnalysis.push({
-          lineNumber: Number.parseInt(match[1]),
-          explanation: match[2].trim(),
+    } else if (d.type === "addition" && d.newLineNumber) {
+      const prev = diff.diffs[i - 1]
+      if (!(prev && prev.type === "deletion")) {
+        out.push({
+          type: "addition",
+          lineNumber: d.newLineNumber,
+          side: "new",
+          description: `Line ${d.newLineNumber}: added "${snippet(d.content)}"`,
         })
       }
     }
+  }
+  // Sort by line number for stable UX
+  out.sort((a, b) => a.lineNumber - b.lineNumber)
+  return out
+}
 
-    const analysisResult = {
-      summary: text,
-      diffLines: diffLines,
-      updatedQuery: newQuery,
-      changes: diffLines.map((line) => ({
-        type: line.type === "added" ? "addition" : line.type === "removed" ? "deletion" : "modification",
-        description: `Line ${line.lineNumber}: ${line.type === "modified" ? "Modified" : line.type === "added" ? "Added" : "Removed"}`,
-        explanation:
-          line.type === "modified"
-            ? `Changed from "${line.oldContent}" to "${line.newContent}"`
-            : line.type === "added"
-              ? `Added: "${line.content}"`
-              : `Removed: "${line.content}"`,
-      })),
-      lineAnalysis:
-        lineAnalysis.length > 0
-          ? lineAnalysis
-          : [
-              {
-                lineNumber: 1,
-                explanation:
-                  "Analysis completed. The AI has reviewed both queries and identified the key differences between them.",
-              },
-            ],
-      recommendations: [
-        {
-          type: "analysis",
-          title: "AI Analysis Complete",
-          description: "Review the detailed analysis above for comprehensive insights.",
-        },
-      ],
+function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
+  return {
+    task:
+      "For EACH change, write an original explanation (2–4 sentences) that matches that specific change and its impact on the SQL result.",
+    guidance: [
+      "Do not copy the input description; write in your own words.",
+      "Tie the change to SQL semantics (filters, joins, projections, grouping, HAVING, ORDER BY, limits, window functions).",
+      "Deletions: clarify what behavior/data is removed and side effects.",
+      "Additions: clarify new behavior/constraints/metrics and how results shift.",
+      "Modifications: clarify what changed, why it matters, and likely impact on rows/aggregates/perf.",
+      "Each explanation must be 2–4 sentences, no bullets, concise but concrete."
+    ],
+    oldQuery,
+    newQuery,
+    changes: changes.map((c, i) => ({ index: i, type: c.type, description: c.description })),
+    output_schema: {
+      explanations: [{ index: "number", explanation: "string (2–4 sentences)" }]
     }
+  }
+}
 
-    console.log("[v0] Returning successful response")
-    return NextResponse.json({
-      success: true,
-      analysis: analysisResult,
-    })
-  } catch (error: any) {
-    console.error("[v0] Analysis error occurred:")
-    console.error("[v0] Error message:", error?.message)
-    console.error("[v0] Error code:", error?.code)
-    console.error("[v0] Error status:", error?.status)
-    console.error("[v0] Full error:", JSON.stringify(error, null, 2))
+function coerceExplanations(content: string): ChangeExplanation[] {
+  try {
+    const parsed = JSON.parse(content)
+    const out = (parsed?.explanations || []) as any[]
+    return out
+      .filter(x => typeof x?.index === "number" && typeof x?.explanation === "string")
+      .map(x => ({ index: x.index, explanation: x.explanation.trim() }))
+  } catch {
+    return []
+  }
+}
 
-    let errorMessage = "Failed to analyze queries. Please try again."
-    let errorType = "general"
+// ---------------- providers ----------------
 
-    if (error?.message?.includes("exceeded your current quota")) {
-      errorMessage = "Grok API quota exceeded. Please check your xAI account billing and usage limits."
-      errorType = "quota_exceeded"
-    } else if (error?.message?.includes("invalid api key") || error?.message?.includes("unauthorized")) {
-      errorMessage = "Invalid Grok API key. Please check your XAI_API_KEY in Project Settings."
-      errorType = "invalid_key"
-    } else if (error?.message?.includes("rate limit")) {
-      errorMessage = "Rate limit exceeded. Please wait a moment and try again."
-      errorType = "rate_limit"
-    } else if (error?.message?.includes("network") || error?.code === "ENOTFOUND") {
-      errorMessage = "Network error. Please check your internet connection and try again."
-      errorType = "network_error"
-    } else if (error?.message?.includes("model")) {
-      errorMessage = "Model configuration error. The Grok model may be unavailable."
-      errorType = "model_error"
-    }
+async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
+  const XAI_API_KEY = process.env.XAI_API_KEY
+  const XAI_MODEL = process.env.XAI_MODEL || DEFAULT_XAI_MODEL
+  const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
+  if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY in environment.")
 
-    console.log("[v0] Returning error response:", errorMessage)
-
-    return NextResponse.json(
-      {
-        error: errorMessage,
-        errorType,
-        details: error?.message || "Unknown error occurred",
+  const resp = await fetch(`${XAI_BASE_URL}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
+    body: JSON.stringify({
+      model: XAI_MODEL,
+      temperature: 0.2,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "change_explanations",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              explanations: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { index: { type: "number" }, explanation: { type: "string" } },
+                  required: ["index", "explanation"], additionalProperties: false
+                }
+              }
+            },
+            required: ["explanations"], additionalProperties: false
+          }
+        }
       },
-      { status: 500 },
-    )
+      messages: [
+        { role: "system",
+          content: "You are a senior Oracle SQL reviewer. For each change, produce an original, concrete explanation (2–4 sentences). Do not repeat the change description verbatim. Relate the change to query semantics and probable business meaning."
+        },
+        { role: "user", content: JSON.stringify(userPayload) }
+      ]
+    })
+  })
+  if (!resp.ok) throw new Error(`xAI API error: ${await resp.text()}`)
+  const data = await resp.json()
+  const content = data?.choices?.[0]?.message?.content ?? ""
+  return coerceExplanations(content)
+}
+
+async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> {
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT
+  const apiKey = process.env.AZURE_OPENAI_API_KEY
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
+  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || DEFAULT_AZURE_API_VERSION
+  if (!endpoint || !apiKey || !deployment) {
+    throw new Error("Missing Azure OpenAI env vars: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT.")
+  }
+
+  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
+  let res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "api-key": apiKey },
+    body: JSON.stringify({
+      temperature: 0.2,
+      response_format: {
+        // Some regions/models accept json_schema; fallback below if not
+        type: "json_schema",
+        json_schema: {
+          name: "change_explanations",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              explanations: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: { index: { type: "number" }, explanation: { type: "string" } },
+                  required: ["index", "explanation"], additionalProperties: false
+                }
+              }
+            },
+            required: ["explanations"], additionalProperties: false
+          }
+        }
+      },
+      messages: [
+        { role: "system",
+          content: "You are a senior Oracle SQL reviewer. For each change, produce an original, concrete explanation (2–4 sentences). Do not repeat the change description verbatim. Relate the change to query semantics and probable business meaning."
+        },
+        { role: "user", content: JSON.stringify(userPayload) }
+      ]
+    })
+  })
+
+  if (!res.ok) {
+    const firstErr = await res.text()
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "api-key": apiKey },
+      body: JSON.stringify({
+        temperature: 0.2,
+        messages: [
+          { role: "system",
+            content: "You are a senior Oracle SQL reviewer. Return a JSON object with key 'explanations': an array of {index:number, explanation:string (2-4 sentences)}. Do NOT include any other text."
+          },
+          { role: "user", content: JSON.stringify(userPayload) }
+        ]
+      })
+    })
+    if (!res.ok) throw new Error(`Azure OpenAI error: ${firstErr} | Retry: ${await res.text()}`)
+  }
+
+  const json = await res.json()
+  const content = json?.choices?.[0]?.message?.content ?? ""
+  return coerceExplanations(content)
+}
+
+// ---------------- route ----------------
+
+export async function POST(req: Request) {
+  try {
+    // Basic body-size guard (256KB)
+    const len = Number(req.headers.get("content-length") || "0")
+    if (len > 256 * 1024) return NextResponse.json({ error: "Payload too large" }, { status: 413 })
+
+    const { oldQuery, newQuery } = (await req.json()) as { oldQuery?: string; newQuery?: string }
+    if (!oldQuery || !newQuery) return NextResponse.json({ error: "oldQuery and newQuery are required." }, { status: 400 })
+
+    const canonOld = canonicalizeSQL(oldQuery)
+    const canonNew = canonicalizeSQL(newQuery)
+    const comparison = generateQueryDiff(canonOld, canonNew)
+
+    const changes = buildStructuredChanges(comparison)
+
+    // If no changes, return empty but consistent analysis object
+    if (changes.length === 0) {
+      return NextResponse.json({
+        analysis: {
+          summary: "No changes detected.",
+          riskAssessment: "Low",
+          performanceImpact: "Neutral",
+          changes: [],
+          recommendations: [],
+        }
+      })
+    }
+
+    const payload = buildUserPayload(canonOld, canonNew, changes)
+    const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
+    const modelExpls = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
+
+    const merged: ChangeWithExpl[] = changes.map((c, i) => {
+      const ex = modelExpls.find(e => e.index === i)?.explanation
+      return { ...c, explanation: ex || "The tool could not infer details confidently. Review surrounding lines for the exact effect on rows, grouping, and filters." }
+    })
+
+    const summary = `${merged.filter(x => x.type === "addition").length} additions, ${merged.filter(x => x.type === "deletion").length} deletions, ${merged.filter(x => x.type === "modification").length} modifications.`
+
+    return NextResponse.json({
+      analysis: {
+        summary,
+        riskAssessment: "Low",
+        performanceImpact: "Neutral",
+        changes: merged,
+        recommendations: [],
+      }
+    })
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || "Unexpected error" }, { status: 500 })
   }
 }

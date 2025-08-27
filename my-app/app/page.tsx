@@ -1,47 +1,22 @@
 "use client"
 
 import type React from "react"
-import { useState, useRef } from "react"
+import { useMemo, useState, useRef } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Upload, FileText, Zap, GitCompare, Brain, CheckCircle, AlertCircle, X } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { canonicalizeSQL } from "@/lib/query-differ" // ✅ same pipeline for both queries
+import { canonicalizeSQL, generateQueryDiff, type ComparisonResult } from "@/lib/query-differ"
+import { QueryComparison } from "@/components/query-comparison"
 
-interface AnalysisResult {
-  summary: string
-  diffLines?: Array<{
-    type: "added" | "removed" | "modified"
-    content?: string
-    oldContent?: string
-    newContent?: string
-    lineNumber: number
-  }>
-  updatedQuery: string
-  changes: Array<{
-    type: "addition" | "modification" | "deletion"
-    description: string
-    explanation: string
-  }>
-  recommendations: Array<{
-    type: "optimization" | "best_practice" | "warning" | "analysis"
-    title: string
-    description: string
-  }>
-  lineAnalysis?: Array<{
-    lineNumber: number
-    explanation: string
-  }>
-}
-
-const CARD_HEIGHT = 580 // slightly tighter
+const CARD_HEIGHT = 580
+const MAX_QUERY_CHARS = 50_000 // client-side safety cap
 
 export default function QueryAnalyzer() {
   const [oldQuery, setOldQuery] = useState("")
   const [newQuery, setNewQuery] = useState("")
   const [isAnalyzing, setIsAnalyzing] = useState(false)
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [uploadStatus, setUploadStatus] = useState<{
     type: "old" | "new" | null
@@ -52,6 +27,12 @@ export default function QueryAnalyzer() {
   const [dragActive, setDragActive] = useState<{ old: boolean; new: boolean }>({ old: false, new: false })
   const oldFileInputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
+
+  // -------- Live comparison BEFORE analysis (so users see diffs right away) --------
+  const comparison: ComparisonResult | null = useMemo(() => {
+    if (!oldQuery.trim() || !newQuery.trim()) return null
+    return generateQueryDiff(oldQuery, newQuery) // canonicalizes internally
+  }, [oldQuery, newQuery])
 
   const handleFileUpload = async (file: File, queryType: "old" | "new") => {
     setUploadStatus({ type: queryType, status: "uploading", message: "Reading file..." })
@@ -71,6 +52,14 @@ export default function QueryAnalyzer() {
         const content = (e.target?.result as string) ?? ""
         if (content.trim().length === 0) {
           setUploadStatus({ type: queryType, status: "error", message: "File appears to be empty" })
+          return
+        }
+        if (content.length > MAX_QUERY_CHARS) {
+          setUploadStatus({
+            type: queryType,
+            status: "error",
+            message: `File too large for analysis (${content.length.toLocaleString()} > ${MAX_QUERY_CHARS.toLocaleString()} chars)`,
+          })
           return
         }
         if (queryType === "old") setOldQuery(content)
@@ -116,83 +105,55 @@ export default function QueryAnalyzer() {
     setUploadStatus({ type: null, status: null, message: "" })
   }
 
-  // Canonicalize both queries before analyze so spacing/line numbers match
-  const handleAnalyze = async () => {
+  const resetAll = () => {
+    setOldQuery("")
+    setNewQuery("")
+    setAnalysisError(null)
+    setUploadStatus({ type: null, status: null, message: "" })
+    if (oldFileInputRef.current) oldFileInputRef.current.value = ""
+    if (newFileInputRef.current) newFileInputRef.current.value = ""
+    window.scrollTo({ top: 0, behavior: "smooth" })
+  }
+
+  // Analyze → stash and redirect to /results (results page performs the API call)
+  const handleAnalyze = () => {
     if (!oldQuery.trim() || !newQuery.trim()) {
       alert("Please provide both queries before analyzing")
+      return
+    }
+    if (oldQuery.length > MAX_QUERY_CHARS || newQuery.length > MAX_QUERY_CHARS) {
+      setAnalysisError(
+        `Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters. ` +
+        `Current sizes: old=${oldQuery.length.toLocaleString()} new=${newQuery.length.toLocaleString()}`
+      )
       return
     }
 
     setIsAnalyzing(true)
     setAnalysisError(null)
-    setAnalysisResult(null)
 
-    try {
-      const canonOld = canonicalizeSQL(oldQuery)
-      const canonNew = canonicalizeSQL(newQuery)
+    // Canonicalize locally so both pages show the same text/line numbers
+    const canonOld = canonicalizeSQL(oldQuery)
+    const canonNew = canonicalizeSQL(newQuery)
 
-      // Update editors so the user sees the same text the AI/diff uses
-      setOldQuery(canonOld)
-      setNewQuery(canonNew)
+    // Reflect canonical text in the editors (optional)
+    setOldQuery(canonOld)
+    setNewQuery(canonNew)
 
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldQuery: canonOld, newQuery: canonNew }),
-      })
-
-      const data = await response.json()
-      if (!response.ok) throw new Error(data.error || "Analysis failed")
-
-      setAnalysisResult({ ...data.analysis, updatedQuery: canonNew })
-    } catch (error) {
-      console.error("Analysis error:", error)
-      setAnalysisError(error instanceof Error ? error.message : "An unexpected error occurred")
-    } finally {
-      setIsAnalyzing(false)
-    }
+    // Stash payload for results page & navigate
+    sessionStorage.setItem("qa:payload", JSON.stringify({ oldQuery: canonOld, newQuery: canonNew }))
+    window.location.href = "/results"
   }
 
-  const renderQueryWithDiff = (
-    query: string,
-    diffLines?: Array<{ type: "added" | "removed" | "modified"; lineNumber: number }>,
-  ) => {
-    const byLine = new Map<number, "added" | "removed" | "modified">()
-    diffLines?.forEach((d) => byLine.set(d.lineNumber, d.type))
-
-    return (
-      <div className="space-y-1">
-        {query.split("\n").map((line, index) => {
-          const n = index + 1
-          const tag = byLine.get(n)
-          return (
-            <div
-              key={index}
-              className={`px-2 py-1 rounded text-sm font-mono ${
-                tag === "added"
-                  ? "bg-green-100 border-l-4 border-green-500"
-                  : tag === "removed"
-                  ? "bg-red-100 border-l-4 border-red-500"
-                  : tag === "modified"
-                  ? "bg-yellow-100 border-l-4 border-yellow-500"
-                  : "bg-transparent"
-              }`}
-            >
-              <span className="text-gray-500 text-xs mr-3">{n}</span>
-              <span className="text-gray-800 whitespace-pre-wrap break-words">{line}</span>
-            </div>
-          )
-        })}
-      </div>
-    )
-  }
+  const charCountBad = (s: string) => s.length > MAX_QUERY_CHARS
+  const bothPresent = oldQuery.trim().length > 0 && newQuery.trim().length > 0
 
   return (
     <div className="min-h-screen relative bg-neutral-950">
-      {/* Professional grid background */}
+      {/* Toned-down professional grid background */}
       <div className="pointer-events-none absolute inset-0 opacity-90">
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.10),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.10),transparent_60%)]" />
-        <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.05)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.05)_24px)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.08),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.08),transparent_60%)]" />
+        <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
       </div>
 
       <div className="relative z-10">
@@ -247,7 +208,7 @@ export default function QueryAnalyzer() {
             {/* Original Query */}
             <div>
               <h3 className="text-sm font-medium text-white/80 mb-3">Original Query</h3>
-              <Card className="bg-white border-gray-200 shadow-lg flex flex-col" style={{ height: CARD_HEIGHT }}>
+              <Card className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBad(oldQuery) ? "ring-2 ring-red-400" : ""}`} style={{ height: CARD_HEIGHT }}>
                 <CardContent className="p-5 flex-1 flex flex-col min-h-0">
                   <div className="flex-1 min-h-0">
                     <Textarea
@@ -282,6 +243,11 @@ export default function QueryAnalyzer() {
                     onChange={(e) => handleFileInputChange(e, "old")}
                     className="hidden"
                   />
+                  {charCountBad(oldQuery) && (
+                    <p className="mt-2 text-xs text-red-600">
+                      {oldQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                    </p>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -289,69 +255,70 @@ export default function QueryAnalyzer() {
             {/* Updated Query */}
             <div>
               <h3 className="text-sm font-medium text-white/80 mb-3">Updated Query</h3>
-              <Card className="bg-white border-gray-200 shadow-lg flex flex-col" style={{ height: CARD_HEIGHT }}>
+              <Card className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBad(newQuery) ? "ring-2 ring-red-400" : ""}`} style={{ height: CARD_HEIGHT }}>
                 <CardContent className="p-5 flex-1 flex flex-col min-h-0">
-                  {!analysisResult ? (
-                    <>
-                      <div className="flex-1 min-h-0">
-                        <Textarea
-                          placeholder="Paste your updated Oracle SQL query here..."
-                          value={newQuery}
-                          onChange={(e) => setNewQuery(e.target.value)}
-                          spellCheck={false}
-                          className="h-full border-0 bg-white text-gray-800 placeholder:text-gray-500 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight"
-                          onDragEnter={(e) => handleDragEnter(e, "new")}
-                          onDragOver={handleDragOver}
-                          onDragLeave={(e) => handleDragLeave(e, "new")}
-                          onDrop={(e) => handleDrop(e, "new")}
-                        />
-                      </div>
-                      <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
-                        <Button variant="ghost" size="sm" onClick={() => newFileInputRef.current?.click()} className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
-                          <Upload className="w-4 h-4" /> Attach
-                        </Button>
-                        <Button variant="ghost" size="sm" className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
-                          <FileText className="w-4 h-4" /> SQL
-                        </Button>
-                        {newQuery && (
-                          <Button variant="ghost" size="sm" onClick={() => clearQuery("new")} className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0">
-                            <X className="w-4 h-4" />
-                          </Button>
-                        )}
-                      </div>
-                      <input
-                        ref={newFileInputRef}
-                        type="file"
-                        accept=".txt,.sql"
-                        onChange={(e) => handleFileInputChange(e, "new")}
-                        className="hidden"
-                      />
-                    </>
-                  ) : (
-                    <div className="flex-1 min-h-0 overflow-y-auto">
-                      {renderQueryWithDiff(analysisResult.updatedQuery, analysisResult.diffLines)}
-                    </div>
+                  <div className="flex-1 min-h-0">
+                    <Textarea
+                      placeholder="Paste your updated Oracle SQL query here..."
+                      value={newQuery}
+                      onChange={(e) => setNewQuery(e.target.value)}
+                      spellCheck={false}
+                      className="h-full border-0 bg-white text-gray-800 placeholder:text-gray-500 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight"
+                      onDragEnter={(e) => handleDragEnter(e, "new")}
+                      onDragOver={handleDragOver}
+                      onDragLeave={(e) => handleDragLeave(e, "new")}
+                      onDrop={(e) => handleDrop(e, "new")}
+                    />
+                  </div>
+                  <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
+                    <Button variant="ghost" size="sm" onClick={() => newFileInputRef.current?.click()} className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
+                      <Upload className="w-4 h-4" /> Attach
+                    </Button>
+                    <Button variant="ghost" size="sm" className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
+                      <FileText className="w-4 h-4" /> SQL
+                    </Button>
+                    {newQuery && (
+                      <Button variant="ghost" size="sm" onClick={() => clearQuery("new")} className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0">
+                        <X className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <input
+                    ref={newFileInputRef}
+                    type="file"
+                    accept=".txt,.sql"
+                    onChange={(e) => handleFileInputChange(e, "new")}
+                    className="hidden"
+                  />
+                  {charCountBad(newQuery) && (
+                    <p className="mt-2 text-xs text-red-600">
+                      {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                    </p>
                   )}
                 </CardContent>
               </Card>
             </div>
           </div>
 
-          <div className="text-center mb-10">
+          {/* Analyze + Reset row */}
+          <div className="flex items-center justify-center gap-3 mb-8">
             <Button
               onClick={handleAnalyze}
-              disabled={isAnalyzing || !oldQuery.trim() || !newQuery.trim()}
+              disabled={isAnalyzing || !oldQuery.trim() || !newQuery.trim() || charCountBad(oldQuery) || charCountBad(newQuery)}
               size="lg"
-              className="px-10 py-3 font-heading font-medium text-base bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-500 hover:to-emerald-500 border-0 shadow-lg hover:shadow-xl transition-all"
+              className="px-8 py-3 font-heading font-medium text-base rounded-md bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 text-white border border-white/10 shadow-md transition-all"
+              title={(!oldQuery.trim() || !newQuery.trim()) ? "Paste both queries to enable" : undefined}
             >
               {isAnalyzing ? (
                 <div className="flex items-center gap-3">
-                  <Zap className="w-5 h-5 text-white animate-pulse" />
-                  <span className="flex items-center gap-1">
-                    Analyzing
-                    <span className="animate-pulse">.</span>
-                    <span className="animate-pulse delay-200">.</span>
-                    <span className="animate-pulse delay-500">.</span>
+                  <div className="flex items-end gap-0.5 mr-1">
+                    <span className="w-1.5 h-3 bg-white/90 rounded-sm animate-bounce" />
+                    <span className="w-1.5 h-4 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
+                    <span className="w-1.5 h-5 bg-white/70 rounded-sm animate-bounce" style={{ animationDelay: "240ms" }} />
+                  </div>
+                  <span className="relative">
+                    <span className="opacity-90">Analyzing</span>
+                    <span className="absolute inset-0 bg-white/10 blur-sm rounded-sm animate-pulse" />
                   </span>
                 </div>
               ) : (
@@ -360,76 +327,25 @@ export default function QueryAnalyzer() {
                 </>
               )}
             </Button>
+
+            {(oldQuery || newQuery) && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={resetAll}
+                className="border-white/15 text-white/90 hover:bg-white/10"
+                title="Start a new analysis"
+              >
+                <X className="w-5 h-5" />
+              </Button>
+            )}
           </div>
 
-          {analysisResult && (
-            <div className="grid lg:grid-cols-2 gap-8 mb-6">
-              {/* Changes */}
-              <div>
-                <h3 className="text-sm font-medium text-white/80 mb-3">Changes</h3>
-                <Card className="bg-white border-gray-200 shadow-lg">
-                  <CardContent className="p-5">
-                    <div className="h-96 overflow-y-auto">
-                      {analysisResult.changes && analysisResult.changes.length > 0 ? (
-                        <div className="space-y-3">
-                          {analysisResult.changes.map((change, index) => (
-                            <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-                              <div className="flex items-center gap-2 mb-2">
-                                <span
-                                  className={`px-2 py-1 rounded text-xs font-medium ${
-                                    change.type === "addition"
-                                      ? "bg-green-100 text-green-700"
-                                      : change.type === "deletion"
-                                      ? "bg-red-100 text-red-700"
-                                      : "bg-yellow-100 text-yellow-700"
-                                  }`}
-                                >
-                                  {change.type}
-                                </span>
-                              </div>
-                              <p className="text-gray-700 text-sm mb-1">{change.description}</p>
-                              <p className="text-gray-600 text-xs">{change.explanation}</p>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center h-full text-gray-500">
-                          <p>No changes detected.</p>
-                        </div>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-
-              {/* AI Analysis */}
-              <div>
-                <h3 className="text-sm font-medium text-white/80 mb-3">AI Analysis</h3>
-                <Card className="bg-white border-gray-200 shadow-lg">
-                  <CardContent className="p-5">
-                    <div className="h-96 overflow-y-auto">
-                      <div className="space-y-4">
-                        {analysisResult.lineAnalysis && analysisResult.lineAnalysis.length > 0 ? (
-                          analysisResult.lineAnalysis.map((analysis, index) => (
-                            <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                              <div className="flex items-start gap-3">
-                                <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs font-medium">
-                                  Line {analysis.lineNumber}
-                                </span>
-                                <p className="text-gray-700 text-sm leading-relaxed flex-1">{analysis.explanation}</p>
-                              </div>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                            <p className="text-gray-700 text-sm leading-relaxed">{analysisResult.summary}</p>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+          {/* Live Comparison Preview (visible even before AI analysis) */}
+          {comparison && (
+            <div className="mb-10">
+              <h3 className="text-sm font-medium text-white/80 mb-3">Live Comparison Preview</h3>
+              <QueryComparison oldQuery={oldQuery} newQuery={newQuery} />
             </div>
           )}
         </main>
