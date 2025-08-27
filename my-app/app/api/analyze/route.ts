@@ -7,12 +7,11 @@ type Side = "old" | "new" | "both"
 type ChangeItem = {
   type: ChangeType
   description: string
-  lineNumber: number           // single anchor used in UI
-  side: Side                   // where to render badges
+  lineNumber: number          
+  side: Side                
 }
 
 type ChangeWithExpl = ChangeItem & { explanation: string }
-
 type ChangeExplanation = { index: number; explanation: string }
 
 const DEFAULT_XAI_MODEL = "grok-4"
@@ -32,7 +31,6 @@ function buildStructuredChanges(diff: ComparisonResult): ChangeItem[] {
     if (d.type === "deletion" && d.oldLineNumber) {
       const next = diff.diffs[i + 1]
       if (next && next.type === "addition" && next.newLineNumber) {
-        // modification pair
         out.push({
           type: "modification",
           lineNumber: next.newLineNumber,
@@ -61,7 +59,7 @@ function buildStructuredChanges(diff: ComparisonResult): ChangeItem[] {
       }
     }
   }
-  // Sort by line number for stable UX
+
   out.sort((a, b) => a.lineNumber - b.lineNumber)
   return out
 }
@@ -164,7 +162,6 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
     body: JSON.stringify({
       temperature: 0.2,
       response_format: {
-        // Some regions/models accept json_schema; fallback below if not
         type: "json_schema",
         json_schema: {
           name: "change_explanations",
@@ -221,7 +218,6 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
 
 export async function POST(req: Request) {
   try {
-    // Basic body-size guard (256KB)
     const len = Number(req.headers.get("content-length") || "0")
     if (len > 256 * 1024) return NextResponse.json({ error: "Payload too large" }, { status: 413 })
 
@@ -231,10 +227,8 @@ export async function POST(req: Request) {
     const canonOld = canonicalizeSQL(oldQuery)
     const canonNew = canonicalizeSQL(newQuery)
     const comparison = generateQueryDiff(canonOld, canonNew)
-
     const changes = buildStructuredChanges(comparison)
 
-    // If no changes, return empty but consistent analysis object
     if (changes.length === 0) {
       return NextResponse.json({
         analysis: {

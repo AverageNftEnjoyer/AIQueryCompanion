@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Home, Zap, AlertCircle, CheckCircle, ChevronRight } from "lucide-react"
+import { Home, Zap, AlertCircle, CheckCircle, BarChart3 } from "lucide-react"
 import { QueryComparison } from "@/components/query-comparison"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
@@ -47,11 +47,41 @@ function deriveDisplayChanges(analysis: AnalysisResult | null) {
   return analysis.changes.slice().sort((a, b) => a.lineNumber - b.lineNumber)
 }
 
-// ---------- Sleek loader ----------
+// ---------- Sleek loader with bouncing bars + one-line rotating status ----------
 function FancyLoader() {
+  // Shuffle once for variety
+  const steps = useMemo(() => {
+    const arr = [
+      "Parsing SQL blocks…",
+      "Normalizing whitespace…",
+      "Highlighting keywords…",
+      "Computing line diff (LCS)…",
+      "Merging adjacent edits…",
+      "Classifying SELECT / FROM / WHERE…",
+      "Detecting JOIN & filter changes…",
+      "Estimating impact on rows & groups…",
+      "Fetching model explanations…",
+      "Synthesizing recommendations…",
+      "Scoring performance & risk…",
+      "Assembling final report…",
+    ]
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    }
+    return arr
+  }, [])
+
+  // Rotate a single line every 5 seconds
+  const [idx, setIdx] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setIdx((i) => (i + 1) % steps.length), 3000)
+    return () => clearInterval(id)
+  }, [steps.length])
+
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
-      {/* bouncing bars */}
+      {/* bouncing bars (kept) */}
       <div className="flex items-end gap-1.5 mb-6">
         <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" />
         <span className="w-2 h-7 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
@@ -60,7 +90,7 @@ function FancyLoader() {
         <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" style={{ animationDelay: "480ms" }} />
       </div>
 
-      {/* shimmer card */}
+      {/* shimmer card + single status line */}
       <div className="w-full max-w-3xl rounded-xl border border-white/10 bg-white/5 backdrop-blur p-6">
         <div className="h-4 w-40 bg-white/10 rounded mb-4 animate-pulse" />
         <div className="space-y-2">
@@ -70,7 +100,7 @@ function FancyLoader() {
         </div>
         <div className="mt-6 flex items-center gap-2 text-white/70">
           <Zap className="w-4 h-4 animate-pulse" />
-          Generating semantic diff, risk notes, and explanations…
+          <span className="font-mono text-sm select-none">{steps[idx]}</span>
         </div>
       </div>
     </div>
@@ -146,20 +176,46 @@ export default function ResultsPage() {
     <div className="min-h-screen relative bg-neutral-950 text-white">
       {gridBg}
 
+      {/* Centered header title + home + stats */}
       <header className="relative z-10 border-b border-white/10 bg-black/30 backdrop-blur">
-        <div className="container mx-auto px-6 py-4 flex items-center gap-3">
-          <Link href="/" className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition">
-            <Home className="w-5 h-5 text-white" />
-          </Link>
-          <div className="flex-1" />
-          {stats && (
-            <div className="hidden md:flex items-center gap-3 text-xs text-white/70">
-              <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">{stats.additions} additions</span>
-              <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">{stats.modifications} modifications</span>
-              <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">{stats.deletions} deletions</span>
-              <span className="px-2 py-1 rounded bg-white/10 border border-white/20">{stats.unchanged} unchanged</span>
+        <div className="container mx-auto px-6 py-4">
+          <div className="grid grid-cols-3 items-center">
+            {/* left: home */}
+            <Link
+              href="/"
+              className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
+            >
+              <Home className="w-5 h-5 text-white" />
+            </Link>
+
+            {/* center: title */}
+            <div className="flex items-center justify-center">
+              <div className="flex items-center gap-2 text-white">
+                <BarChart3 className="w-5 h-5" />
+                <span className="font-heading font-semibold">Query Comparison</span>
+              </div>
             </div>
-          )}
+
+            {/* right: stats */}
+            {stats ? (
+              <div className="hidden md:flex items-center justify-end gap-3 text-xs text-white/70">
+                <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
+                  {stats.additions} additions
+                </span>
+                <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
+                  {stats.modifications} modifications
+                </span>
+                <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
+                  {stats.deletions} deletions
+                </span>
+                <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
+                  {stats.unchanged} unchanged
+                </span>
+              </div>
+            ) : (
+              <div />
+            )}
+          </div>
         </div>
       </header>
 
@@ -185,7 +241,7 @@ export default function ResultsPage() {
           <div className="space-y-10">
             {/* Query Comparison */}
             <section>
-              <QueryComparison oldQuery={oldQuery} newQuery={newQuery} />
+              <QueryComparison oldQuery={oldQuery} newQuery={newQuery} showTitle={false} />
             </section>
 
             {/* Changes + AI Analysis */}
@@ -194,7 +250,7 @@ export default function ResultsPage() {
               <Card className="bg-white border-gray-200 shadow-lg">
                 <CardContent className="p-5">
                   <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
-                  <div className="h-[26rem] overflow-y-auto">
+                  <div className="h-[28rem] overflow-y-auto">
                     {displayChanges.length > 0 ? (
                       <div className="space-y-3">
                         {displayChanges.map((chg, index) => (
@@ -216,10 +272,6 @@ export default function ResultsPage() {
                               </span>
                             </div>
                             <p className="text-gray-800 text-sm mb-1">{chg.description}</p>
-                            <div className="flex items-center gap-1 text-xs text-gray-600">
-                              <ChevronRight className="w-3 h-3" />
-                              Anchored to updated numbering for clarity
-                            </div>
                           </div>
                         ))}
                       </div>
@@ -236,31 +288,40 @@ export default function ResultsPage() {
               <Card className="bg-white border-gray-200 shadow-lg">
                 <CardContent className="p-5">
                   <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
-                  <div className="h-[26rem] overflow-y-auto">
+                  <div className="h-[28rem] overflow-y-auto">
                     <div className="space-y-4">
                       {displayChanges.length > 0 ? (
                         displayChanges.map((chg, index) => (
                           <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                            <div className="flex items-start gap-3">
-                              <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs font-medium">
-                                Line {chg.lineNumber}
-                              </span>
-                              <div className="flex-1">
-                                <p className="text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
-                                <p className="text-xs text-gray-500 mt-1">
-                                  ({chg.type} · {chg.side === "old" ? "old" : chg.side === "new" ? "new" : "both"})
-                                </p>
+                            <div className="flex items-start gap-4">
+                              {/* Left rail: Line badge, then ONLY the change type chip */}
+                              <div className="shrink-0 flex flex-col items-start gap-1 min-w-[100px]">
+                                <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
+                                  Line {chg.lineNumber}
+                                </span>
+                                <span
+                                  className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                    chg.type === "addition"
+                                      ? "bg-emerald-100 text-emerald-700"
+                                      : chg.type === "deletion"
+                                      ? "bg-rose-100 text-rose-700"
+                                      : "bg-amber-100 text-amber-700" /* modification */
+                                  }`}
+                                >
+                                  {chg.type}
+                                </span>
                               </div>
+
+                              {/* Explanation */}
+                              <p className="flex-1 text-gray-800 text-sm leading-relaxed">
+                                {chg.explanation}
+                              </p>
                             </div>
                           </div>
                         ))
                       ) : (
                         <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          <div className="flex items-center gap-2 text-green-700">
-                            <CheckCircle className="w-4 h-4" />
-                            <span>No risky changes—queries are equivalent.</span>
-                          </div>
-                          <p className="text-gray-700 text-sm leading-relaxed mt-2">{analysis.summary}</p>
+                          <p className="text-gray-700 text-sm leading-relaxed">{analysis.summary}</p>
                         </div>
                       )}
                     </div>
