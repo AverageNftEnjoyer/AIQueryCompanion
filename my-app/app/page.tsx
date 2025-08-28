@@ -1,17 +1,16 @@
 "use client"
 
 import type React from "react"
-import { useMemo, useState, useRef } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Upload, FileText, Zap, GitCompare, Brain, CheckCircle, AlertCircle, X } from "lucide-react"
+import { Upload, FileText, Zap, GitCompare, CheckCircle, AlertCircle, X, Brain } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
-import { canonicalizeSQL, generateQueryDiff, type ComparisonResult } from "@/lib/query-differ"
-import { QueryComparison } from "@/components/query-comparison"
+import { canonicalizeSQL } from "@/lib/query-differ"
 
 const CARD_HEIGHT = 580
-const MAX_QUERY_CHARS = 120_000 // client-side safety cap
+const MAX_QUERY_CHARS = 120_000
 
 export default function QueryAnalyzer() {
   const [oldQuery, setOldQuery] = useState("")
@@ -27,12 +26,6 @@ export default function QueryAnalyzer() {
   const [dragActive, setDragActive] = useState<{ old: boolean; new: boolean }>({ old: false, new: false })
   const oldFileInputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
-
-  // -------- Live comparison BEFORE analysis (so users see diffs right away) --------
-  const comparison: ComparisonResult | null = useMemo(() => {
-    if (!oldQuery.trim() || !newQuery.trim()) return null
-    return generateQueryDiff(oldQuery, newQuery) // canonicalizes internally
-  }, [oldQuery, newQuery])
 
   const handleFileUpload = async (file: File, queryType: "old" | "new") => {
     setUploadStatus({ type: queryType, status: "uploading", message: "Reading file..." })
@@ -115,7 +108,6 @@ export default function QueryAnalyzer() {
     window.scrollTo({ top: 0, behavior: "smooth" })
   }
 
-  // Analyze → stash and redirect to /results (results page performs the API call)
   const handleAnalyze = () => {
     if (!oldQuery.trim() || !newQuery.trim()) {
       alert("Please provide both queries before analyzing")
@@ -132,25 +124,21 @@ export default function QueryAnalyzer() {
     setIsAnalyzing(true)
     setAnalysisError(null)
 
-    // Canonicalize locally so both pages show the same text/line numbers
     const canonOld = canonicalizeSQL(oldQuery)
     const canonNew = canonicalizeSQL(newQuery)
 
-    // Reflect canonical text in the editors (optional)
     setOldQuery(canonOld)
     setNewQuery(canonNew)
 
-    // Stash payload for results page & navigate
     sessionStorage.setItem("qa:payload", JSON.stringify({ oldQuery: canonOld, newQuery: canonNew }))
+    sessionStorage.setItem("qa:allowSound", "1")
     window.location.href = "/results"
   }
 
   const charCountBad = (s: string) => s.length > MAX_QUERY_CHARS
-  const bothPresent = oldQuery.trim().length > 0 && newQuery.trim().length > 0
 
   return (
     <div className="min-h-screen relative bg-neutral-950">
-      {/* Toned-down professional grid background */}
       <div className="pointer-events-none absolute inset-0 opacity-90">
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.08),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.08),transparent_60%)]" />
         <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
@@ -208,7 +196,10 @@ export default function QueryAnalyzer() {
             {/* Original Query */}
             <div>
               <h3 className="text-sm font-medium text-white/80 mb-3">Original Query</h3>
-              <Card className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBad(oldQuery) ? "ring-2 ring-red-400" : ""}`} style={{ height: CARD_HEIGHT }}>
+              <Card
+                className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBad(oldQuery) ? "ring-2 ring-red-400" : ""}`}
+                style={{ height: CARD_HEIGHT }}
+              >
                 <CardContent className="p-5 flex-1 flex flex-col min-h-0">
                   <div className="flex-1 min-h-0">
                     <Textarea
@@ -224,14 +215,24 @@ export default function QueryAnalyzer() {
                     />
                   </div>
                   <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
-                    <Button variant="ghost" size="sm" onClick={() => oldFileInputRef.current?.click()} className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => oldFileInputRef.current?.click()}
+                      className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
+                    >
                       <Upload className="w-4 h-4" /> Attach
                     </Button>
                     <Button variant="ghost" size="sm" className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
                       <FileText className="w-4 h-4" /> SQL
                     </Button>
                     {oldQuery && (
-                      <Button variant="ghost" size="sm" onClick={() => clearQuery("old")} className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => clearQuery("old")}
+                        className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0"
+                      >
                         <X className="w-4 h-4" />
                       </Button>
                     )}
@@ -255,7 +256,10 @@ export default function QueryAnalyzer() {
             {/* Updated Query */}
             <div>
               <h3 className="text-sm font-medium text-white/80 mb-3">Updated Query</h3>
-              <Card className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBad(newQuery) ? "ring-2 ring-red-400" : ""}`} style={{ height: CARD_HEIGHT }}>
+              <Card
+                className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBad(newQuery) ? "ring-2 ring-red-400" : ""}`}
+                style={{ height: CARD_HEIGHT }}
+              >
                 <CardContent className="p-5 flex-1 flex flex-col min-h-0">
                   <div className="flex-1 min-h-0">
                     <Textarea
@@ -271,14 +275,24 @@ export default function QueryAnalyzer() {
                     />
                   </div>
                   <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
-                    <Button variant="ghost" size="sm" onClick={() => newFileInputRef.current?.click()} className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => newFileInputRef.current?.click()}
+                      className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
+                    >
                       <Upload className="w-4 h-4" /> Attach
                     </Button>
                     <Button variant="ghost" size="sm" className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2">
                       <FileText className="w-4 h-4" /> SQL
                     </Button>
                     {newQuery && (
-                      <Button variant="ghost" size="sm" onClick={() => clearQuery("new")} className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => clearQuery("new")}
+                        className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0"
+                      >
                         <X className="w-4 h-4" />
                       </Button>
                     )}
@@ -300,7 +314,6 @@ export default function QueryAnalyzer() {
             </div>
           </div>
 
-          {/* Analyze + Reset row */}
           <div className="flex items-center justify-center gap-3 mb-8">
             <Button
               onClick={handleAnalyze}
@@ -340,14 +353,6 @@ export default function QueryAnalyzer() {
               </Button>
             )}
           </div>
-
-          {/* Live Comparison Preview (visible even before AI analysis) */}
-          {comparison && (
-            <div className="mb-10">
-              <h3 className="text-sm font-medium text-white/80 mb-3">Live Comparison Preview</h3>
-              <QueryComparison oldQuery={oldQuery} newQuery={newQuery} />
-            </div>
-          )}
         </main>
       </div>
     </div>

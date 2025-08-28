@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useMemo, useRef, forwardRef, useImperativeHandle } from "react"
@@ -22,13 +23,22 @@ interface QueryComparisonProps {
   className?: string
   showTitle?: boolean
   paneHeight?: number | string
+  /** when false, manual scrolling is independent */
+  syncScrollEnabled?: boolean
 }
 
 type OldTag = "removed" | "modified"
 type NewTag = "added" | "modified"
 
 function QueryComparisonInner(
-  { oldQuery, newQuery, className, showTitle = true, paneHeight = "clamp(520px, calc(100vh - 200px), 760px)" }: QueryComparisonProps,
+  {
+    oldQuery,
+    newQuery,
+    className,
+    showTitle = true,
+    paneHeight = "clamp(520px, calc(100vh - 200px), 760px)",
+    syncScrollEnabled = true,
+  }: QueryComparisonProps,
   ref: Ref<QueryComparisonHandle>
 ) {
   const canonicalOld = useMemo(() => canonicalizeSQL(oldQuery), [oldQuery])
@@ -88,6 +98,7 @@ function QueryComparisonInner(
       suppressSync.current[side] = false
       return
     }
+    if (!syncScrollEnabled) return
     const src = side === "old" ? leftRef.current : rightRef.current
     const dst = side === "old" ? rightRef.current : leftRef.current
     if (src && dst) syncOther(src, dst)

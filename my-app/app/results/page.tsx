@@ -1,4 +1,4 @@
-
+// /app/results/page.tsx
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -50,6 +50,36 @@ function deriveDisplayChanges(analysis: AnalysisResult | null) {
 }
 
 function FancyLoader() {
+  const messages = [
+    "Generating semantic diff, risk notes, and explanations…",
+    "Analyzing SQL syntax and detecting anomalies…",
+    "Measuring potential performance impact of changes…",
+    "Evaluating best practices and optimization hints…",
+    "Assessing overall query risk level and stability…",
+    "Scanning subqueries and nested joins for complexity…",
+    "Checking index usage and key distribution…",
+    "Reviewing SELECT, WHERE, and JOIN clauses for efficiency…",
+    "Validating grouping, ordering, and aggregation logic…",
+    "Cross-referencing schema metadata and column types…",
+    "Compiling final report with recommendations and risk score…",
+  ]
+
+  const [index, setIndex] = useState(0)
+  const [fading, setFading] = useState(false)
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setFading(true)
+      // brief fade-out, then swap, then fade-in
+      const t = setTimeout(() => {
+        setIndex((i) => (i + 1) % messages.length)
+        setFading(false)
+      }, 250) // fade-out duration
+      return () => clearTimeout(t)
+    }, 4000)
+    return () => clearInterval(id)
+  }, [messages.length])
+
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
       <div className="flex items-end gap-1.5 mb-6">
@@ -69,12 +99,17 @@ function FancyLoader() {
         </div>
         <div className="mt-6 flex items-center gap-2 text-white/70">
           <Zap className="w-4 h-4 animate-pulse" />
-          Generating semantic diff, risk notes, and explanations…
+          <span
+            className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}
+          >
+            {messages[index]}
+          </span>
         </div>
       </div>
     </div>
   )
 }
+
 
 export default function ResultsPage() {
   const router = useRouter()
@@ -88,6 +123,7 @@ export default function ResultsPage() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const playedRef = useRef(false)
   const cmpRef = useRef<QueryComparisonHandle>(null)
+  const [syncEnabled, setSyncEnabled] = useState(true)
 
   useEffect(() => {
     if (startedRef.current) return
@@ -199,6 +235,28 @@ export default function ResultsPage() {
                 <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
                   {stats.unchanged} unchanged
                 </span>
+
+                {/* Sync toggle (bigger visuals, same length) */}
+                <button
+                  type="button"
+                  onClick={() => setSyncEnabled((v) => !v)}
+                  role="switch"
+                  aria-checked={syncEnabled}
+                  title="Toggle synced scrolling"
+                  className="ml-2 inline-flex items-center gap-3 pl-3 pr-1 h-8 rounded-full border border-white/15
+                             bg-white/5 hover:bg-white/10 transition whitespace-nowrap"
+                >
+                  <span className="tracking-tight text-sm leading-none select-none">Sync scroll</span>
+                  <span
+                    className={`relative w-8 h-5 rounded-full shrink-0 transition
+                                ${syncEnabled ? "bg-emerald-500/80" : "bg-white/20"}`}
+                  >
+                    <span
+                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow
+                                  transition-transform ${syncEnabled ? "translate-x-3" : "translate-x-0"}`}
+                    />
+                  </span>
+                </button>
               </div>
             ) : (
               <div />
@@ -228,7 +286,13 @@ export default function ResultsPage() {
           {!loading && !error && analysis && (
             <div className="space-y-10">
               <section>
-                <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} />
+                <QueryComparison
+                  ref={cmpRef}
+                  oldQuery={oldQuery}
+                  newQuery={newQuery}
+                  showTitle={false}
+                  syncScrollEnabled={syncEnabled}
+                />
                 <div className="flex items-center justify-center text-xs text-white/60 -mt-2">
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
@@ -236,62 +300,65 @@ export default function ResultsPage() {
               </section>
 
               <section className="grid lg:grid-cols-2 gap-8">
+                {/* Changes */}
                 <Card className="bg-white border-gray-200 shadow-lg">
-  <CardContent className="p-5">
-    <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
-    <div className="h-[28rem] overflow-y-auto">
-      {displayChanges.length > 0 ? (
-        <div className="space-y-3">
-          {displayChanges.map((chg, index) => {
-            const jumpSide = chg.side === "both" ? "both" : (chg.side === "old" ? "old" : "new")
-            return (
-              <button
-  key={index}
-  className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer
-             transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm
-             active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-  onClick={(e) => {
-    cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-    ;(e.currentTarget as HTMLButtonElement).blur() // remove focus so no outline/lingering highlight
-  }}
-  onKeyDown={(e) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault()
-      cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-      ;(e.currentTarget as HTMLButtonElement).blur()
-    }
-  }}
->
-  <div className="flex items-center gap-2 mb-2">
-    <span
-      className={`px-2 py-1 rounded text-xs font-medium transition ${
-        chg.type === "addition"
-          ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-          : chg.type === "deletion"
-          ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-          : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-      }`}
-    >
-      {chg.type}
-    </span>
-    <span className="text-xs text-gray-500">
-      {chg.side} · line {chg.lineNumber}
-    </span>
-  </div>
-  <p className="text-gray-800 text-sm">{chg.description}</p>
-</button>
-            )
-          })}
-        </div>
-      ) : (
-        <div className="flex items-center justify-center h-full text-gray-500">
-          <p>No changes detected.</p>
-        </div>
-      )}
-    </div>
-  </CardContent>
-</Card>
+                  <CardContent className="p-5">
+                    <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
+                    <div className="h-[28rem] overflow-y-auto">
+                      {displayChanges.length > 0 ? (
+                        <div className="space-y-3">
+                          {displayChanges.map((chg, index) => {
+                            const jumpSide: "old" | "new" | "both" =
+                              chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
+                            return (
+                              <button
+                                key={index}
+                                className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer
+                                           transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm
+                                           active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                                onClick={(e) => {
+                                  cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+                                  ;(e.currentTarget as HTMLButtonElement).blur()
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
+                                    e.preventDefault()
+                                    cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+                                    ;(e.currentTarget as HTMLButtonElement).blur()
+                                  }
+                                }}
+                              >
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span
+                                    className={`px-2 py-1 rounded text-xs font-medium transition ${
+                                      chg.type === "addition"
+                                        ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
+                                        : chg.type === "deletion"
+                                        ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                                        : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
+                                    }`}
+                                  >
+                                    {chg.type}
+                                  </span>
+                                  <span className="text-xs text-gray-500">
+                                    {chg.side} · line {chg.lineNumber}
+                                  </span>
+                                </div>
+                                <p className="text-gray-800 text-sm">{chg.description}</p>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-gray-500">
+                          <p>No changes detected.</p>
+                        </div>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
 
+                {/* AI Analysis */}
                 <Card className="bg-white border-gray-200 shadow-lg">
                   <CardContent className="p-5">
                     <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
@@ -302,7 +369,9 @@ export default function ResultsPage() {
                             <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                               <div className="flex items-start gap-4">
                                 <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                                  <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">Line {chg.lineNumber}</span>
+                                  <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
+                                    Line {chg.lineNumber}
+                                  </span>
                                   <span
                                     className={`px-2 py-0.5 rounded text-[10px] font-medium ${
                                       chg.type === "addition"
@@ -315,8 +384,26 @@ export default function ResultsPage() {
                                     {chg.type}
                                   </span>
                                   <div className="flex flex-col gap-1 pt-1">
-                                    {metricBadge("Syntax", chg.syntax)}
-                                    {metricBadge("Performance", chg.performance)}
+                                    <span
+                                      className={
+                                        "px-2 py-0.5 rounded text-[10px] font-medium " +
+                                        (chg.syntax === "good"
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : "bg-rose-100 text-rose-700")
+                                      }
+                                    >
+                                      Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
+                                    </span>
+                                    <span
+                                      className={
+                                        "px-2 py-0.5 rounded text-[10px] font-medium " +
+                                        (chg.performance === "good"
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : "bg-rose-100 text-rose-700")
+                                      }
+                                    >
+                                      Performance: {chg.performance === "good" ? "Good" : "Bad"}
+                                    </span>
                                   </div>
                                 </div>
                                 <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
