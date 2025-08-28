@@ -1,3 +1,4 @@
+
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -6,11 +7,10 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Home, Zap, AlertCircle, BarChart3 } from "lucide-react"
-import { QueryComparison } from "@/components/query-comparison"
+import { Home, Zap, AlertCircle, BarChart3, ChevronDown } from "lucide-react"
+import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
-// ---------- Types that mirror /api/analyze response ----------
 type ChangeType = "addition" | "modification" | "deletion"
 type Side = "old" | "new" | "both"
 type GoodBad = "good" | "bad"
@@ -35,7 +35,6 @@ interface AnalysisResult {
   performanceImpact?: "Positive" | "Negative" | "Neutral"
 }
 
-// ---------- Local helpers ----------
 const MAX_QUERY_CHARS = 120_000
 
 const gridBg = (
@@ -50,11 +49,9 @@ function deriveDisplayChanges(analysis: AnalysisResult | null) {
   return analysis.changes.slice().sort((a, b) => a.lineNumber - b.lineNumber)
 }
 
-// ---------- Sleek loader ----------
 function FancyLoader() {
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
-      {/* bouncing bars */}
       <div className="flex items-end gap-1.5 mb-6">
         <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" />
         <span className="w-2 h-7 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
@@ -63,7 +60,6 @@ function FancyLoader() {
         <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" style={{ animationDelay: "480ms" }} />
       </div>
 
-      {/* shimmer card */}
       <div className="w-full max-w-3xl rounded-xl border border-white/10 bg-white/5 backdrop-blur p-6">
         <div className="h-4 w-40 bg-white/10 rounded mb-4 animate-pulse" />
         <div className="space-y-2">
@@ -80,7 +76,6 @@ function FancyLoader() {
   )
 }
 
-// ---------- Results Page ----------
 export default function ResultsPage() {
   const router = useRouter()
   const [oldQuery, setOldQuery] = useState<string>("")
@@ -90,7 +85,10 @@ export default function ResultsPage() {
   const [loading, setLoading] = useState(true)
   const startedRef = useRef(false)
 
-  // Load payload from sessionStorage, kick off analysis
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const playedRef = useRef(false)
+  const cmpRef = useRef<QueryComparisonHandle>(null)
+
   useEffect(() => {
     if (startedRef.current) return
     startedRef.current = true
@@ -136,9 +134,19 @@ export default function ResultsPage() {
     })()
   }, [router])
 
+  useEffect(() => {
+    if (!loading && !error && analysis && !playedRef.current) {
+      const allowed = typeof window !== "undefined" && sessionStorage.getItem("qa:allowSound") === "1"
+      if (allowed) {
+        audioRef.current?.play().catch(() => {})
+        playedRef.current = true
+        sessionStorage.removeItem("qa:allowSound")
+      }
+    }
+  }, [loading, error, analysis])
+
   const displayChanges = useMemo(() => deriveDisplayChanges(analysis), [analysis])
 
-  // For a small header stat line
   const stats = useMemo(() => {
     if (!oldQuery || !newQuery) return null
     const diff: ComparisonResult = generateQueryDiff(oldQuery, newQuery)
@@ -149,9 +157,7 @@ export default function ResultsPage() {
     <span
       className={
         "px-2 py-0.5 rounded text-[10px] font-medium " +
-        (goodBad === "good"
-          ? "bg-emerald-100 text-emerald-700"
-          : "bg-rose-100 text-rose-700")
+        (goodBad === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
       }
     >
       {label}: {goodBad === "good" ? "Good" : "Bad"}
@@ -162,11 +168,9 @@ export default function ResultsPage() {
     <div className="min-h-screen relative bg-neutral-950 text-white">
       {gridBg}
 
-      {/* Centered header title + home + stats */}
       <header className="relative z-10 border-b border-white/10 bg-black/30 backdrop-blur">
         <div className="container mx-auto px-6 py-4">
           <div className="grid grid-cols-3 items-center">
-            {/* left: home */}
             <Link
               href="/"
               className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
@@ -174,7 +178,6 @@ export default function ResultsPage() {
               <Home className="w-5 h-5 text-white" />
             </Link>
 
-            {/* center: title */}
             <div className="flex items-center justify-center">
               <div className="flex items-center gap-2 text-white">
                 <BarChart3 className="w-5 h-5" />
@@ -182,7 +185,6 @@ export default function ResultsPage() {
               </div>
             </div>
 
-            {/* right: stats */}
             {stats ? (
               <div className="hidden md:flex items-center justify-end gap-3 text-xs text-white/70">
                 <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
@@ -205,123 +207,135 @@ export default function ResultsPage() {
         </div>
       </header>
 
-      <main className="relative z-10 container mx-auto px-6 py-8">
-        {/* Loading */}
-        {loading && !error && <FancyLoader />}
+      <main className="relative z-10">
+        <audio ref={audioRef} src="/loadingdone.mp3" preload="auto" />
 
-        {/* Error */}
-        {!loading && error && (
-          <Alert className="bg-black/40 backdrop-blur border-red-500/40 text-white">
-            <AlertCircle className="w-5 h-5 text-red-400" />
-            <AlertDescription className="flex-1">
-              <strong className="text-red-300">Error:</strong> {error}
-            </AlertDescription>
-            <Button asChild variant="outline" className="border-white/20 text-white/90 hover:bg-white/10">
-              <Link href="/">Go Home</Link>
-            </Button>
-          </Alert>
-        )}
+        <div className="container mx-auto px-6 py-8">
+          {loading && !error && <FancyLoader />}
 
-        {/* Content */}
-        {!loading && !error && analysis && (
-          <div className="space-y-10">
-            {/* Query Comparison */}
-            <section>
-              <QueryComparison oldQuery={oldQuery} newQuery={newQuery} showTitle={false} />
-            </section>
+          {!loading && error && (
+            <Alert className="bg-black/40 backdrop-blur border-red-500/40 text-white">
+              <AlertCircle className="w-5 h-5 text-red-400" />
+              <AlertDescription className="flex-1">
+                <strong className="text-red-300">Error:</strong> {error}
+              </AlertDescription>
+              <Button asChild variant="outline" className="border-white/20 text-white/90 hover:bg-white/10">
+                <Link href="/">Go Home</Link>
+              </Button>
+            </Alert>
+          )}
 
-            {/* Changes + AI Analysis */}
-            <section className="grid lg:grid-cols-2 gap-8">
-              {/* Changes */}
-              <Card className="bg-white border-gray-200 shadow-lg">
-                <CardContent className="p-5">
-                  <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
-                  <div className="h-[28rem] overflow-y-auto">
-                    {displayChanges.length > 0 ? (
-                      <div className="space-y-3">
-                        {displayChanges.map((chg, index) => (
-                          <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-3">
-                            <div className="flex items-center gap-2 mb-2">
-                              <span
-                                className={`px-2 py-1 rounded text-xs font-medium ${
-                                  chg.type === "addition"
-                                    ? "bg-emerald-100 text-emerald-700"
-                                    : chg.type === "deletion"
-                                    ? "bg-rose-100 text-rose-700"
-                                    : "bg-amber-100 text-amber-700"
-                                }`}
-                              >
-                                {chg.type}
-                              </span>
-                              <span className="text-xs text-gray-500">
-                                {chg.side === "old" ? "old" : chg.side === "new" ? "new" : "both"} · line {chg.lineNumber}
-                              </span>
-                            </div>
-                            <p className="text-gray-800 text-sm mb-1">{chg.description}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="flex items-center justify-center h-full text-gray-500">
-                        <p>No changes detected.</p>
-                      </div>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
+          {!loading && !error && analysis && (
+            <div className="space-y-10">
+              <section>
+                <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} />
+                <div className="flex items-center justify-center text-xs text-white/60 -mt-2">
+                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+                  Scroll for Changes & AI Analysis
+                </div>
+              </section>
 
-              {/* AI Analysis */}
-              <Card className="bg-white border-gray-200 shadow-lg">
-                <CardContent className="p-5">
-                  <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
-                  <div className="h-[28rem] overflow-y-auto">
-                    <div className="space-y-4">
-                      {displayChanges.length > 0 ? (
-                        displayChanges.map((chg, index) => (
-                          <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                            <div className="flex items-start gap-4">
-                              {/* Left rail: Line badge, change type, then compact metrics */}
-                              <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                                <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                                  Line {chg.lineNumber}
-                                </span>
-                                <span
-                                  className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                                    chg.type === "addition"
-                                      ? "bg-emerald-100 text-emerald-700"
-                                      : chg.type === "deletion"
-                                      ? "bg-rose-100 text-rose-700"
-                                      : "bg-amber-100 text-amber-700" /* modification */
-                                  }`}
-                                >
-                                  {chg.type}
-                                </span>
-                                {/* Compact metrics */}
-                                <div className="flex flex-col gap-1 pt-1">
-                                  {metricBadge("Syntax", chg.syntax)}
-                                  {metricBadge("Performance", chg.performance)}
+              <section className="grid lg:grid-cols-2 gap-8">
+                <Card className="bg-white border-gray-200 shadow-lg">
+  <CardContent className="p-5">
+    <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
+    <div className="h-[28rem] overflow-y-auto">
+      {displayChanges.length > 0 ? (
+        <div className="space-y-3">
+          {displayChanges.map((chg, index) => {
+            const jumpSide = chg.side === "both" ? "both" : (chg.side === "old" ? "old" : "new")
+            return (
+              <button
+  key={index}
+  className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer
+             transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm
+             active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+  onClick={(e) => {
+    cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+    ;(e.currentTarget as HTMLButtonElement).blur() // remove focus so no outline/lingering highlight
+  }}
+  onKeyDown={(e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault()
+      cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+      ;(e.currentTarget as HTMLButtonElement).blur()
+    }
+  }}
+>
+  <div className="flex items-center gap-2 mb-2">
+    <span
+      className={`px-2 py-1 rounded text-xs font-medium transition ${
+        chg.type === "addition"
+          ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
+          : chg.type === "deletion"
+          ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+          : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
+      }`}
+    >
+      {chg.type}
+    </span>
+    <span className="text-xs text-gray-500">
+      {chg.side} · line {chg.lineNumber}
+    </span>
+  </div>
+  <p className="text-gray-800 text-sm">{chg.description}</p>
+</button>
+            )
+          })}
+        </div>
+      ) : (
+        <div className="flex items-center justify-center h-full text-gray-500">
+          <p>No changes detected.</p>
+        </div>
+      )}
+    </div>
+  </CardContent>
+</Card>
+
+                <Card className="bg-white border-gray-200 shadow-lg">
+                  <CardContent className="p-5">
+                    <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
+                    <div className="h-[28rem] overflow-y-auto">
+                      <div className="space-y-4">
+                        {displayChanges.length > 0 ? (
+                          displayChanges.map((chg, index) => (
+                            <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                              <div className="flex items-start gap-4">
+                                <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
+                                  <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">Line {chg.lineNumber}</span>
+                                  <span
+                                    className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                      chg.type === "addition"
+                                        ? "bg-emerald-100 text-emerald-700"
+                                        : chg.type === "deletion"
+                                        ? "bg-rose-100 text-rose-700"
+                                        : "bg-amber-100 text-amber-700"
+                                    }`}
+                                  >
+                                    {chg.type}
+                                  </span>
+                                  <div className="flex flex-col gap-1 pt-1">
+                                    {metricBadge("Syntax", chg.syntax)}
+                                    {metricBadge("Performance", chg.performance)}
+                                  </div>
                                 </div>
+                                <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
                               </div>
-
-                              {/* Explanation */}
-                              <p className="flex-1 text-gray-800 text-sm leading-relaxed">
-                                {chg.explanation}
-                              </p>
                             </div>
+                          ))
+                        ) : (
+                          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                            <p className="text-gray-700 text-sm leading-relaxed">{analysis.summary}</p>
                           </div>
-                        ))
-                      ) : (
-                        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          <p className="text-gray-700 text-sm leading-relaxed">{analysis.summary}</p>
-                        </div>
-                      )}
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </section>
-          </div>
-        )}
+                  </CardContent>
+                </Card>
+              </section>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   )
