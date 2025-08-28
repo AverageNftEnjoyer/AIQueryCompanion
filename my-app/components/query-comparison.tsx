@@ -1,4 +1,3 @@
-
 "use client"
 
 import { useMemo, useRef, forwardRef, useImperativeHandle } from "react"
@@ -23,7 +22,6 @@ interface QueryComparisonProps {
   className?: string
   showTitle?: boolean
   paneHeight?: number | string
-  /** when false, manual scrolling is independent */
   syncScrollEnabled?: boolean
 }
 
@@ -89,8 +87,10 @@ function QueryComparisonInner(
   const suppressSync = useRef<{ old: boolean; new: boolean }>({ old: false, new: false })
 
   const syncOther = (src: HTMLDivElement, dst: HTMLDivElement) => {
-    const r = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight)
-    dst.scrollTop = r * Math.max(1, dst.scrollHeight - dst.clientHeight)
+    const rv = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight)
+    const rh = src.scrollLeft / Math.max(1, src.scrollWidth - src.clientWidth)
+    dst.scrollTop = rv * Math.max(1, dst.scrollHeight - dst.clientHeight)
+    dst.scrollLeft = rh * Math.max(1, dst.scrollWidth - dst.clientWidth)
   }
 
   const onPaneScroll = (side: "old" | "new") => {
@@ -114,8 +114,10 @@ function QueryComparisonInner(
         suppressSync.current.old = true
         suppressSync.current.new = true
         if (tR) r.scrollTop = tR.offsetTop - r.clientHeight / 2
-        const ratio = r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight)
-        l.scrollTop = ratio * Math.max(1, l.scrollHeight - l.clientHeight)
+        const rv = r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight)
+        const rh = r.scrollLeft / Math.max(1, r.scrollWidth - r.clientWidth)
+        l.scrollTop = rv * Math.max(1, l.scrollHeight - l.clientHeight)
+        l.scrollLeft = rh * Math.max(1, l.scrollWidth - l.clientWidth)
         return
       }
 
@@ -130,6 +132,7 @@ function QueryComparisonInner(
         const ratio = Math.max(0, Math.min(1, (line - 1) / Math.max(1, total - 1)))
         primary.scrollTop = ratio * Math.max(1, primary.scrollHeight - primary.clientHeight)
       }
+      // horizontal stays where user left it for single-pane jumps
     },
   }))
 
