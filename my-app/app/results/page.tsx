@@ -6,13 +6,14 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Home, Zap, AlertCircle, CheckCircle, BarChart3 } from "lucide-react"
+import { Home, Zap, AlertCircle, BarChart3 } from "lucide-react"
 import { QueryComparison } from "@/components/query-comparison"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
 // ---------- Types that mirror /api/analyze response ----------
 type ChangeType = "addition" | "modification" | "deletion"
 type Side = "old" | "new" | "both"
+type GoodBad = "good" | "bad"
 
 interface AnalysisResult {
   summary: string
@@ -22,6 +23,8 @@ interface AnalysisResult {
     explanation: string
     lineNumber: number
     side: Side
+    syntax: GoodBad
+    performance: GoodBad
   }>
   recommendations: Array<{
     type: "optimization" | "best_practice" | "warning" | "analysis"
@@ -33,7 +36,7 @@ interface AnalysisResult {
 }
 
 // ---------- Local helpers ----------
-const MAX_QUERY_CHARS = 50_000
+const MAX_QUERY_CHARS = 120_000
 
 const gridBg = (
   <div className="pointer-events-none absolute inset-0 opacity-90">
@@ -47,41 +50,11 @@ function deriveDisplayChanges(analysis: AnalysisResult | null) {
   return analysis.changes.slice().sort((a, b) => a.lineNumber - b.lineNumber)
 }
 
-// ---------- Sleek loader with bouncing bars + one-line rotating status ----------
+// ---------- Sleek loader ----------
 function FancyLoader() {
-  // Shuffle once for variety
-  const steps = useMemo(() => {
-    const arr = [
-      "Parsing SQL blocks…",
-      "Normalizing whitespace…",
-      "Highlighting keywords…",
-      "Computing line diff (LCS)…",
-      "Merging adjacent edits…",
-      "Classifying SELECT / FROM / WHERE…",
-      "Detecting JOIN & filter changes…",
-      "Estimating impact on rows & groups…",
-      "Fetching model explanations…",
-      "Synthesizing recommendations…",
-      "Scoring performance & risk…",
-      "Assembling final report…",
-    ]
-    for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1))
-      ;[arr[i], arr[j]] = [arr[j], arr[i]]
-    }
-    return arr
-  }, [])
-
-  // Rotate a single line every 5 seconds
-  const [idx, setIdx] = useState(0)
-  useEffect(() => {
-    const id = setInterval(() => setIdx((i) => (i + 1) % steps.length), 3000)
-    return () => clearInterval(id)
-  }, [steps.length])
-
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
-      {/* bouncing bars (kept) */}
+      {/* bouncing bars */}
       <div className="flex items-end gap-1.5 mb-6">
         <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" />
         <span className="w-2 h-7 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
@@ -90,7 +63,7 @@ function FancyLoader() {
         <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" style={{ animationDelay: "480ms" }} />
       </div>
 
-      {/* shimmer card + single status line */}
+      {/* shimmer card */}
       <div className="w-full max-w-3xl rounded-xl border border-white/10 bg-white/5 backdrop-blur p-6">
         <div className="h-4 w-40 bg-white/10 rounded mb-4 animate-pulse" />
         <div className="space-y-2">
@@ -100,7 +73,7 @@ function FancyLoader() {
         </div>
         <div className="mt-6 flex items-center gap-2 text-white/70">
           <Zap className="w-4 h-4 animate-pulse" />
-          <span className="font-mono text-sm select-none">{steps[idx]}</span>
+          Generating semantic diff, risk notes, and explanations…
         </div>
       </div>
     </div>
@@ -171,6 +144,19 @@ export default function ResultsPage() {
     const diff: ComparisonResult = generateQueryDiff(oldQuery, newQuery)
     return diff.stats
   }, [oldQuery, newQuery])
+
+  const metricBadge = (label: string, goodBad: GoodBad) => (
+    <span
+      className={
+        "px-2 py-0.5 rounded text-[10px] font-medium " +
+        (goodBad === "good"
+          ? "bg-emerald-100 text-emerald-700"
+          : "bg-rose-100 text-rose-700")
+      }
+    >
+      {label}: {goodBad === "good" ? "Good" : "Bad"}
+    </span>
+  )
 
   return (
     <div className="min-h-screen relative bg-neutral-950 text-white">
@@ -294,8 +280,8 @@ export default function ResultsPage() {
                         displayChanges.map((chg, index) => (
                           <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                             <div className="flex items-start gap-4">
-                              {/* Left rail: Line badge, then ONLY the change type chip */}
-                              <div className="shrink-0 flex flex-col items-start gap-1 min-w-[100px]">
+                              {/* Left rail: Line badge, change type, then compact metrics */}
+                              <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
                                 <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
                                   Line {chg.lineNumber}
                                 </span>
@@ -310,6 +296,11 @@ export default function ResultsPage() {
                                 >
                                   {chg.type}
                                 </span>
+                                {/* Compact metrics */}
+                                <div className="flex flex-col gap-1 pt-1">
+                                  {metricBadge("Syntax", chg.syntax)}
+                                  {metricBadge("Performance", chg.performance)}
+                                </div>
                               </div>
 
                               {/* Explanation */}

@@ -11,7 +11,7 @@ import { canonicalizeSQL, generateQueryDiff, type ComparisonResult } from "@/lib
 import { QueryComparison } from "@/components/query-comparison"
 
 const CARD_HEIGHT = 580
-const MAX_QUERY_CHARS = 50_000 // client-side safety cap
+const MAX_QUERY_CHARS = 120_000 // client-side safety cap
 
 export default function QueryAnalyzer() {
   const [oldQuery, setOldQuery] = useState("")
