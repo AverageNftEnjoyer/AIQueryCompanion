@@ -99,9 +99,7 @@ function FancyLoader() {
         </div>
         <div className="mt-6 flex items-center gap-2 text-white/70">
           <Zap className="w-4 h-4 animate-pulse" />
-          <span
-            className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}
-          >
+          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
             {messages[index]}
           </span>
         </div>
@@ -109,7 +107,6 @@ function FancyLoader() {
     </div>
   )
 }
-
 
 export default function ResultsPage() {
   const router = useRouter()
@@ -204,9 +201,11 @@ export default function ResultsPage() {
     <div className="min-h-screen relative bg-neutral-950 text-white">
       {gridBg}
 
+      {/* HEADER: wider wrapper + left/center/right layout */}
       <header className="relative z-10 border-b border-white/10 bg-black/30 backdrop-blur">
-        <div className="container mx-auto px-6 py-4">
-          <div className="grid grid-cols-3 items-center">
+        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
+          <div className="flex items-center justify-between">
+            {/* Left: Home */}
             <Link
               href="/"
               className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
@@ -214,50 +213,53 @@ export default function ResultsPage() {
               <Home className="w-5 h-5 text-white" />
             </Link>
 
-            <div className="flex items-center justify-center">
-              <div className="flex items-center gap-2 text-white">
+            {/* Middle: Title + Stats */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 text-white mr-2">
                 <BarChart3 className="w-5 h-5" />
                 <span className="font-heading font-semibold">Query Comparison</span>
               </div>
+              {stats && (
+                <div className="hidden md:flex items-center gap-2 text-xs text-white/70">
+                  <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
+                    {stats.additions} additions
+                  </span>
+                  <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
+                    {stats.modifications} modifications
+                  </span>
+                  <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
+                    {stats.deletions} deletions
+                  </span>
+                  <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
+                    {stats.unchanged} unchanged
+                  </span>
+                </div>
+              )}
             </div>
 
+            {/* Right: Sync toggle */}
             {stats ? (
-              <div className="hidden md:flex items-center justify-end gap-3 text-xs text-white/70">
-                <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
-                  {stats.additions} additions
-                </span>
-                <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
-                  {stats.modifications} modifications
-                </span>
-                <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
-                  {stats.deletions} deletions
-                </span>
-                <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
-                  {stats.unchanged} unchanged
-                </span>
-
-                {/* Sync toggle (bigger visuals, same length) */}
-                <button
-                  type="button"
-                  onClick={() => setSyncEnabled((v) => !v)}
-                  role="switch"
-                  aria-checked={syncEnabled}
-                  title="Toggle synced scrolling"
-                  className="ml-2 inline-flex items-center gap-3 pl-3 pr-1 h-8 rounded-full border border-white/15
-                             bg-white/5 hover:bg-white/10 transition whitespace-nowrap"
+              <button
+                type="button"
+                onClick={() => setSyncEnabled((v) => !v)}
+                role="switch"
+                aria-checked={syncEnabled}
+                title="Toggle synced scrolling"
+                className="ml-2 inline-flex items-center gap-3 pl-3 pr-1 h-8 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition whitespace-nowrap"
+              >
+                <span className="tracking-tight text-sm leading-none select-none">Sync scroll</span>
+                <span
+                  className={`relative w-8 h-5 rounded-full shrink-0 transition ${
+                    syncEnabled ? "bg-emerald-500/80" : "bg-white/20"
+                  }`}
                 >
-                  <span className="tracking-tight text-sm leading-none select-none">Sync scroll</span>
                   <span
-                    className={`relative w-8 h-5 rounded-full shrink-0 transition
-                                ${syncEnabled ? "bg-emerald-500/80" : "bg-white/20"}`}
-                  >
-                    <span
-                      className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow
-                                  transition-transform ${syncEnabled ? "translate-x-3" : "translate-x-0"}`}
-                    />
-                  </span>
-                </button>
-              </div>
+                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                      syncEnabled ? "translate-x-3" : "translate-x-0"
+                    }`}
+                  />
+                </span>
+              </button>
             ) : (
               <div />
             )}
@@ -268,7 +270,8 @@ export default function ResultsPage() {
       <main className="relative z-10">
         <audio ref={audioRef} src="/loadingdone.mp3" preload="auto" />
 
-        <div className="container mx-auto px-6 py-8">
+        {/* MAIN WRAPPER: wider and tighter side padding */}
+        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-8">
           {loading && !error && <FancyLoader />}
 
           {!loading && error && (
@@ -313,9 +316,7 @@ export default function ResultsPage() {
                             return (
                               <button
                                 key={index}
-                                className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer
-                                           transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm
-                                           active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                                className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
                                 onClick={(e) => {
                                   cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
                                   ;(e.currentTarget as HTMLButtonElement).blur()
