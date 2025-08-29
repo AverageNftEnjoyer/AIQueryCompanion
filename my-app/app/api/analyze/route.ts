@@ -25,7 +25,7 @@ const MAX_QUERY_CHARS = 120_000
 
 // —— Grouping knobs ——
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 3)) // 3+ lines => consider a group
-const MAX_GROUP_LINES = Math.max(10, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 60)) // hard cap per block
+const MAX_GROUP_LINES = Math.max(10, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30)) // hard cap per block
 
 /* --------------------------------- Helpers -------------------------------- */
 
@@ -471,11 +471,8 @@ export async function POST(req: Request) {
     const diff = generateQueryDiff(canonOld, canonNew)
     const rawChanges = buildChanges(diff)
 
-    // structural segmenters for each side
     const segNew = buildSegmenter(canonNew)
     const segOld = buildSegmenter(canonOld)
-
-    // smart grouping
     const changes = groupChangesSmart(rawChanges, segNew, segOld, GROUP_THRESHOLD, MAX_GROUP_LINES)
 
     if (changes.length === 0) {
