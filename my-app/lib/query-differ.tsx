@@ -245,7 +245,6 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
       continue
     }
 
-    // number
     const num = line.slice(i).match(/^\d+(\.\d+)?/)
     if (num) {
       nodes.push(<span key={i} className="text-violet-700 dark:text-violet-400">{num[0]}</span>)
@@ -253,7 +252,6 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
       continue
     }
 
-    // identifier / keyword
     const word = line.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0]
     if (word) {
       if (KW.has(word.toUpperCase())) {
@@ -265,7 +263,6 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
       continue
     }
 
-    // single char
     nodes.push(<span key={i}>{ch}</span>)
     i++
   }
@@ -276,7 +273,6 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
 
   return nodes
 }
-/** Optional quick formatter */
 export function formatSQL(query: string): string {
   return canonicalizeSQL(query)
 }
