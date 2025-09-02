@@ -17,6 +17,28 @@ type ChangeExplanation = {
   explanation: string
   syntax?: GoodBad
   performance?: GoodBad
+  // internal optional fields (not required by UI but useful if needed)
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _syntax_explanation?: string
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _performance_explanation?: string
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _clauses?: string[]
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _change_kind?: string
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _business_impact?: "clear" | "weak" | "none"
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _risk?: "low" | "medium" | "high"
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore
+  _suggestions?: string[]
 }
 
 const DEFAULT_XAI_MODEL = "grok-4"
@@ -52,43 +74,113 @@ function asGoodBad(v: any): GoodBad | undefined {
   return undefined
 }
 
+// Extract a span (number of lines) from a grouped description, used to scale verbosity.
+function spanFromDescription(desc: string): number {
+  // matches: "added 7 lines", "removed 15 lines", "modified 3 lines"
+  const m = desc.match(/\b(added|removed|modified)\s+(\d+)\s+lines?\b/i)
+  if (m) return Math.max(1, Number(m[2]))
+  // single-line atomic changes default to 1
+  return 1
+}
+
+function verbosityForSpan(span: number): "short" | "medium" | "long" {
+  if (span <= 2) return "short"       // quick fixes / tiny mods
+  if (span <= 10) return "medium"     // small blocks
+  return "long"                       // big blocks (procedures/CTEs etc.)
+}
+
 function coerceExplanations(content: string): ChangeExplanation[] {
   try {
     const parsed = JSON.parse(content)
     const out = (parsed?.explanations || []) as any[]
     return out
-      .filter((x) => typeof x?.index === "number" && typeof x?.explanation === "string")
-      .map((x) => ({
-        index: x.index,
-        explanation: String(x.explanation).trim(),
-        syntax: asGoodBad(x.syntax),
-        performance: asGoodBad(x.performance),
-      }))
+      .filter((x) => typeof x?.index === "number" && (typeof x?.text === "string" || typeof x?.explanation === "string"))
+      .map((x) => {
+        const explanation = String((x.text ?? x.explanation) || "").trim()
+        const item: ChangeExplanation = {
+          index: x.index,
+          explanation,
+          syntax: asGoodBad(x.syntax),
+          performance: asGoodBad(x.performance),
+        }
+        // Optional conditional lines for bad ratings
+        if (typeof x.syntax_explanation === "string") (item as any)._syntax_explanation = x.syntax_explanation.trim()
+        if (typeof x.performance_explanation === "string") (item as any)._performance_explanation = x.performance_explanation.trim()
+        if (Array.isArray(x.clauses)) (item as any)._clauses = x.clauses
+        if (typeof x.change_kind === "string") (item as any)._change_kind = x.change_kind
+        if (typeof x.business_impact === "string") (item as any)._business_impact = x.business_impact
+        if (typeof x.risk === "string") (item as any)._risk = x.risk
+        if (Array.isArray(x.suggestions)) (item as any)._suggestions = x.suggestions
+        return item
+      })
   } catch {
     return []
   }
 }
 
 function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
+  const enriched = changes.map((c, i) => {
+    const span = spanFromDescription(c.description)
+    const verbosity = verbosityForSpan(span)
+    return {
+      index: i,
+      type: c.type,
+      side: c.side,
+      lineNumber: c.lineNumber,
+      description: c.description,
+      span,
+      verbosity, // short | medium | long
+    }
+  })
+
   return {
-    task:
-      "For EACH change, write an original explanation (3–5 sentences) focused on SQL semantics AND business impact when inferable.",
+    task: "Explain each change so a junior developer understands what changed and why it matters.",
     guidance: [
-      "Explain how the change affects filters, joins, projections, grouping/HAVING, ORDER BY, limits, or window functions.",
-      "Comment on plausible business meaning when names suggest it (e.g., invoices, customers, currencies).",
-      "Also rate syntax and performance for each change using 'good' or 'bad'.",
-      "syntax=good if the SQL remains syntactically valid; bad if it likely breaks or is suspicious (e.g., mismatched parentheses, dangling commas, invalid references).",
-      "performance=good if it is likely neutral/improving (tighter filters, indexed joins/keys, pre-aggregation, fewer wildcards); bad if it risks regressions (non-sargable predicates, functions on indexed columns in WHERE/JOIN, unnecessary DISTINCT, broad wildcards, large CROSS JOINs, etc.).",
-      "Avoid meta comments about line numbering; focus on the change impact.",
+      // Verbosity control
+      "Write length according to 'verbosity' per change: short=1–2 sentences, medium=3–5, long=5–8.",
+      "Short changes are often quick fixes—keep them concise. Large grouped blocks deserve more depth (e.g., new procedures/CTEs).",
+
+      // Scope & audience
+      "Audience is junior-level: use plain language; define jargon briefly the first time (e.g., 'sargable' = index-friendly).",
+      "Do not speculate. If business meaning is unclear from names, say so briefly.",
+
+      // What to cover
+      "Describe effect on the clauses actually touched: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
+      "Identify change_kind (e.g., filter_narrowed, filter_broadened, join_changed, join_added, join_removed, aggregation_changed, projection_changed, order_changed, limit_changed, window_changed/window_added, cte_changed, subquery_changed, literal_changed, function_added/function_changed).",
+
+      // Ratings & conditional explanations
+      "Provide 'syntax' and 'performance' ratings as 'good' or 'bad'.",
+      "If syntax='bad', include a single sentence 'syntax_explanation' describing the issue and how to address it.",
+      "If performance='bad', include a single sentence 'performance_explanation' describing the issue and how to address it.",
+      "If a rating is 'good', OMIT the corresponding explanation field.",
+
+      // Business impact
+      "If names imply business meaning (e.g., invoices/customers/currencies), add 1–2 sentences on business impact; otherwise set business_impact appropriately ('clear','weak','none').",
+      "For 'short' items, keep business comments concise.",
+
+      // Output
+      "Return JSON only matching the provided schema. No prose outside JSON.",
+      "Preserve the provided 'index' exactly."
     ],
+    dialect: "Oracle SQL",
     oldQuery,
     newQuery,
-    changes: changes.map((c, i) => ({ index: i, type: c.type, description: c.description })),
+    changes: enriched,
     output_schema: {
-      explanations: [
-        { index: "number", explanation: "string (3-5 sentences)", syntax: "'good' | 'bad'", performance: "'good' | 'bad'" },
-      ],
-    },
+      explanations: [{
+        index: "number (echo input index)",
+        text: "string (1–8 sentences based on 'verbosity')",
+        clauses: "array of enums subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
+        change_kind: "string enum describing type",
+        syntax: "enum: ['good','bad']",
+        performance: "enum: ['good','bad']",
+        syntax_explanation: "string (present only if syntax='bad', 1 sentence)",
+        performance_explanation: "string (present only if performance='bad', 1 sentence)",
+        business_impact: "enum: ['clear','weak','none']",
+        risk: "enum: ['low','medium','high']",
+        suggestions: "array of strings (0–2 items, concise, actionable)"
+      }]
+    }
   }
 }
 
@@ -105,7 +197,7 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
     body: JSON.stringify({
       model: XAI_MODEL,
-      temperature: 0.2,
+      temperature: 0.1,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -120,25 +212,45 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
                   type: "object",
                   properties: {
                     index: { type: "number" },
-                    explanation: { type: "string" },
+                    text: { type: "string" },
+                    clauses: {
+                      type: "array",
+                      items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
+                      uniqueItems: true
+                    },
+                    change_kind: { type: "string" },
                     syntax: { type: "string", enum: ["good", "bad"] },
                     performance: { type: "string", enum: ["good", "bad"] },
+                    syntax_explanation: { type: "string" },
+                    performance_explanation: { type: "string" },
+                    business_impact: { type: "string", enum: ["clear","weak","none"] },
+                    risk: { type: "string", enum: ["low","medium","high"] },
+                    suggestions: {
+                      type: "array",
+                      items: { type: "string" },
+                      maxItems: 2
+                    }
                   },
-                  required: ["index", "explanation", "syntax", "performance"],
-                  additionalProperties: false,
-                },
-              },
+                  required: ["index","text","syntax","performance","business_impact","risk"],
+                  additionalProperties: false
+                }
+              }
             },
             required: ["explanations"],
-            additionalProperties: false,
-          },
-        },
+            additionalProperties: false
+          }
+        }
       },
       messages: [
         {
           role: "system",
-          content:
-            "You are a senior Oracle SQL reviewer. For each change, provide a clear (3–5 sentence) explanation plus 'syntax' and 'performance' ratings ('good'|'bad'). No meta-comments about line numbers.",
+          content: [
+            "You are a senior Oracle SQL reviewer for a junior developer audience.",
+            "Write length according to each change's 'verbosity' (short=1–2, medium=3–5, long=5–8 sentences).",
+            "Return JSON only, matching the schema—no extra keys or prose.",
+            "If syntax='bad', include 'syntax_explanation' (1 sentence). If performance='bad', include 'performance_explanation' (1 sentence).",
+            "If those ratings are 'good', omit the corresponding explanation fields."
+          ].join(" ")
         },
         { role: "user", content: JSON.stringify(userPayload) },
       ],
@@ -166,7 +278,7 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
     method: "POST",
     headers: { "Content-Type": "application/json", "api-key": apiKey },
     body: JSON.stringify({
-      temperature: 0.2,
+      temperature: 0.1,
       response_format: {
         type: "json_schema",
         json_schema: {
@@ -181,25 +293,45 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
                   type: "object",
                   properties: {
                     index: { type: "number" },
-                    explanation: { type: "string" },
+                    text: { type: "string" },
+                    clauses: {
+                      type: "array",
+                      items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
+                      uniqueItems: true
+                    },
+                    change_kind: { type: "string" },
                     syntax: { type: "string", enum: ["good", "bad"] },
                     performance: { type: "string", enum: ["good", "bad"] },
+                    syntax_explanation: { type: "string" },
+                    performance_explanation: { type: "string" },
+                    business_impact: { type: "string", enum: ["clear","weak","none"] },
+                    risk: { type: "string", enum: ["low","medium","high"] },
+                    suggestions: {
+                      type: "array",
+                      items: { type: "string" },
+                      maxItems: 2
+                    }
                   },
-                  required: ["index", "explanation", "syntax", "performance"],
-                  additionalProperties: false,
-                },
-              },
+                  required: ["index","text","syntax","performance","business_impact","risk"],
+                  additionalProperties: false
+                }
+              }
             },
             required: ["explanations"],
-            additionalProperties: false,
-          },
-        },
+            additionalProperties: false
+          }
+        }
       },
       messages: [
         {
           role: "system",
-          content:
-            "You are a senior Oracle SQL reviewer. Return JSON {explanations:[{index:number,explanation:string,syntax:'good'|'bad',performance:'good'|'bad'}]}. No extra text.",
+          content: [
+            "You are a senior Oracle SQL reviewer for a junior developer audience.",
+            "Write length according to each change's 'verbosity' (short=1–2, medium=3–5, long=5–8 sentences).",
+            "Return JSON only, matching the schema—no extra keys or prose.",
+            "If syntax='bad', include 'syntax_explanation' (1 sentence). If performance='bad', include 'performance_explanation' (1 sentence).",
+            "If those ratings are 'good', omit the corresponding explanation fields."
+          ].join(" ")
         },
         { role: "user", content: JSON.stringify(userPayload) },
       ],
@@ -208,16 +340,25 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
 
   if (!res.ok) {
     const firstErr = await res.text()
+    // Retry without response_format (some deployments/models may ignore it),
+    // but keep strict JSON-only instructions in the system prompt.
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "api-key": apiKey },
       body: JSON.stringify({
-        temperature: 0.2,
+        temperature: 0.1,
         messages: [
           {
             role: "system",
-            content:
-              "You are a senior Oracle SQL reviewer. Return a JSON object with key 'explanations': an array of {index:number, explanation:string (3-5 sentences), syntax:'good'|'bad', performance:'good'|'bad'}. Do NOT include any other text.",
+            content: [
+              "You are a senior Oracle SQL reviewer for a junior developer audience.",
+              "Write length according to each change's 'verbosity' (short=1–2, medium=3–5, long=5–8 sentences).",
+              "Return a JSON object with key 'explanations': an array of items with keys:",
+              "index:number, text:string, clauses:string[], change_kind:string, syntax:'good'|'bad', performance:'good'|'bad',",
+              "syntax_explanation?:string (present only if syntax='bad'), performance_explanation?:string (present only if performance='bad'),",
+              "business_impact:'clear'|'weak'|'none', risk:'low'|'medium'|'high', suggestions?:string[] (max 2).",
+              "No prose outside JSON."
+            ].join(" ")
           },
           { role: "user", content: JSON.stringify(userPayload) },
         ],
@@ -496,18 +637,34 @@ export async function POST(req: Request) {
 
     const expMap = new Map<number, ChangeExplanation>()
     modelExplanations.forEach((e) => {
-      if (typeof e.index === "number" && e.explanation) expMap.set(e.index, e)
+      if (typeof e.index === "number" && (e.explanation && e.explanation.length > 0)) expMap.set(e.index, e)
     })
 
     const finalChanges = changes.map((c, idx) => {
-      const m = expMap.get(idx)
+      const m = expMap.get(idx) as ChangeExplanation | undefined
+      let explanation =
+        m?.explanation ||
+        "This change adjusts the SQL, but the service could not infer details confidently. Review surrounding context to confirm the impact on rows, grouping, and filters."
+
+      // Append targeted one-liners only when ratings are bad
+      const extra: string[] = []
+      if ((m as any)?._syntax_explanation && m?.syntax === "bad") extra.push(`Syntax: ${(m as any)._syntax_explanation}`)
+      if ((m as any)?._performance_explanation && m?.performance === "bad") extra.push(`Performance: ${(m as any)._performance_explanation}`)
+      if (extra.length) explanation = `${explanation} ${extra.join(" ")}`
+
       return {
         ...c,
-        explanation:
-          m?.explanation ||
-          "This change adjusts the SQL, but the service could not infer details confidently. Review surrounding context to confirm the impact on rows, grouping, and filters.",
+        explanation,
         syntax: m?.syntax ?? "good",
         performance: m?.performance ?? "good",
+        // Keep structured metadata available for UI (optional)
+        meta: m ? {
+          clauses: (m as any)._clauses ?? [],
+          change_kind: (m as any)._change_kind,
+          business_impact: (m as any)._business_impact ?? "none",
+          risk: (m as any)._risk ?? "low",
+          suggestions: (m as any)._suggestions ?? []
+        } : undefined
       }
     })
 

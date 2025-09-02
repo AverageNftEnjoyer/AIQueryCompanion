@@ -1,4 +1,3 @@
-// /app/results/page.tsx
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
@@ -70,11 +69,10 @@ function FancyLoader() {
   useEffect(() => {
     const id = setInterval(() => {
       setFading(true)
-      // brief fade-out, then swap, then fade-in
       const t = setTimeout(() => {
         setIndex((i) => (i + 1) % messages.length)
         setFading(false)
-      }, 250) // fade-out duration
+      }, 250)
       return () => clearTimeout(t)
     }, 4000)
     return () => clearInterval(id)
@@ -118,6 +116,7 @@ export default function ResultsPage() {
   const startedRef = useRef(false)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const switchAudioRef = useRef<HTMLAudioElement | null>(null)
   const playedRef = useRef(false)
   const cmpRef = useRef<QueryComparisonHandle>(null)
   const [syncEnabled, setSyncEnabled] = useState(true)
@@ -169,14 +168,33 @@ export default function ResultsPage() {
 
   useEffect(() => {
     if (!loading && !error && analysis && !playedRef.current) {
-      const allowed = typeof window !== "undefined" && sessionStorage.getItem("qa:allowSound") === "1"
-      if (allowed) {
-        audioRef.current?.play().catch(() => {})
+      const el = audioRef.current
+      if (!el) return
+      el.currentTime = 0
+      el.volume = 0.5
+      el.play().then(() => {
         playedRef.current = true
-        sessionStorage.removeItem("qa:allowSound")
-      }
+      }).catch(() => {
+        const resume = () => {
+          el.play().finally(() => {
+            playedRef.current = true
+            window.removeEventListener("pointerdown", resume)
+            window.removeEventListener("keydown", resume)
+          })
+        }
+        window.addEventListener("pointerdown", resume, { once: true })
+        window.addEventListener("keydown", resume, { once: true })
+      })
     }
   }, [loading, error, analysis])
+
+  useEffect(() => {
+    if (switchAudioRef.current) {
+      switchAudioRef.current.currentTime = 0
+      switchAudioRef.current.volume = 0.5
+      switchAudioRef.current.play().catch(() => {})
+    }
+  }, [syncEnabled])
 
   const displayChanges = useMemo(() => deriveDisplayChanges(analysis), [analysis])
 
@@ -201,11 +219,9 @@ export default function ResultsPage() {
     <div className="min-h-screen relative bg-neutral-950 text-white">
       {gridBg}
 
-      {/* HEADER: wider wrapper + left/center/right layout */}
       <header className="relative z-10 border-b border-white/10 bg-black/30 backdrop-blur">
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="flex items-center justify-between">
-            {/* Left: Home */}
             <Link
               href="/"
               className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
@@ -213,7 +229,6 @@ export default function ResultsPage() {
               <Home className="w-5 h-5 text-white" />
             </Link>
 
-            {/* Middle: Title + Stats */}
             <div className="flex items-center gap-3">
               <div className="flex items-center gap-2 text-white mr-2">
                 <BarChart3 className="w-5 h-5" />
@@ -237,7 +252,6 @@ export default function ResultsPage() {
               )}
             </div>
 
-            {/* Right: Sync toggle */}
             {stats ? (
               <button
                 type="button"
@@ -269,8 +283,8 @@ export default function ResultsPage() {
 
       <main className="relative z-10">
         <audio ref={audioRef} src="/loadingdone.mp3" preload="auto" />
+        <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" />
 
-        {/* MAIN WRAPPER: wider and tighter side padding */}
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-8">
           {loading && !error && <FancyLoader />}
 
@@ -303,14 +317,13 @@ export default function ResultsPage() {
               </section>
 
               <section className="grid lg:grid-cols-2 gap-8">
-                {/* Changes */}
                 <Card className="bg-white border-gray-200 shadow-lg">
                   <CardContent className="p-5">
                     <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
                     <div className="h-[28rem] overflow-y-auto">
-                      {displayChanges.length > 0 ? (
+                      {deriveDisplayChanges(analysis).length > 0 ? (
                         <div className="space-y-3">
-                          {displayChanges.map((chg, index) => {
+                          {deriveDisplayChanges(analysis).map((chg, index) => {
                             const jumpSide: "old" | "new" | "both" =
                               chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
                             return (
@@ -359,14 +372,13 @@ export default function ResultsPage() {
                   </CardContent>
                 </Card>
 
-                {/* AI Analysis */}
                 <Card className="bg-white border-gray-200 shadow-lg">
                   <CardContent className="p-5">
                     <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
                     <div className="h-[28rem] overflow-y-auto">
                       <div className="space-y-4">
-                        {displayChanges.length > 0 ? (
-                          displayChanges.map((chg, index) => (
+                        {deriveDisplayChanges(analysis).length > 0 ? (
+                          deriveDisplayChanges(analysis).map((chg, index) => (
                             <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                               <div className="flex items-start gap-4">
                                 <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
