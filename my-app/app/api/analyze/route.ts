@@ -24,8 +24,8 @@ const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 const MAX_QUERY_CHARS = 120_000
 
 // —— Grouping knobs ——
-const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 3)) // 3+ lines => consider a group
-const MAX_GROUP_LINES = Math.max(10, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30)) // hard cap per block
+const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
+const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30)) 
 
 /* --------------------------------- Helpers -------------------------------- */
 
