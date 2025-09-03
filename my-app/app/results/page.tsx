@@ -7,7 +7,17 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { MiniMap } from "@/components/minimap"
-import { Home, Zap, AlertCircle, BarChart3, ChevronDown, Loader2 } from "lucide-react"
+import {
+  Home,
+  Zap,
+  AlertCircle,
+  BarChart3,
+  ChevronDown,
+  Loader2,
+  Link2,
+  Sun,
+  Moon,
+} from "lucide-react"
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
@@ -136,6 +146,12 @@ export default function ResultsPage() {
   const [summarizing, setSummarizing] = useState(false)
   const summaryRef = useRef<HTMLDivElement | null>(null)
 
+  // Local “Light UI” toggle (only header & background)
+  const [lightUI, setLightUI] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false
+    return localStorage.getItem("qa:lightUI") === "1"
+  })
+
   const analysisDoneSoundPlayedRef = useRef(false)
 
   const playDoneSound = async () => {
@@ -227,8 +243,8 @@ export default function ResultsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           newQuery: canonicalizeSQL(newQuery),
-          analysis
-        })
+          analysis,
+        }),
       })
       if (res.ok) {
         const data = await res.json()
@@ -237,14 +253,18 @@ export default function ResultsPage() {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
         }, 100)
       } else {
-        setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
+        setSummary(
+          "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
+        )
         setTimeout(() => {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
         }, 100)
       }
       await playDoneSound()
     } catch {
-      setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
+      setSummary(
+        "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
+      )
       setTimeout(() => {
         summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
       }, 100)
@@ -265,97 +285,144 @@ export default function ResultsPage() {
     } catch {}
   }
 
+  const toggleLightUI = () => {
+  // 1) Toggle + persist
+  setLightUI((v) => {
+    const next = !v
+    if (typeof window !== "undefined") {
+      localStorage.setItem("qa:lightUI", next ? "1" : "0")
+    }
+    return next
+  })
+  const el = switchAudioRef.current
+  if (!el) return
+  try {
+    el.pause()
+    el.currentTime = 0
+    el.volume = 0.5
+    el.play().catch(() => {})
+  } catch {}
+}
+
+  const isLight = lightUI
+  const pageBgClass = isLight ? "bg-white text-gray-900" : "bg-neutral-950 text-white"
+  const headerBgClass = isLight
+    ? "bg-white/90 border-black/10 text-gray-900 shadow-sm"
+    : "bg-black/30 border-white/10 text-white"
+  const chipText = isLight ? "text-gray-800" : "text-white/80"
+
   return (
-    <div className="min-h-screen relative bg-neutral-950 text-white">
-      {gridBg}
+    <div className={`min-h-screen relative ${pageBgClass}`}>
+      {!isLight && gridBg}
 
+      <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
+        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
+          <div className="grid grid-cols-3 items-center gap-3">
+            {/* Left: Home */}
+            <div className="flex">
+              <Link
+                href="/"
+                className={`inline-flex items-center justify-center w-10 h-10 rounded-lg transition border ${
+                  isLight
+                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-900"
+                    : "bg-white/5 hover:bg-white/10 border-white/10 text-white"
+                }`}
+              >
+                <Home className="w-5 h-5" />
+              </Link>
+            </div>
 
-      <header className="relative z-10 border-b border-white/10 bg-black/30 backdrop-blur">
-  <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
-    <div className="grid grid-cols-3 items-center gap-3">
-      {/* Left: Home */}
-      <div className="flex">
-        <Link
-          href="/"
-          className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
-        >
-          <Home className="w-5 h-5 text-white" />
-        </Link>
-      </div>
+            {/* Center: Title */}
+            <div className="flex items-center justify-center">
+              <span className={`inline-flex items-center gap-2 ${isLight ? "text-gray-900" : "text-white"}`}>
+                <BarChart3 className="w-5 h-5" />
+                <span className="font-heading font-semibold text-lg">AI-Powered Query Companion</span>
+              </span>
+            </div>
 
-      {/* Center: Title */}
-      <div className="flex items-center justify-center">
-        <span className="inline-flex items-center gap-2">
-          <BarChart3 className="w-5 h-5 text-white/80" />
-          <span className="font-heading font-semibold text-white text-lg">
-            AI-Powered Query Companion
-          </span>
-        </span>
-      </div>
+            {/* Right: Generate Summary + Sync + Light UI */}
+            <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleGenerateSummary}
+                disabled={summarizing}
+                className={`inline-flex items-center gap-2 pl-3 pr-3 h-8 rounded-full border transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed ${
+                  isLight
+                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-900"
+                    : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
+                }`}
+                title="Generate a plain-English summary of the new query"
+              >
+                {summarizing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">Generating…</span>
+                  </>
+                ) : (
+                  <span className="text-sm">Generate Summary</span>
+                )}
+              </button>
 
-      {/* Right: Generate Summary (pill style) + Sync scroll */}
-      <div className="flex items-center justify-end gap-3">
-        {/* Generate Summary — styled to match the Sync scroll pill */}
-        <button
-          type="button"
-          onClick={handleGenerateSummary}
-          disabled={summarizing}
-          className={`inline-flex items-center gap-2 pl-3 pr-3 h-8 rounded-full border border-white/15
-                      bg-white/5 hover:bg-white/10 text-white transition whitespace-nowrap
-                      disabled:opacity-60 disabled:cursor-not-allowed`}
-          title="Generate a plain-English summary of the new query"
-        >
-          {summarizing ? (
-            <>
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm">Generating…</span>
-            </>
-          ) : (
-            <span className="text-sm">Generate Summary</span>
-          )}
-        </button>
+              {/* Sync scroll — icon button with subtle hover */}
+              <button
+                type="button"
+                onClick={handleToggleSync}
+                title="Toggle synced scrolling"
+                className={`relative p-2 rounded-full transition ${
+                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
+                }`}
+              >
+                <Link2
+                  className={`h-5 w-5 transition ${
+                    isLight
+                      ? syncEnabled
+                        ? "text-gray-900"
+                        : "text-gray-400"
+                      : syncEnabled
+                      ? "text-white"
+                      : "text-white/60"
+                  }`}
+                />
+              </button>
 
-        {/* Sync scroll switch (unchanged) */}
-        <button
-          type="button"
-          onClick={handleToggleSync}
-          role="switch"
-          aria-checked={syncEnabled}
-          title="Toggle synced scrolling"
-          className="inline-flex items-center gap-3 pl-3 pr-1 h-8 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition whitespace-nowrap"
-        >
-          <span className="tracking-tight text-sm leading-none select-none">Sync scroll</span>
-          <span
-            className={`relative w-8 h-5 rounded-full shrink-0 transition ${
-              syncEnabled ? "bg-emerald-500/80" : "bg-white/20"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                syncEnabled ? "translate-x-3" : "translate-x-0"
-              }`}
-            />
-          </span>
-        </button>
-      </div>
-    </div>
-  </div>
-</header>
+              {/* Local Light UI toggle — only header & page background */}
+              <button
+                type="button"
+                onClick={toggleLightUI}
+                title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
+                className={`relative p-2 rounded-full transition ${
+                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
+                }`}
+              >
+                {isLight ? (
+                  <Sun className="h-5 w-5 text-gray-900" />
+                ) : (
+                  <Moon className="h-5 w-5 text-white" />
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
 
       <main className="relative z-10">
         <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" />
 
-          <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
+        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
           {loading && !error && <FancyLoader />}
 
           {!loading && error && (
-            <Alert className="bg-black/40 backdrop-blur border-red-500/40 text-white">
-              <AlertCircle className="w-5 h-5 text-red-400" />
+            <Alert className={`${isLight ? "bg-white border-red-500/40" : "bg-black/40"} backdrop-blur text-inherit`}>
+              <AlertCircle className={`w-5 h-5 ${isLight ? "text-red-600" : "text-red-400"}`} />
               <AlertDescription className="flex-1">
-                <strong className="text-red-300">Error:</strong> {error}
+                <strong className={isLight ? "text-red-700" : "text-red-300"}>Error:</strong> {error}
               </AlertDescription>
-              <Button asChild variant="outline" className="border-white/20 text-white/90 hover:bg-white/10">
+              <Button
+                asChild
+                variant="outline"
+                className={`${isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"}`}
+              >
                 <Link href="/">Go Home</Link>
               </Button>
             </Alert>
@@ -363,74 +430,71 @@ export default function ResultsPage() {
 
           {!loading && !error && analysis && (
             <div className="space-y-8">
-<section className="mt-0 mb-2">
-  {stats && (
-    <div className="flex items-center justify-center gap-2 text-xs text-white/80">
-      <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
-        {stats.additions} additions
-      </span>
-      <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
-        {stats.modifications} modifications
-      </span>
-      <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
-        {stats.deletions} deletions
-      </span>
-      <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
-        {stats.unchanged} unchanged
-      </span>
-    </div>
-  )}
-</section>
+              {/* Stat chips */}
+              <section className="mt-0 mb-2">
+                {stats && (
+                  <div className={`flex items-center justify-center gap-2 text-xs ${chipText}`}>
+                    <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
+                      {stats.additions} additions
+                    </span>
+                    <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
+                      {stats.modifications} modifications
+                    </span>
+                    <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
+                      {stats.deletions} deletions
+                    </span>
+                    <span className={`px-2 py-1 rounded ${isLight ? "bg-black/5 border-black/15" : "bg-white/10 border-white/20"}`}>
+                      {stats.unchanged} unchanged
+                    </span>
+                  </div>
+                )}
+              </section>
 
-            {/* Diff + MiniMap — same fixed height */}
-<section className="mt-1">
-  <div className="flex items-stretch gap-3">
-    {/* LEFT: main diff, fixed height with its own scroll */}
-    <div className="flex-1 min-w-0 h-[90vh]">
-      {/* If your QueryComparison doesn’t auto-fill height, wrap it */}
-      <div className="h-full overflow-auto rounded-xl">
-        <QueryComparison
-          ref={cmpRef}
-          oldQuery={oldQuery}
-          newQuery={newQuery}
-          showTitle={false}
-          syncScrollEnabled={syncEnabled}
-        />
-      </div>
-    </div>
+              {/* Diff + MiniMap */}
+              <section className="mt-1">
+                <div className="flex items-stretch gap-3">
+                  <div className="flex-1 min-w-0 h-[90vh]">
+                    <div className="h-full overflow-auto rounded-xl">
+                      <QueryComparison
+                        ref={cmpRef}
+                        oldQuery={oldQuery}
+                        newQuery={newQuery}
+                        showTitle={false}
+                        syncScrollEnabled={syncEnabled}
+                      />
+                    </div>
+                  </div>
 
-    {/* RIGHT: minimap, exact same height */}
-    <div className="hidden lg:block h-[86vh]">
-      <MiniMap
-        totalLines={Math.max(
-          oldQuery ? oldQuery.split("\n").length : 0,
-          newQuery ? newQuery.split("\n").length : 0
-        )}
-        changes={toMiniChanges(analysis)}
-        onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
-        className="w-6 h-full"  // width + match height
-      />
-    </div>
-  </div>
+                  <div className="hidden lg:block h-[86vh]">
+                    <MiniMap
+                      totalLines={Math.max(
+                        oldQuery ? oldQuery.split("\n").length : 0,
+                        newQuery ? newQuery.split("\n").length : 0
+                      )}
+                      changes={toMiniChanges(analysis)}
+                      onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
+                      className="w-6 h-full"
+                    />
+                  </div>
+                </div>
 
-  <div className="flex items-center justify-center text-xs text-white/60 mt-1">
-    <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
-    Scroll for Changes & AI Analysis
-  </div>
-</section>
-
+                <div className={`flex items-center justify-center text-xs mt-1 ${isLight ? "text-gray-500" : "text-white/60"}`}>
+                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+                  Scroll for Changes & AI Analysis
+                </div>
+              </section>
 
               {/* Lower panels */}
               <section className="grid lg:grid-cols-2 gap-8">
                 {/* LEFT COLUMN */}
                 <div className="space-y-8">
-                  <Card className="bg-white border-gray-200 shadow-lg">
+                  <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
                       <div className="h-[28rem] overflow-y-auto">
-                        {deriveDisplayChanges(analysis).length > 0 ? (
+                        {displayChanges.length > 0 ? (
                           <div className="space-y-3">
-                            {deriveDisplayChanges(analysis).map((chg, index) => {
+                            {displayChanges.map((chg, index) => {
                               const jumpSide: "old" | "new" | "both" =
                                 chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
                               return (
@@ -508,13 +572,13 @@ export default function ResultsPage() {
 
                 {/* RIGHT COLUMN */}
                 <div className="space-y-8">
-                  <Card className="bg-white border-gray-200 shadow-lg">
+                  <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
                       <div className="h-[28rem] overflow-y-auto">
                         <div className="space-y-4">
-                          {deriveDisplayChanges(analysis).length > 0 ? (
-                            deriveDisplayChanges(analysis).map((chg, index) => (
+                          {displayChanges.length > 0 ? (
+                            displayChanges.map((chg, index) => (
                               <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                                 <div className="flex items-start gap-4">
                                   <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">

@@ -1,6 +1,7 @@
 import React from "react"
 import type { Metadata } from "next"
 import { Space_Grotesk, DM_Sans } from "next/font/google"
+import { ThemeProvider } from "@/components/theme-provider" 
 import "./globals.css"
 
 const spaceGrotesk = Space_Grotesk({
@@ -17,18 +18,33 @@ const dmSans = DM_Sans({
 
 export const metadata: Metadata = {
   title: "AI-Powered Query Companion",
-  description: "Full-stack tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
+  description:
+    "Full-stack tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
   generator: "v0.app",
 }
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode
-}>) {
+}) {
   return (
-    <html lang="en" className={`${spaceGrotesk.variable} ${dmSans.variable} antialiased`}>
-      <body className="font-body">{children}</body>
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`light ${spaceGrotesk.variable} ${dmSans.variable} antialiased`}
+    >
+      <body className="font-body">
+        <ThemeProvider
+          attribute="class"            
+          defaultTheme="light"       
+          enableSystem={false}        
+          storageKey="qa-theme"        
+          disableTransitionOnChange   
+        >
+          {children}
+        </ThemeProvider>
+      </body>
     </html>
   )
 }

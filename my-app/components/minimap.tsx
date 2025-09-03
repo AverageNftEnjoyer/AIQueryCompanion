@@ -18,6 +18,8 @@ interface MiniMapProps {
   changes: MiniChange[]
   onJump: (opts: { side: Side; line: number }) => void
   className?: string
+  /** Optional: override sound source; defaults to /minimapbar.mp3 */
+  soundSrc?: string
 }
 
 const colorFor = (t: ChangeType) =>
@@ -27,8 +29,26 @@ const colorFor = (t: ChangeType) =>
     ? "bg-rose-500/70 hover:bg-rose-500"
     : "bg-amber-500/70 hover:bg-amber-500"
 
-export function MiniMap({ totalLines, changes, onJump, className }: MiniMapProps) {
-  const minBlock = 5 
+export function MiniMap({
+  totalLines,
+  changes,
+  onJump,
+  className,
+  soundSrc = "/minimapbar.mp3",
+}: MiniMapProps) {
+  const minBlock = 5
+  const clickAudioRef = React.useRef<HTMLAudioElement | null>(null)
+
+  const playClick = () => {
+    const el = clickAudioRef.current
+    if (!el) return
+    try {
+      el.pause()
+      el.currentTime = 0
+      el.volume = 0.6
+      el.play().catch(() => {})
+    } catch {}
+  }
 
   return (
     <div
@@ -40,6 +60,9 @@ export function MiniMap({ totalLines, changes, onJump, className }: MiniMapProps
       role="navigation"
       aria-label="Change minimap"
     >
+      {/* Preload the click sound */}
+      <audio ref={clickAudioRef} src={soundSrc} preload="auto" />
+
       {changes.map((c, i) => {
         const span = Math.max(1, c.span ?? 1)
         const topPct = (c.lineNumber / Math.max(1, totalLines)) * 100
@@ -51,6 +74,7 @@ export function MiniMap({ totalLines, changes, onJump, className }: MiniMapProps
             title={`${c.label || c.type} @ line ${c.lineNumber}`}
             onClick={(e) => {
               e.preventDefault()
+              playClick()
               onJump({ side: c.side, line: c.lineNumber })
             }}
             className={`absolute left-0 right-0 ${colorFor(c.type)} transition-opacity`}
@@ -59,6 +83,7 @@ export function MiniMap({ totalLines, changes, onJump, className }: MiniMapProps
               height: `${hPx}px`,
               opacity: 0.9,
             }}
+            aria-label={`Jump to ${c.type} at line ${c.lineNumber}`}
           />
         )
       })}
