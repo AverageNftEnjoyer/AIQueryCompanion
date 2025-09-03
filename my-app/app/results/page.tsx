@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
+import { MiniMap } from "@/components/minimap"
 import { Home, Zap, AlertCircle, BarChart3, ChevronDown, Loader2 } from "lucide-react"
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
@@ -46,6 +47,17 @@ const gridBg = (
 function deriveDisplayChanges(analysis: AnalysisResult | null) {
   if (!analysis) return []
   return analysis.changes.slice().sort((a, b) => a.lineNumber - b.lineNumber)
+}
+
+function toMiniChanges(analysis: AnalysisResult | null) {
+  if (!analysis) return []
+  return analysis.changes.map((c) => ({
+    type: c.type,
+    side: c.side,
+    lineNumber: c.lineNumber,
+    span: 1,
+    label: c.description,
+  }))
 }
 
 function FancyLoader() {
@@ -370,20 +382,43 @@ export default function ResultsPage() {
   )}
 </section>
 
-              {/* Diff viewer */}
-              <section className="mb-4">
-                <QueryComparison
-                  ref={cmpRef}
-                  oldQuery={oldQuery}
-                  newQuery={newQuery}
-                  showTitle={false}
-                  syncScrollEnabled={syncEnabled}
-                />
-                <div className="flex items-center justify-center text-xs text-white/60 mt-1">
-                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
-                  Scroll for Changes & AI Analysis
-                </div>
-              </section>
+            {/* Diff + MiniMap — same fixed height */}
+<section className="mt-1">
+  <div className="flex items-stretch gap-3">
+    {/* LEFT: main diff, fixed height with its own scroll */}
+    <div className="flex-1 min-w-0 h-[90vh]">
+      {/* If your QueryComparison doesn’t auto-fill height, wrap it */}
+      <div className="h-full overflow-auto rounded-xl">
+        <QueryComparison
+          ref={cmpRef}
+          oldQuery={oldQuery}
+          newQuery={newQuery}
+          showTitle={false}
+          syncScrollEnabled={syncEnabled}
+        />
+      </div>
+    </div>
+
+    {/* RIGHT: minimap, exact same height */}
+    <div className="hidden lg:block h-[86vh]">
+      <MiniMap
+        totalLines={Math.max(
+          oldQuery ? oldQuery.split("\n").length : 0,
+          newQuery ? newQuery.split("\n").length : 0
+        )}
+        changes={toMiniChanges(analysis)}
+        onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
+        className="w-6 h-full"  // width + match height
+      />
+    </div>
+  </div>
+
+  <div className="flex items-center justify-center text-xs text-white/60 mt-1">
+    <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+    Scroll for Changes & AI Analysis
+  </div>
+</section>
+
 
               {/* Lower panels */}
               <section className="grid lg:grid-cols-2 gap-8">
