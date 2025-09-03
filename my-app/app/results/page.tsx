@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { Card, CardContent } from "@/components/ui/card"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
-import { Home, Zap, AlertCircle, BarChart3, ChevronDown } from "lucide-react"
+import { Home, Zap, AlertCircle, BarChart3, ChevronDown, Loader2 } from "lucide-react"
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
@@ -115,11 +115,35 @@ export default function ResultsPage() {
   const [loading, setLoading] = useState(true)
   const startedRef = useRef(false)
 
-  const audioRef = useRef<HTMLAudioElement | null>(null)
-  const switchAudioRef = useRef<HTMLAudioElement | null>(null)
-  const playedRef = useRef(false)
+  const doneAudioRef = useRef<HTMLAudioElement | null>(null)   // loadingdone.mp3
+  const switchAudioRef = useRef<HTMLAudioElement | null>(null) // switch.mp3
   const cmpRef = useRef<QueryComparisonHandle>(null)
+
   const [syncEnabled, setSyncEnabled] = useState(true)
+  const [summary, setSummary] = useState<string>("")
+  const [summarizing, setSummarizing] = useState(false)
+  const summaryRef = useRef<HTMLDivElement | null>(null)
+
+  const analysisDoneSoundPlayedRef = useRef(false)
+
+  const playDoneSound = async () => {
+    const el = doneAudioRef.current
+    if (!el) return
+    try {
+      el.currentTime = 0
+      el.volume = 0.5
+      await el.play()
+    } catch {
+      const resume = () => {
+        el.play().finally(() => {
+          window.removeEventListener("pointerdown", resume)
+          window.removeEventListener("keydown", resume)
+        })
+      }
+      window.addEventListener("pointerdown", resume, { once: true })
+      window.addEventListener("keydown", resume, { once: true })
+    }
+  }
 
   useEffect(() => {
     if (startedRef.current) return
@@ -166,35 +190,13 @@ export default function ResultsPage() {
     })()
   }, [router])
 
+  // Play "done" when initial analysis completes (only once)
   useEffect(() => {
-    if (!loading && !error && analysis && !playedRef.current) {
-      const el = audioRef.current
-      if (!el) return
-      el.currentTime = 0
-      el.volume = 0.5
-      el.play().then(() => {
-        playedRef.current = true
-      }).catch(() => {
-        const resume = () => {
-          el.play().finally(() => {
-            playedRef.current = true
-            window.removeEventListener("pointerdown", resume)
-            window.removeEventListener("keydown", resume)
-          })
-        }
-        window.addEventListener("pointerdown", resume, { once: true })
-        window.addEventListener("keydown", resume, { once: true })
-      })
+    if (!loading && !error && analysis && !analysisDoneSoundPlayedRef.current) {
+      analysisDoneSoundPlayedRef.current = true
+      playDoneSound()
     }
-  }, [loading, error, analysis])
-
-  useEffect(() => {
-    if (switchAudioRef.current) {
-      switchAudioRef.current.currentTime = 0
-      switchAudioRef.current.volume = 0.5
-      switchAudioRef.current.play().catch(() => {})
-    }
-  }, [syncEnabled])
+  }, [loading, error, analysis]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const displayChanges = useMemo(() => deriveDisplayChanges(analysis), [analysis])
 
@@ -204,16 +206,54 @@ export default function ResultsPage() {
     return diff.stats
   }, [oldQuery, newQuery])
 
-  const metricBadge = (label: string, goodBad: GoodBad) => (
-    <span
-      className={
-        "px-2 py-0.5 rounded text-[10px] font-medium " +
-        (goodBad === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-      }
-    >
-      {label}: {goodBad === "good" ? "Good" : "Bad"}
-    </span>
-  )
+  async function handleGenerateSummary() {
+  if (!analysis) return
+  setSummarizing(true)
+  setSummary("")
+  try {
+    const res = await fetch("/api/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        newQuery: canonicalizeSQL(newQuery),
+        analysis
+      })
+    })
+    if (res.ok) {
+      const data = await res.json()
+      setSummary(String(data?.tldr || ""))
+      setTimeout(() => {
+        summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+      }, 100)
+    } else {
+      setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
+      setTimeout(() => {
+        summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+      }, 100)
+    }
+    await playDoneSound()
+  } catch {
+    setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
+    setTimeout(() => {
+      summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    }, 100)
+    await playDoneSound()
+  } finally {
+    setSummarizing(false)
+  }
+}
+
+
+  const handleToggleSync = () => {
+    setSyncEnabled((v) => !v)
+    const el = switchAudioRef.current
+    if (!el) return
+    try {
+      el.currentTime = 0
+      el.volume = 0.5
+      el.play().catch(() => {})
+    } catch {}
+  }
 
   return (
     <div className="min-h-screen relative bg-neutral-950 text-white">
@@ -234,6 +274,7 @@ export default function ResultsPage() {
                 <BarChart3 className="w-5 h-5" />
                 <span className="font-heading font-semibold">Query Comparison</span>
               </div>
+
               {stats && (
                 <div className="hidden md:flex items-center gap-2 text-xs text-white/70">
                   <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
@@ -248,6 +289,22 @@ export default function ResultsPage() {
                   <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
                     {stats.unchanged} unchanged
                   </span>
+
+                  <Button
+                    onClick={handleGenerateSummary}
+                    disabled={summarizing}
+                    className="ml-2 h-7 px-3 text-xs border-white/20 bg-white/10 hover:bg-white/15 text-white"
+                    variant="outline"
+                  >
+                    {summarizing ? (
+                      <span className="inline-flex items-center gap-1">
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        Generating…
+                      </span>
+                    ) : (
+                      "Generate Summary"
+                    )}
+                  </Button>
                 </div>
               )}
             </div>
@@ -255,7 +312,7 @@ export default function ResultsPage() {
             {stats ? (
               <button
                 type="button"
-                onClick={() => setSyncEnabled((v) => !v)}
+                onClick={handleToggleSync}
                 role="switch"
                 aria-checked={syncEnabled}
                 title="Toggle synced scrolling"
@@ -282,7 +339,7 @@ export default function ResultsPage() {
       </header>
 
       <main className="relative z-10">
-        <audio ref={audioRef} src="/loadingdone.mp3" preload="auto" />
+        <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" />
 
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-8">
@@ -317,121 +374,162 @@ export default function ResultsPage() {
               </section>
 
               <section className="grid lg:grid-cols-2 gap-8">
-                <Card className="bg-white border-gray-200 shadow-lg">
-                  <CardContent className="p-5">
-                    <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
-                    <div className="h-[28rem] overflow-y-auto">
-                      {deriveDisplayChanges(analysis).length > 0 ? (
-                        <div className="space-y-3">
-                          {deriveDisplayChanges(analysis).map((chg, index) => {
-                            const jumpSide: "old" | "new" | "both" =
-                              chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
-                            return (
-                              <button
-                                key={index}
-                                className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                                onClick={(e) => {
-                                  cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-                                  ;(e.currentTarget as HTMLButtonElement).blur()
-                                }}
-                                onKeyDown={(e) => {
-                                  if (e.key === "Enter" || e.key === " ") {
-                                    e.preventDefault()
+                {/* LEFT COLUMN */}
+                <div className="space-y-8">
+                  <Card className="bg-white border-gray-200 shadow-lg">
+                    <CardContent className="p-5">
+                      <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
+                      <div className="h-[28rem] overflow-y-auto">
+                        {deriveDisplayChanges(analysis).length > 0 ? (
+                          <div className="space-y-3">
+                            {deriveDisplayChanges(analysis).map((chg, index) => {
+                              const jumpSide: "old" | "new" | "both" =
+                                chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
+                              return (
+                                <button
+                                  key={index}
+                                  className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                                  onClick={(e) => {
                                     cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
                                     ;(e.currentTarget as HTMLButtonElement).blur()
-                                  }
-                                }}
-                              >
-                                <div className="flex items-center gap-2 mb-2">
-                                  <span
-                                    className={`px-2 py-1 rounded text-xs font-medium transition ${
-                                      chg.type === "addition"
-                                        ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                        : chg.type === "deletion"
-                                        ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                                        : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                                    }`}
-                                  >
-                                    {chg.type}
-                                  </span>
-                                  <span className="text-xs text-gray-500">
-                                    {chg.side} · line {chg.lineNumber}
-                                  </span>
-                                </div>
-                                <p className="text-gray-800 text-sm">{chg.description}</p>
-                              </button>
-                            )
-                          })}
-                        </div>
-                      ) : (
-                        <div className="flex items-center justify-center h-full text-gray-500">
-                          <p>No changes detected.</p>
-                        </div>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card className="bg-white border-gray-200 shadow-lg">
-                  <CardContent className="p-5">
-                    <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
-                    <div className="h-[28rem] overflow-y-auto">
-                      <div className="space-y-4">
-                        {deriveDisplayChanges(analysis).length > 0 ? (
-                          deriveDisplayChanges(analysis).map((chg, index) => (
-                            <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                              <div className="flex items-start gap-4">
-                                <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                                  <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                                    Line {chg.lineNumber}
-                                  </span>
-                                  <span
-                                    className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                                      chg.type === "addition"
-                                        ? "bg-emerald-100 text-emerald-700"
-                                        : chg.type === "deletion"
-                                        ? "bg-rose-100 text-rose-700"
-                                        : "bg-amber-100 text-amber-700"
-                                    }`}
-                                  >
-                                    {chg.type}
-                                  </span>
-                                  <div className="flex flex-col gap-1 pt-1">
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === " ") {
+                                      e.preventDefault()
+                                      cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+                                      ;(e.currentTarget as HTMLButtonElement).blur()
+                                    }
+                                  }}
+                                >
+                                  <div className="flex items-center gap-2 mb-2">
                                     <span
-                                      className={
-                                        "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                        (chg.syntax === "good"
-                                          ? "bg-emerald-100 text-emerald-700"
-                                          : "bg-rose-100 text-rose-700")
-                                      }
+                                      className={`px-2 py-1 rounded text-xs font-medium transition ${
+                                        chg.type === "addition"
+                                          ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
+                                          : chg.type === "deletion"
+                                          ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                                          : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
+                                      }`}
                                     >
-                                      Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
+                                      {chg.type}
                                     </span>
-                                    <span
-                                      className={
-                                        "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                        (chg.performance === "good"
-                                          ? "bg-emerald-100 text-emerald-700"
-                                          : "bg-rose-100 text-rose-700")
-                                      }
-                                    >
-                                      Performance: {chg.performance === "good" ? "Good" : "Bad"}
+                                    <span className="text-xs text-gray-500">
+                                      {chg.side} · line {chg.lineNumber}
                                     </span>
                                   </div>
-                                </div>
-                                <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
-                              </div>
-                            </div>
-                          ))
+                                  <p className="text-gray-800 text-sm">{chg.description}</p>
+                                </button>
+                              )
+                            })}
+                          </div>
                         ) : (
-                          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                            <p className="text-gray-700 text-sm leading-relaxed">{analysis.summary}</p>
+                          <div className="flex items-center justify-center h-full text-gray-500">
+                            <p>No changes detected.</p>
                           </div>
                         )}
                       </div>
-                    </div>
-                  </CardContent>
-                </Card>
+                    </CardContent>
+                  </Card>
+
+                  {(summarizing || summary) && (
+                      <Card ref={summaryRef} className="bg-white border-gray-200 shadow-lg">
+                      <CardContent className="p-5">
+                        <h3 className="text-slate-900 font-semibold mb-4">Summary</h3>
+                        <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
+                          {summarizing && !summary ? (
+                            <div className="space-y-4">
+                              <div className="inline-flex items-center gap-2 text-gray-700">
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                                <span>Generating summary…</span>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
+                                <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
+                                <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
+                                <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
+                              </div>
+                            </div>
+                          ) : (
+                            <p className="text-gray-800 text-sm leading-relaxed">{summary}</p>
+                          )}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+
+                {/* RIGHT COLUMN */}
+                <div className="space-y-8">
+                  <Card className="bg-white border-gray-200 shadow-lg">
+                    <CardContent className="p-5">
+                      <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
+                      <div className="h-[28rem] overflow-y-auto">
+                        <div className="space-y-4">
+                          {deriveDisplayChanges(analysis).length > 0 ? (
+                            deriveDisplayChanges(analysis).map((chg, index) => (
+                              <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                                <div className="flex items-start gap-4">
+                                  <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
+                                    <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
+                                      Line {chg.lineNumber}
+                                    </span>
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                                        chg.type === "addition"
+                                          ? "bg-emerald-100 text-emerald-700"
+                                          : chg.type === "deletion"
+                                          ? "bg-rose-100 text-rose-700"
+                                          : "bg-amber-100 text-amber-700"
+                                      }`}
+                                    >
+                                      {chg.type}
+                                    </span>
+                                    <div className="flex flex-col gap-1 pt-1">
+                                      <span
+                                        className={
+                                          "px-2 py-0.5 rounded text-[10px] font-medium " +
+                                          (chg.syntax === "good"
+                                            ? "bg-emerald-100 text-emerald-700"
+                                            : "bg-rose-100 text-rose-700")
+                                        }
+                                      >
+                                        Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
+                                      </span>
+                                      <span
+                                        className={
+                                          "px-2 py-0.5 rounded text-[10px] font-medium " +
+                                          (chg.performance === "good"
+                                            ? "bg-emerald-100 text-emerald-700"
+                                            : "bg-rose-100 text-rose-700")
+                                        }
+                                      >
+                                        Performance: {chg.performance === "good" ? "Good" : "Bad"}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                              <p className="text-gray-700 text-sm leading-relaxed">{analysis.summary}</p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  {false && (
+                    <Card className="bg-white border-gray-200 shadow-lg">
+                      <CardContent className="p-5">
+                        <h3 className="text-slate-900 font-semibold mb-4">[Fourth Panel]</h3>
+                        <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4" />
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
               </section>
             </div>
           )}
