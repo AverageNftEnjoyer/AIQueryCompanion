@@ -141,6 +141,7 @@ export default function ResultsPage() {
 
   const doneAudioRef = useRef<HTMLAudioElement | null>(null)
   const switchAudioRef = useRef<HTMLAudioElement | null>(null)
+  const miniClickAudioRef = useRef<HTMLAudioElement | null>(null) // NEW: use same sound as minimap
   const cmpRef = useRef<QueryComparisonHandle>(null)
 
   const [syncEnabled, setSyncEnabled] = useState(true)
@@ -175,6 +176,20 @@ export default function ResultsPage() {
       el.pause()
       el.currentTime = 0
       el.volume = 0.5
+      el.play().catch(() => {})
+    } catch {}
+  }
+
+  // NEW: play same sound the minimap uses when a change is clicked
+  const playMiniClick = () => {
+    if (!soundOn) return
+    const el = miniClickAudioRef.current
+    if (!el) return
+    try {
+      el.muted = false
+      el.pause()
+      el.currentTime = 0
+      el.volume = 0.6
       el.play().catch(() => {})
     } catch {}
   }
@@ -249,7 +264,7 @@ export default function ResultsPage() {
 
   // keep <audio> elements in sync with mute and kill pending resumes
   useEffect(() => {
-    const audios = [doneAudioRef.current, switchAudioRef.current].filter(Boolean) as HTMLAudioElement[]
+    const audios = [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].filter(Boolean) as HTMLAudioElement[]
     audios.forEach((a) => (a.muted = !soundOn))
 
     if (!soundOn) {
@@ -363,7 +378,7 @@ export default function ResultsPage() {
       } else {
         // ensure silence immediately + no deferred resumes
         clearResumeHandler()
-        ;[doneAudioRef.current, switchAudioRef.current].forEach((a) => {
+        ;[doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].forEach((a) => {
           try {
             if (a) {
               a.muted = true
@@ -477,6 +492,8 @@ export default function ResultsPage() {
         {/* Muted bound to state as well for belt & suspenders */}
         <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" muted={!soundOn} />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" muted={!soundOn} />
+        {/* NEW: use the same sound the minimap uses */}
+        <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="auto" muted={!soundOn} />
 
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
           {loading && !error && <FancyLoader />}
@@ -523,17 +540,16 @@ export default function ResultsPage() {
               <section className="mt-1">
                 <div className="flex items-stretch gap-3">
                   <div className="flex-1 min-w-0 h-[90vh]">
-                    <div className="h-full overflow-auto rounded-xl">
-                      <QueryComparison
-                        ref={cmpRef}
-                        oldQuery={oldQuery}
-                        newQuery={newQuery}
-                        showTitle={false}
-                        syncScrollEnabled={syncEnabled}
-                      />
-                    </div>
+                    <div id="query-comparison" className="h-full overflow-auto rounded-xl">
+                     <QueryComparison
+                      ref={cmpRef}
+                      oldQuery={oldQuery}
+                      newQuery={newQuery}
+                      showTitle={false}
+                      syncScrollEnabled={syncEnabled}
+                    />
                   </div>
-
+                  </div>
                   <div className="hidden lg:block h-[86vh]">
                     <MiniMap
                       totalLines={Math.max(
@@ -548,7 +564,7 @@ export default function ResultsPage() {
                           : "bg-white/5 border border-white/10 hover:border-white/20"
                         }`}
                       soundEnabled={soundOn}
-                        />
+                    />
                   </div>
                 </div>
 
@@ -578,20 +594,20 @@ export default function ResultsPage() {
                     )}
                   </button>
                 </div>
-                              </section>
+              </section>
 
               {/* Lower panels */}
-              <section className="grid lg:grid-cols-2 gap-8">
+              <section className="grid lg-grid-cols-2 lg:grid-cols-2 gap-8">
                 {/* LEFT COLUMN */}
                 <div className="space-y-8">
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
-                        <div
-                          className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
-                          style={{ scrollbarGutter: "stable" }}
-                          tabIndex={0}>                     
-                          {displayChanges.length > 0 ? (
+                      <div
+                        className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
+                        style={{ scrollbarGutter: "stable" }}
+                        tabIndex={0}>
+                        {displayChanges.length > 0 ? (
                           <div className="space-y-3">
                             {displayChanges.map((chg, index) => {
                               const jumpSide: "old" | "new" | "both" =
@@ -600,13 +616,19 @@ export default function ResultsPage() {
                                 <button
                                   key={index}
                                   className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                                  onClick={(e) => {
+                                 onClick={(e) => {
+                                    e.preventDefault()
+                                    playSfx(miniClickAudioRef)
                                     cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+                                    document
+                                      .querySelector("#query-comparison")
+                                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
                                     ;(e.currentTarget as HTMLButtonElement).blur()
                                   }}
-                                  onKeyDown={(e) => {
+                                    onKeyDown={(e) => {
                                     if (e.key === "Enter" || e.key === " ") {
                                       e.preventDefault()
+                                      playMiniClick()
                                       cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
                                       ;(e.currentTarget as HTMLButtonElement).blur()
                                     }
@@ -674,10 +696,11 @@ export default function ResultsPage() {
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
-                        <div
-                          className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
-                          style={{ scrollbarGutter: "stable" }}
-                          tabIndex={0}>
+                      <div
+                        className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
+                        style={{ scrollbarGutter: "stable" }}
+                        tabIndex={0}
+                      >
                         <div className="space-y-4">
                           {displayChanges.length > 0 ? (
                             displayChanges.map((chg, index) => (

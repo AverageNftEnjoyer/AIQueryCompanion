@@ -13,7 +13,7 @@ import { BarChart3 } from "lucide-react"
 
 export type QueryJumpSide = "old" | "new" | "both"
 export type QueryComparisonHandle = {
-  scrollTo: (opts: { side: QueryJumpSide; line: number }) => void
+  scrollTo: (opts: { side: QueryJumpSide; line: number; flash?: boolean }) => void
 }
 
 interface QueryComparisonProps {
@@ -104,13 +104,30 @@ function QueryComparisonInner(
     if (src && dst) syncOther(src, dst)
   }
 
+  // --- Flash highlight helper ---
+  function flashLine(side: "old" | "new", line: number) {
+    const pane = side === "old" ? leftRef.current : rightRef.current
+    if (!pane) return
+    const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`)
+    if (!el) return
+
+    el.classList.remove("qa-flash-highlight")
+    // Force reflow to restart the animation if the same line is clicked repeatedly
+    void el.offsetWidth
+    el.classList.add("qa-flash-highlight")
+
+    // Safety cleanup
+    window.setTimeout(() => el.classList.remove("qa-flash-highlight"), 1500)
+  }
+
   useImperativeHandle(ref, () => ({
-    scrollTo: ({ side, line }) => {
+    scrollTo: ({ side, line, flash = true }) => {
       if (side === "both") {
         const l = leftRef.current
         const r = rightRef.current
         if (!l || !r) return
-        const tR = r.querySelector<HTMLElement>(`[data-line="${line}"]`)
+        const tR = r.querySelector<HTMLElement>(`[data-side="new"][data-line="${line}"]`) ||
+                   r.querySelector<HTMLElement>(`[data-line="${line}"]`)
         suppressSync.current.old = true
         suppressSync.current.new = true
         if (tR) r.scrollTop = tR.offsetTop - r.clientHeight / 2
@@ -118,13 +135,17 @@ function QueryComparisonInner(
         const rh = r.scrollLeft / Math.max(1, r.scrollWidth - r.clientWidth)
         l.scrollTop = rv * Math.max(1, l.scrollHeight - l.clientHeight)
         l.scrollLeft = rh * Math.max(1, l.scrollWidth - l.clientWidth)
+        if (flash) flashLine("new", line) // prefer flashing the updated pane for "both"
         return
       }
 
       const primary = side === "old" ? leftRef.current : rightRef.current
       if (!primary) return
       suppressSync.current[side] = true
-      const target = primary.querySelector<HTMLElement>(`[data-line="${line}"]`)
+      const target =
+        primary.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`) ||
+        primary.querySelector<HTMLElement>(`[data-line="${line}"]`)
+
       if (target) {
         primary.scrollTop = target.offsetTop - primary.clientHeight / 2
       } else {
@@ -132,6 +153,8 @@ function QueryComparisonInner(
         const ratio = Math.max(0, Math.min(1, (line - 1) / Math.max(1, total - 1)))
         primary.scrollTop = ratio * Math.max(1, primary.scrollHeight - primary.clientHeight)
       }
+
+      if (flash) flashLine(side, line)
     },
   }))
 
@@ -145,14 +168,13 @@ function QueryComparisonInner(
     const refDiv = side === "old" ? leftRef : rightRef
     return (
       <div
-          ref={refDiv}
-          onScroll={() => onPaneScroll(side)}
-          className="rounded-lg border border-gray-200 bg-white overflow-auto hover-scroll focus:outline-none"
-          style={{ ...heightStyle, scrollbarGutter: "stable" }}
-          aria-label={ariaLabel}
-          tabIndex={0}
-        >
-
+        ref={refDiv}
+        onScroll={() => onPaneScroll(side)}
+        className="rounded-lg border border-gray-200 bg-white overflow-auto hover-scroll focus:outline-none"
+        style={{ ...heightStyle, scrollbarGutter: "stable" }}
+        aria-label={ariaLabel}
+        tabIndex={0}
+      >
         <div className="w-max p-4 font-mono text-[13px] leading-relaxed text-slate-800">
           {lines.map((line, idx) => {
             const n = idx + 1
@@ -160,7 +182,12 @@ function QueryComparisonInner(
             const rowBg =
               tag === "modified" ? theme.modified : tag === "removed" ? theme.removed : tag === "added" ? theme.added : ""
             return (
-              <div key={n} data-line={n} className={`${theme.baseRow} ${rowBg}`}>
+              <div
+                key={n}
+                data-side={side}
+                data-line={n}
+                className={`${theme.baseRow} ${rowBg}`}
+              >
                 <span className={`w-10 shrink-0 mt-0.5 text-xs ${theme.num}`}>{n}</span>
                 <div className={`flex items-center gap-2 ${theme.code} shrink-0`}>
                   <code className="whitespace-pre pr-4">{renderHighlightedSQL(line)}</code>
@@ -174,30 +201,52 @@ function QueryComparisonInner(
   }
 
   return (
-    <div className={className}>
-      <Card className="mb-6 bg-white border-gray-200">
-        {showTitle && (
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center gap-2 font-heading text-slate-900">
-              <BarChart3 className="w-5 h-5" />
-              Query Comparison
-            </CardTitle>
-          </CardHeader>
-        )}
-        <CardContent className="pt-2">
-          <div className="grid lg:grid-cols-2 gap-6">
-            <div>
-              <h3 className={`font-semibold mb-3 ${theme.header}`}>Original Query</h3>
-              {renderSide(canonicalOld, oldMap, "Original query", "old")}
+    <>
+      <div className={className}>
+        <Card className="mb-6 bg-white border-gray-200">
+          {showTitle && (
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 font-heading text-slate-900">
+                <BarChart3 className="w-5 h-5" />
+                Query Comparison
+              </CardTitle>
+            </CardHeader>
+          )}
+          <CardContent className="pt-2">
+            <div className="grid lg:grid-cols-2 gap-6">
+              <div>
+                <h3 className={`font-semibold mb-3 ${theme.header}`}>Original Query</h3>
+                {renderSide(canonicalOld, oldMap, "Original query", "old")}
+              </div>
+              <div>
+                <h3 className={`font-semibold mb-3 ${theme.header}`}>Updated Query</h3>
+                {renderSide(canonicalNew, newMap, "Updated query", "new")}
+              </div>
             </div>
-            <div>
-              <h3 className={`font-semibold mb-3 ${theme.header}`}>Updated Query</h3>
-              {renderSide(canonicalNew, newMap, "Updated query", "new")}
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Global CSS for the flash animation */}
+      <style jsx global>{`
+        @keyframes qa-flash {
+          0%   { background-color: rgba(250, 204, 21, 0.65); box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.85); }
+          60%  { background-color: rgba(250, 204, 21, 0.28); box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.55); }
+          100% { background-color: transparent; box-shadow: inset 0 0 0 0 rgba(250, 204, 21, 0); }
+        }
+        .qa-flash-highlight {
+          animation: qa-flash 1.1s ease-out;
+          transition: background-color 0.8s ease-out;
+          border-radius: 0.25rem;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .qa-flash-highlight {
+            animation-duration: 0ms;
+            background-color: rgba(250, 204, 21, 0.35);
+          }
+        }
+      `}</style>
+    </>
   )
 }
 

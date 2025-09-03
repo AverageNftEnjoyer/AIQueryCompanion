@@ -37,7 +37,7 @@ export function MiniMap({
   soundSrc = "/minimapbar.mp3",
   soundEnabled = true,
 }: MiniMapProps) {
-  const minBlock = 5
+  const minBlock = 6
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null)
 
   const playClick = () => {
