@@ -115,8 +115,8 @@ export default function ResultsPage() {
   const [loading, setLoading] = useState(true)
   const startedRef = useRef(false)
 
-  const doneAudioRef = useRef<HTMLAudioElement | null>(null)   // loadingdone.mp3
-  const switchAudioRef = useRef<HTMLAudioElement | null>(null) // switch.mp3
+  const doneAudioRef = useRef<HTMLAudioElement | null>(null)
+  const switchAudioRef = useRef<HTMLAudioElement | null>(null)
   const cmpRef = useRef<QueryComparisonHandle>(null)
 
   const [syncEnabled, setSyncEnabled] = useState(true)
@@ -190,7 +190,6 @@ export default function ResultsPage() {
     })()
   }, [router])
 
-  // Play "done" when initial analysis completes (only once)
   useEffect(() => {
     if (!loading && !error && analysis && !analysisDoneSoundPlayedRef.current) {
       analysisDoneSoundPlayedRef.current = true
@@ -207,42 +206,41 @@ export default function ResultsPage() {
   }, [oldQuery, newQuery])
 
   async function handleGenerateSummary() {
-  if (!analysis) return
-  setSummarizing(true)
-  setSummary("")
-  try {
-    const res = await fetch("/api/summarize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        newQuery: canonicalizeSQL(newQuery),
-        analysis
+    if (!analysis) return
+    setSummarizing(true)
+    setSummary("")
+    try {
+      const res = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newQuery: canonicalizeSQL(newQuery),
+          analysis
+        })
       })
-    })
-    if (res.ok) {
-      const data = await res.json()
-      setSummary(String(data?.tldr || ""))
-      setTimeout(() => {
-        summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-      }, 100)
-    } else {
+      if (res.ok) {
+        const data = await res.json()
+        setSummary(String(data?.tldr || ""))
+        setTimeout(() => {
+          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+        }, 100)
+      } else {
+        setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
+        setTimeout(() => {
+          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+        }, 100)
+      }
+      await playDoneSound()
+    } catch {
       setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
       setTimeout(() => {
         summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
       }, 100)
+      await playDoneSound()
+    } finally {
+      setSummarizing(false)
     }
-    await playDoneSound()
-  } catch {
-    setSummary("This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.")
-    setTimeout(() => {
-      summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-    }, 100)
-    await playDoneSound()
-  } finally {
-    setSummarizing(false)
   }
-}
-
 
   const handleToggleSync = () => {
     setSyncEnabled((v) => !v)
@@ -259,90 +257,84 @@ export default function ResultsPage() {
     <div className="min-h-screen relative bg-neutral-950 text-white">
       {gridBg}
 
+
       <header className="relative z-10 border-b border-white/10 bg-black/30 backdrop-blur">
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
-          <div className="flex items-center justify-between">
-            <Link
-              href="/"
-              className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
-            >
-              <Home className="w-5 h-5 text-white" />
-            </Link>
+  <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
+    <div className="grid grid-cols-3 items-center gap-3">
+      {/* Left: Home */}
+      <div className="flex">
+        <Link
+          href="/"
+          className="inline-flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 transition"
+        >
+          <Home className="w-5 h-5 text-white" />
+        </Link>
+      </div>
 
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 text-white mr-2">
-                <BarChart3 className="w-5 h-5" />
-                <span className="font-heading font-semibold">Query Comparison</span>
-              </div>
+      {/* Center: Title */}
+      <div className="flex items-center justify-center">
+        <span className="inline-flex items-center gap-2">
+          <BarChart3 className="w-5 h-5 text-white/80" />
+          <span className="font-heading font-semibold text-white text-lg">
+            AI-Powered Query Companion
+          </span>
+        </span>
+      </div>
 
-              {stats && (
-                <div className="hidden md:flex items-center gap-2 text-xs text-white/70">
-                  <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
-                    {stats.additions} additions
-                  </span>
-                  <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
-                    {stats.modifications} modifications
-                  </span>
-                  <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
-                    {stats.deletions} deletions
-                  </span>
-                  <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
-                    {stats.unchanged} unchanged
-                  </span>
+      {/* Right: Generate Summary (pill style) + Sync scroll */}
+      <div className="flex items-center justify-end gap-3">
+        {/* Generate Summary — styled to match the Sync scroll pill */}
+        <button
+          type="button"
+          onClick={handleGenerateSummary}
+          disabled={summarizing}
+          className={`inline-flex items-center gap-2 pl-3 pr-3 h-8 rounded-full border border-white/15
+                      bg-white/5 hover:bg-white/10 text-white transition whitespace-nowrap
+                      disabled:opacity-60 disabled:cursor-not-allowed`}
+          title="Generate a plain-English summary of the new query"
+        >
+          {summarizing ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm">Generating…</span>
+            </>
+          ) : (
+            <span className="text-sm">Generate Summary</span>
+          )}
+        </button>
 
-                  <Button
-                    onClick={handleGenerateSummary}
-                    disabled={summarizing}
-                    className="ml-2 h-7 px-3 text-xs border-white/20 bg-white/10 hover:bg-white/15 text-white"
-                    variant="outline"
-                  >
-                    {summarizing ? (
-                      <span className="inline-flex items-center gap-1">
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        Generating…
-                      </span>
-                    ) : (
-                      "Generate Summary"
-                    )}
-                  </Button>
-                </div>
-              )}
-            </div>
-
-            {stats ? (
-              <button
-                type="button"
-                onClick={handleToggleSync}
-                role="switch"
-                aria-checked={syncEnabled}
-                title="Toggle synced scrolling"
-                className="ml-2 inline-flex items-center gap-3 pl-3 pr-1 h-8 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition whitespace-nowrap"
-              >
-                <span className="tracking-tight text-sm leading-none select-none">Sync scroll</span>
-                <span
-                  className={`relative w-8 h-5 rounded-full shrink-0 transition ${
-                    syncEnabled ? "bg-emerald-500/80" : "bg-white/20"
-                  }`}
-                >
-                  <span
-                    className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                      syncEnabled ? "translate-x-3" : "translate-x-0"
-                    }`}
-                  />
-                </span>
-              </button>
-            ) : (
-              <div />
-            )}
-          </div>
-        </div>
-      </header>
+        {/* Sync scroll switch (unchanged) */}
+        <button
+          type="button"
+          onClick={handleToggleSync}
+          role="switch"
+          aria-checked={syncEnabled}
+          title="Toggle synced scrolling"
+          className="inline-flex items-center gap-3 pl-3 pr-1 h-8 rounded-full border border-white/15 bg-white/5 hover:bg-white/10 transition whitespace-nowrap"
+        >
+          <span className="tracking-tight text-sm leading-none select-none">Sync scroll</span>
+          <span
+            className={`relative w-8 h-5 rounded-full shrink-0 transition ${
+              syncEnabled ? "bg-emerald-500/80" : "bg-white/20"
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
+                syncEnabled ? "translate-x-3" : "translate-x-0"
+              }`}
+            />
+          </span>
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
 
       <main className="relative z-10">
         <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" />
 
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-8">
+          <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
           {loading && !error && <FancyLoader />}
 
           {!loading && error && (
@@ -358,8 +350,28 @@ export default function ResultsPage() {
           )}
 
           {!loading && !error && analysis && (
-            <div className="space-y-10">
-              <section>
+            <div className="space-y-8">
+<section className="mt-0 mb-2">
+  {stats && (
+    <div className="flex items-center justify-center gap-2 text-xs text-white/80">
+      <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
+        {stats.additions} additions
+      </span>
+      <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
+        {stats.modifications} modifications
+      </span>
+      <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
+        {stats.deletions} deletions
+      </span>
+      <span className="px-2 py-1 rounded bg-white/10 border border-white/20">
+        {stats.unchanged} unchanged
+      </span>
+    </div>
+  )}
+</section>
+
+              {/* Diff viewer */}
+              <section className="mb-4">
                 <QueryComparison
                   ref={cmpRef}
                   oldQuery={oldQuery}
@@ -367,12 +379,13 @@ export default function ResultsPage() {
                   showTitle={false}
                   syncScrollEnabled={syncEnabled}
                 />
-                <div className="flex items-center justify-center text-xs text-white/60 -mt-2">
+                <div className="flex items-center justify-center text-xs text-white/60 mt-1">
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
                 </div>
               </section>
 
+              {/* Lower panels */}
               <section className="grid lg:grid-cols-2 gap-8">
                 {/* LEFT COLUMN */}
                 <div className="space-y-8">
@@ -432,7 +445,7 @@ export default function ResultsPage() {
                   </Card>
 
                   {(summarizing || summary) && (
-                      <Card ref={summaryRef} className="bg-white border-gray-200 shadow-lg">
+                    <Card ref={summaryRef} className="bg-white border-gray-200 shadow-lg">
                       <CardContent className="p-5">
                         <h3 className="text-slate-900 font-semibold mb-4">Summary</h3>
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">

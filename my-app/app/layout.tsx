@@ -16,8 +16,8 @@ const dmSans = DM_Sans({
 })
 
 export const metadata: Metadata = {
-  title: "Oracle Query Analyzer - AI-Powered SQL Comparison",
-  description: "Modern tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
+  title: "AI-Powered Query Companion",
+  description: "Full-stack tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
   generator: "v0.app",
 }
 

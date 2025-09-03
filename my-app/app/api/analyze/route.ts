@@ -595,7 +595,9 @@ function groupChangesSmart(
 
 export async function POST(req: Request) {
   try {
-    const { oldQuery, newQuery } = (await req.json()) as { oldQuery: string; newQuery: string }
+    const body = await req.json()
+    const { oldQuery, newQuery, noAI } = body as { oldQuery: string; newQuery: string; noAI?: boolean }
+
     if (typeof oldQuery !== "string" || typeof newQuery !== "string") {
       return NextResponse.json({ error: "oldQuery and newQuery are required strings" }, { status: 400 })
     }
@@ -628,12 +630,16 @@ export async function POST(req: Request) {
       })
     }
 
-    const payload = buildUserPayload(canonOld, canonNew, changes)
-    const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
+    // Env flag OR per-request flag from client
+    const AI_DISABLED = process.env.DISABLE_AI_ANALYSIS === "true" || noAI === true
 
     let modelExplanations: ChangeExplanation[] = []
-    if (provider === "azure") modelExplanations = await explainWithAzure(payload)
-    else modelExplanations = await explainWithXAI(payload)
+    if (!AI_DISABLED) {
+      const payload = buildUserPayload(canonOld, canonNew, changes)
+      const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
+      if (provider === "azure") modelExplanations = await explainWithAzure(payload)
+      else modelExplanations = await explainWithXAI(payload)
+    }
 
     const expMap = new Map<number, ChangeExplanation>()
     modelExplanations.forEach((e) => {
@@ -644,12 +650,14 @@ export async function POST(req: Request) {
       const m = expMap.get(idx) as ChangeExplanation | undefined
       let explanation =
         m?.explanation ||
-        "This change adjusts the SQL, but the service could not infer details confidently. Review surrounding context to confirm the impact on rows, grouping, and filters."
+        (AI_DISABLED
+          ? "AI analysis is currently disabled, Dev testing in progress."
+          : "This change adjusts the SQL, but details couldn’t be inferred confidently. Review surrounding context to confirm impact.")
 
-      // Append targeted one-liners only when ratings are bad
       const extra: string[] = []
       if ((m as any)?._syntax_explanation && m?.syntax === "bad") extra.push(`Syntax: ${(m as any)._syntax_explanation}`)
-      if ((m as any)?._performance_explanation && m?.performance === "bad") extra.push(`Performance: ${(m as any)._performance_explanation}`)
+      if ((m as any)?._performance_explanation && m?.performance === "bad")
+        extra.push(`Performance: ${(m as any)._performance_explanation}`)
       if (extra.length) explanation = `${explanation} ${extra.join(" ")}`
 
       return {
@@ -657,14 +665,15 @@ export async function POST(req: Request) {
         explanation,
         syntax: m?.syntax ?? "good",
         performance: m?.performance ?? "good",
-        // Keep structured metadata available for UI (optional)
-        meta: m ? {
-          clauses: (m as any)._clauses ?? [],
-          change_kind: (m as any)._change_kind,
-          business_impact: (m as any)._business_impact ?? "none",
-          risk: (m as any)._risk ?? "low",
-          suggestions: (m as any)._suggestions ?? []
-        } : undefined
+        meta: m
+          ? {
+              clauses: (m as any)._clauses ?? [],
+              change_kind: (m as any)._change_kind,
+              business_impact: (m as any)._business_impact ?? "none",
+              risk: (m as any)._risk ?? "low",
+              suggestions: (m as any)._suggestions ?? [],
+            }
+          : undefined,
       }
     })
 
@@ -673,7 +682,7 @@ export async function POST(req: Request) {
         acc[c.type]++
         return acc
       },
-      { addition: 0, deletion: 0, modification: 0 } as Record<ChangeType, number>
+      { addition: 0, deletion: 0, modification: 0 } as Record<"addition" | "deletion" | "modification", number>
     )
 
     const summary = `Detected ${finalChanges.length} substantive changes — ${counts.addition} additions, ${counts.modification} modifications, ${counts.deletion} deletions.`
