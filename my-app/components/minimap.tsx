@@ -18,8 +18,8 @@ interface MiniMapProps {
   changes: MiniChange[]
   onJump: (opts: { side: Side; line: number }) => void
   className?: string
-  /** Optional: override sound source; defaults to /minimapbar.mp3 */
   soundSrc?: string
+  soundEnabled?: boolean
 }
 
 const colorFor = (t: ChangeType) =>
@@ -35,20 +35,35 @@ export function MiniMap({
   onJump,
   className,
   soundSrc = "/minimapbar.mp3",
+  soundEnabled = true,
 }: MiniMapProps) {
   const minBlock = 5
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null)
 
   const playClick = () => {
+    if (!soundEnabled) return
     const el = clickAudioRef.current
     if (!el) return
     try {
+      el.muted = !soundEnabled
       el.pause()
       el.currentTime = 0
       el.volume = 0.6
       el.play().catch(() => {})
     } catch {}
   }
+
+  React.useEffect(() => {
+    const el = clickAudioRef.current
+    if (!el) return
+    el.muted = !soundEnabled
+    if (!soundEnabled) {
+      try {
+        el.pause()
+        el.currentTime = 0
+      } catch {}
+    }
+  }, [soundEnabled])
 
   return (
     <div
@@ -60,8 +75,7 @@ export function MiniMap({
       role="navigation"
       aria-label="Change minimap"
     >
-      {/* Preload the click sound */}
-      <audio ref={clickAudioRef} src={soundSrc} preload="auto" />
+      <audio ref={clickAudioRef} src={soundSrc} preload="auto" muted={!soundEnabled} />
 
       {changes.map((c, i) => {
         const span = Math.max(1, c.span ?? 1)
@@ -75,7 +89,7 @@ export function MiniMap({
             onClick={(e) => {
               e.preventDefault()
               playClick()
-              onJump({ side: c.side, line: c.lineNumber })
+              onJump({ side: c.side as Side, line: c.lineNumber })
             }}
             className={`absolute left-0 right-0 ${colorFor(c.type)} transition-opacity`}
             style={{

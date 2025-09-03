@@ -151,7 +151,7 @@ export default function QueryAnalyzer() {
               <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-white/5 border border-white/10">
                 <GitCompare className="w-5 h-5 text-white" />
               </div>
-              <h1 className="text-xl md:text-2xl font-heading font-semibold text-white">Oracle Query Analyzer</h1>
+              <h1 className="text-xl md:text-2xl font-heading font-semibold text-white">AI-Powered Query Companion</h1>
             </div>
           </div>
         </header>

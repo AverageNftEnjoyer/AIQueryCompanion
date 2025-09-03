@@ -9,6 +9,8 @@ import { Button } from "@/components/ui/button"
 import { MiniMap } from "@/components/minimap"
 import {
   Home,
+  Bell,
+  BellOff,
   Zap,
   AlertCircle,
   BarChart3,
@@ -146,7 +148,7 @@ export default function ResultsPage() {
   const [summarizing, setSummarizing] = useState(false)
   const summaryRef = useRef<HTMLDivElement | null>(null)
 
-  // Local “Light UI” toggle (only header & background)
+  const [soundOn, setSoundOn] = useState(true)
   const [lightUI, setLightUI] = useState<boolean>(() => {
     if (typeof window === "undefined") return false
     return localStorage.getItem("qa:lightUI") === "1"
@@ -154,20 +156,47 @@ export default function ResultsPage() {
 
   const analysisDoneSoundPlayedRef = useRef(false)
 
+  // --- track any deferred "resume to play" handler so we can cancel it on mute ---
+  const resumeHandlerRef = useRef<((e?: any) => void) | null>(null)
+  const clearResumeHandler = () => {
+    if (resumeHandlerRef.current) {
+      window.removeEventListener("pointerdown", resumeHandlerRef.current)
+      window.removeEventListener("keydown", resumeHandlerRef.current)
+      resumeHandlerRef.current = null
+    }
+  }
+
+  // ---- SFX helper (respects mute) ----
+  const playSfx = (ref: React.RefObject<HTMLAudioElement>) => {
+    if (!soundOn) return
+    const el = ref.current
+    if (!el) return
+    try {
+      el.pause()
+      el.currentTime = 0
+      el.volume = 0.5
+      el.play().catch(() => {})
+    } catch {}
+  }
+
+  // Done sound with deferred handler tracking
   const playDoneSound = async () => {
+    if (!soundOn) return
     const el = doneAudioRef.current
     if (!el) return
     try {
+      clearResumeHandler()
+      el.pause()
       el.currentTime = 0
       el.volume = 0.5
       await el.play()
     } catch {
       const resume = () => {
-        el.play().finally(() => {
-          window.removeEventListener("pointerdown", resume)
-          window.removeEventListener("keydown", resume)
+        el!.play().finally(() => {
+          clearResumeHandler()
         })
       }
+      resumeHandlerRef.current = resume
       window.addEventListener("pointerdown", resume, { once: true })
       window.addEventListener("keydown", resume, { once: true })
     }
@@ -218,6 +247,29 @@ export default function ResultsPage() {
     })()
   }, [router])
 
+  // keep <audio> elements in sync with mute and kill pending resumes
+  useEffect(() => {
+    const audios = [doneAudioRef.current, switchAudioRef.current].filter(Boolean) as HTMLAudioElement[]
+    audios.forEach((a) => (a.muted = !soundOn))
+
+    if (!soundOn) {
+      audios.forEach((a) => {
+        try {
+          a.pause()
+          a.currentTime = 0
+        } catch {}
+      })
+      clearResumeHandler()
+    }
+  }, [soundOn])
+
+  // Load persisted sound setting
+  useEffect(() => {
+    const saved = typeof window !== "undefined" ? localStorage.getItem("qa:soundOn") : null
+    if (saved === "0") setSoundOn(false)
+  }, [])
+
+  // Play "done" when initial analysis completes (only once)
   useEffect(() => {
     if (!loading && !error && analysis && !analysisDoneSoundPlayedRef.current) {
       analysisDoneSoundPlayedRef.current = true
@@ -276,33 +328,54 @@ export default function ResultsPage() {
 
   const handleToggleSync = () => {
     setSyncEnabled((v) => !v)
-    const el = switchAudioRef.current
-    if (!el) return
-    try {
-      el.currentTime = 0
-      el.volume = 0.5
-      el.play().catch(() => {})
-    } catch {}
+    playSfx(switchAudioRef)
   }
 
   const toggleLightUI = () => {
-  // 1) Toggle + persist
-  setLightUI((v) => {
-    const next = !v
-    if (typeof window !== "undefined") {
-      localStorage.setItem("qa:lightUI", next ? "1" : "0")
-    }
-    return next
-  })
-  const el = switchAudioRef.current
-  if (!el) return
-  try {
-    el.pause()
-    el.currentTime = 0
-    el.volume = 0.5
-    el.play().catch(() => {})
-  } catch {}
-}
+    setLightUI((v) => {
+      const next = !v
+      if (typeof window !== "undefined") {
+        localStorage.setItem("qa:lightUI", next ? "1" : "0")
+      }
+      return next
+    })
+    playSfx(switchAudioRef)
+  }
+
+  const handleToggleSound = () => {
+    setSoundOn((prev) => {
+      const next = !prev
+      if (typeof window !== "undefined") {
+        localStorage.setItem("qa:soundOn", next ? "1" : "0")
+      }
+      if (next) {
+        // play a click immediately when enabling (ignore old state)
+        const el = switchAudioRef.current
+        if (el) {
+          try {
+            el.muted = false
+            el.pause()
+            el.currentTime = 0
+            el.volume = 0.5
+            el.play().catch(() => {})
+          } catch {}
+        }
+      } else {
+        // ensure silence immediately + no deferred resumes
+        clearResumeHandler()
+        ;[doneAudioRef.current, switchAudioRef.current].forEach((a) => {
+          try {
+            if (a) {
+              a.muted = true
+              a.pause()
+              a.currentTime = 0
+            }
+          } catch {}
+        })
+      }
+      return next
+    })
+  }
 
   const isLight = lightUI
   const pageBgClass = isLight ? "bg-white text-gray-900" : "bg-neutral-950 text-white"
@@ -324,7 +397,7 @@ export default function ResultsPage() {
                 href="/"
                 className={`inline-flex items-center justify-center w-10 h-10 rounded-lg transition border ${
                   isLight
-                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-900"
+                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
                     : "bg-white/5 hover:bg-white/10 border-white/10 text-white"
                 }`}
               >
@@ -334,13 +407,13 @@ export default function ResultsPage() {
 
             {/* Center: Title */}
             <div className="flex items-center justify-center">
-              <span className={`inline-flex items-center gap-2 ${isLight ? "text-gray-900" : "text-white"}`}>
+              <span className={`inline-flex items-center gap-2 ${isLight ? "text-gray-700" : "text-white"}`}>
                 <BarChart3 className="w-5 h-5" />
                 <span className="font-heading font-semibold text-lg">AI-Powered Query Companion</span>
               </span>
             </div>
 
-            {/* Right: Generate Summary + Sync + Light UI */}
+            {/* Right: Generate Summary + Sync + Light UI + Sound */}
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -348,10 +421,10 @@ export default function ResultsPage() {
                 disabled={summarizing}
                 className={`inline-flex items-center gap-2 pl-3 pr-3 h-8 rounded-full border transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed ${
                   isLight
-                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-900"
+                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
                     : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
                 }`}
-                title="Generate a plain-English summary of the new query"
+                title="Generate a basic summary of the new query"
               >
                 {summarizing ? (
                   <>
@@ -363,7 +436,7 @@ export default function ResultsPage() {
                 )}
               </button>
 
-              {/* Sync scroll — icon button with subtle hover */}
+              {/* Sync scroll — icon button */}
               <button
                 type="button"
                 onClick={handleToggleSync}
@@ -376,7 +449,7 @@ export default function ResultsPage() {
                   className={`h-5 w-5 transition ${
                     isLight
                       ? syncEnabled
-                        ? "text-gray-900"
+                        ? "text-gray-700"
                         : "text-gray-400"
                       : syncEnabled
                       ? "text-white"
@@ -385,20 +458,36 @@ export default function ResultsPage() {
                 />
               </button>
 
-              {/* Local Light UI toggle — only header & page background */}
+              {/* Light UI toggle — header & page background only */}
               <button
                 type="button"
                 onClick={toggleLightUI}
                 title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
-                className={`relative p-2 rounded-full transition ${
-                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
-                }`}
+                className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
               >
                 {isLight ? (
-                  <Sun className="h-5 w-5 text-gray-900" />
+                  <Sun className="h-5 w-5 text-gray-700" />
                 ) : (
                   <Moon className="h-5 w-5 text-white" />
                 )}
+              </button>
+
+              {/* Sound toggle */}
+              <button
+                type="button"
+                onClick={handleToggleSound}
+                aria-pressed={soundOn}
+                title={soundOn ? "Mute sounds" : "Enable sounds"}
+                className={`inline-flex items-center justify-center w-8 h-8 rounded-lg transition border border-transparent ${
+                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
+                } focus:outline-none focus-visible:ring-0`}
+              >
+                {soundOn ? (
+                  <Bell className={`h-5 w-5 ${isLight ? "text-gray-700" : "text-white"}`} />
+                ) : (
+                  <BellOff className={`h-5 w-5 ${isLight ? "text-gray-400" : "text-white/60"}`} />
+                )}
+                <span className="sr-only">{soundOn ? "Mute sounds" : "Enable sounds"}</span>
               </button>
             </div>
           </div>
@@ -406,8 +495,9 @@ export default function ResultsPage() {
       </header>
 
       <main className="relative z-10">
-        <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" />
-        <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" />
+        {/* Muted bound to state as well for belt & suspenders */}
+        <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" muted={!soundOn} />
+        <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" muted={!soundOn} />
 
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
           {loading && !error && <FancyLoader />}
@@ -474,6 +564,7 @@ export default function ResultsPage() {
                       changes={toMiniChanges(analysis)}
                       onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
                       className="w-6 h-full"
+                      soundEnabled={soundOn}   // ← add this
                     />
                   </div>
                 </div>
@@ -600,9 +691,7 @@ export default function ResultsPage() {
                                       <span
                                         className={
                                           "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                          (chg.syntax === "good"
-                                            ? "bg-emerald-100 text-emerald-700"
-                                            : "bg-rose-100 text-rose-700")
+                                          (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
                                         }
                                       >
                                         Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
@@ -610,9 +699,7 @@ export default function ResultsPage() {
                                       <span
                                         className={
                                           "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                          (chg.performance === "good"
-                                            ? "bg-emerald-100 text-emerald-700"
-                                            : "bg-rose-100 text-rose-700")
+                                          (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
                                         }
                                       >
                                         Performance: {chg.performance === "good" ? "Good" : "Bad"}
