@@ -146,12 +146,13 @@ function QueryComparisonInner(
     const refDiv = side === "old" ? leftRef : rightRef
     return (
       <div
-        ref={refDiv}
-        onScroll={() => onPaneScroll(side)}
-        className="rounded-lg border border-gray-200 bg-white overflow-auto"
-        style={heightStyle}
-        aria-label={ariaLabel}
-      >
+            ref={refDiv}
+            onScroll={() => onPaneScroll(side)}
+            className="rounded-lg border border-gray-200 bg-white overflow-auto hover-scroll focus:outline-none"
+            style={{ ...heightStyle, scrollbarGutter: "stable" }}
+            aria-label={ariaLabel}
+            tabIndex={0}
+          >
         <div className="w-max p-4 font-mono text-[13px] leading-relaxed text-slate-800">
           {lines.map((line, idx) => {
             const n = idx + 1

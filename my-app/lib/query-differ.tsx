@@ -20,45 +20,30 @@ export interface ComparisonResult {
   }
 }
 
-/** Normalize Windows CRLF to LF once. Do NOT trim or remove empty lines. */
+/** Normalize Windows CRLF to LF once. */
 function normalizeEOL(s: string) {
   return s.replace(/\r\n/g, "\n")
 }
 
-/** Escape HTML once if ever needed when emitting text nodes */
-function escapeHtml(s: string) {
-  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!))
+function rtrim(s: string) {
+  return s.replace(/\s+$/, "")
 }
 
 /**
- * Quote/comment-safe canonicalizer.
- * - Keeps string literals and comments intact.
- * - Normalizes internal whitespace between tokens (outside strings/comments).
- * - Splits common clauses/commas onto new lines for stable diffs.
- * - Keeps line numbers stable and guarantees a trailing newline.
+ * Canonicalize SQL:
+ * - Normalize whitespace (outside strings/comments)
+ * - Add clause line breaks for stable diffs
+ * - Collapse excessive blank lines
+ * - Compact punctuation-only lines (except ');') onto previous
+ * - Keep ');' on its own line
+ * - Merge standalone numbers (and number+trailing , / ) / ,)) into previous line
  */
 export function canonicalizeSQL(input: string): string {
   const lf = normalizeEOL(input).replace(/\t/g, "  ")
   let out = ""
   let i = 0
-  let inBlockComment = false
 
   while (i < lf.length) {
-    // Handle block comments (/* ... */) verbatim
-    if (!inBlockComment && lf.startsWith("/*", i)) {
-      const end = lf.indexOf("*/", i + 2)
-      if (end === -1) {
-        out += lf.slice(i) // unterminated; keep as-is
-        i = lf.length
-        break
-      } else {
-        out += lf.slice(i, end + 2)
-        i = end + 2
-        continue
-      }
-    }
-
-    // Process line-by-line to respect single-line comments (`--`)
     const nl = lf.indexOf("\n", i)
     const rawLine = lf.slice(i, nl === -1 ? lf.length : nl)
 
@@ -66,13 +51,11 @@ export function canonicalizeSQL(input: string): string {
     const code = dashDash >= 0 ? rawLine.slice(0, dashDash) : rawLine
     const comment = dashDash >= 0 ? rawLine.slice(dashDash) : ""
 
-    // Normalize whitespace in the code part while preserving string literals
+    // compress whitespace in code while preserving string literals
     let normalized = ""
     let j = 0
     while (j < code.length) {
       const ch = code[j]
-
-      // string literal processing (handles doubled single quotes as escape)
       if (ch === "'") {
         let k = j + 1
         while (k < code.length) {
@@ -84,22 +67,19 @@ export function canonicalizeSQL(input: string): string {
         j = Math.min(k + 1, code.length)
         continue
       }
-
-      // compress whitespace runs
       const ws = code.slice(j).match(/^\s+/)
       if (ws) {
         normalized += " "
         j += ws[0].length
         continue
       }
-
       normalized += code[j++]
     }
 
-    // Clause line breaks (only outside strings/comments)
+    // clause breaks for stability
     normalized = normalized
-      .replace(/,\s*/g, ", ") // stable comma spacing
-      .replace(/, /g, ",\n  ") // split list items for stable line anchoring
+      .replace(/,\s*/g, ", ")
+      .replace(/, /g, ",\n  ") // split list items
       .replace(/\bINNER JOIN\b/gi, "\nINNER JOIN")
       .replace(/\bLEFT JOIN\b/gi, "\nLEFT JOIN")
       .replace(/\bRIGHT JOIN\b/gi, "\nRIGHT JOIN")
@@ -112,36 +92,83 @@ export function canonicalizeSQL(input: string): string {
       .replace(/\bHAVING\b/gi, "\nHAVING")
       .replace(/\bUNION\b/gi, "\nUNION")
 
-    // Visual spacing before major clauses
+    // visual spacing before major clauses
     normalized = normalized.replace(
       /\n(SELECT\b|FROM\b|WHERE\b|GROUP BY\b|ORDER BY\b|HAVING\b|UNION\b|INNER JOIN\b|LEFT JOIN\b|RIGHT JOIN\b|FULL JOIN\b)/gi,
       "\n\n$1"
     )
 
-    normalized = normalized.replace(/\s+$/g, "") // strip trailing spaces
+    normalized = normalized.replace(/\s+$/g, "") 
 
     out += normalized + comment + "\n"
     i = nl === -1 ? lf.length : nl + 1
   }
 
-  // collapse 3+ blank lines to a double blank line
-  out = out.replace(/\n{3,}/g, "\n\n")
-  if (!out.endsWith("\n")) out += "\n"
-  return out
+  let cleaned = out.replace(/\n{3,}/g, "\n\n")
+
+  // ---- Punctuation/number compaction pass ----
+  const lines = cleaned.split("\n")
+  const merged: string[] = []
+  const numberLineRE = /^\d+(?:\.\d+)?(?:,|\)|,\)|\),)?$/
+
+  for (let idx = 0; idx < lines.length; idx++) {
+    let line = lines[idx]
+    const t = line.trim()
+    if (!t) continue
+
+    if (t === ");") {
+      merged.push(t)
+      continue
+    }
+
+    if (t === "," || t === "(" || t === ")" || t === ";") {
+      if (merged.length === 0) {
+        merged.push(t)
+      } else {
+        const prev = merged[merged.length - 1]
+        const base = rtrim(prev)
+        merged[merged.length - 1] =
+          t === "," ? base + "," :
+          t === "(" ? base + " (" :
+          t === ")" ? base + ")" :
+                      base + ";"
+      }
+      continue
+    }
+
+    // Leading comma or semicolon → attach to previous, keep remainder on this line
+    // (Do NOT attach leading ');' — handled above)
+    let m: RegExpMatchArray | null
+    if ((m = line.match(/^\s*,\s*(.*)$/)) && merged.length > 0) {
+      merged[merged.length - 1] = rtrim(merged[merged.length - 1]) + ","
+      if (m[1].trim()) merged.push(m[1])
+      continue
+    }
+    if ((m = line.match(/^\s*;\s*(.*)$/)) && merged.length > 0) {
+      merged[merged.length - 1] = rtrim(merged[merged.length - 1]) + ";"
+      if (m[1].trim()) merged.push(m[1])
+      continue
+    }
+
+    // Numbers (optionally ending with ',' or ')' or ',)') should never be alone
+    if (numberLineRE.test(t) && merged.length > 0) {
+      merged[merged.length - 1] = rtrim(merged[merged.length - 1]) + " " + t
+      continue
+    }
+
+    merged.push(line)
+  }
+
+  let finalOut = merged.join("\n")
+  if (!finalOut.endsWith("\n")) finalOut += "\n"
+  return finalOut
 }
 
-/** Case/whitespace-insensitive compare key for LCS only (outside quotes already handled in canonicalizer). */
 function normalizeLineForCompare(s: string) {
   return s.replace(/\s+/g, " ").trim().toUpperCase()
 }
 
-/**
- * Robust, position-stable diff (LCS over normalized lines) built from
- * the *canonicalized* versions of both queries. We keep UPDATED-side
- * numbering as the single source of truth for the UI.
- */
 export function generateQueryDiff(oldQueryRaw: string, newQueryRaw: string): ComparisonResult {
-  // Canonicalize BOTH queries the SAME way
   const oldQuery = canonicalizeSQL(oldQueryRaw)
   const newQuery = canonicalizeSQL(newQueryRaw)
 
@@ -151,20 +178,18 @@ export function generateQueryDiff(oldQueryRaw: string, newQueryRaw: string): Com
   const A = oldRaw.map(normalizeLineForCompare)
   const B = newRaw.map(normalizeLineForCompare)
 
-  const m = A.length
-  const n = B.length
-
-  // LCS DP
+  const m = A.length, n = B.length
   const dp: number[][] = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0))
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = A[i - 1] === B[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1])
+      dp[i][j] = A[i - 1] === B[j - 1]
+        ? dp[i - 1][j - 1] + 1
+        : Math.max(dp[i - 1][j], dp[i][j - 1])
     }
   }
 
   const diffs: QueryDiff[] = []
   let i = m, j = n
-
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && A[i - 1] === B[j - 1]) {
       diffs.push({
@@ -187,7 +212,7 @@ export function generateQueryDiff(oldQueryRaw: string, newQueryRaw: string): Com
       diffs.push({
         type: "deletion",
         content: oldRaw[i - 1],
-        lineNumber: Math.max(1, j + 1), // deletion before next new line
+        lineNumber: Math.max(1, j + 1),
         oldLineNumber: i,
       })
       i--
@@ -273,6 +298,7 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
 
   return nodes
 }
+
 export function formatSQL(query: string): string {
   return canonicalizeSQL(query)
 }

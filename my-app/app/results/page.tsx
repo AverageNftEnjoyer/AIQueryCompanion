@@ -564,7 +564,7 @@ export default function ResultsPage() {
                       changes={toMiniChanges(analysis)}
                       onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
                       className="w-6 h-full"
-                      soundEnabled={soundOn}   // ← add this
+                      soundEnabled={soundOn}   
                     />
                   </div>
                 </div>
@@ -582,8 +582,11 @@ export default function ResultsPage() {
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
-                      <div className="h-[28rem] overflow-y-auto">
-                        {displayChanges.length > 0 ? (
+                        <div
+                          className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
+                          style={{ scrollbarGutter: "stable" }}
+                          tabIndex={0}>                     
+                          {displayChanges.length > 0 ? (
                           <div className="space-y-3">
                             {displayChanges.map((chg, index) => {
                               const jumpSide: "old" | "new" | "both" =
@@ -666,7 +669,10 @@ export default function ResultsPage() {
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
-                      <div className="h-[28rem] overflow-y-auto">
+                        <div
+                          className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
+                          style={{ scrollbarGutter: "stable" }}
+                          tabIndex={0}>
                         <div className="space-y-4">
                           {displayChanges.length > 0 ? (
                             displayChanges.map((chg, index) => (
