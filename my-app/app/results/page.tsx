@@ -415,27 +415,6 @@ export default function ResultsPage() {
 
             {/* Right: Generate Summary + Sync + Light UI + Sound */}
             <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={handleGenerateSummary}
-                disabled={summarizing}
-                className={`inline-flex items-center gap-2 pl-3 pr-3 h-8 rounded-full border transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed ${
-                  isLight
-                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
-                    : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
-                }`}
-                title="Generate a basic summary of the new query"
-              >
-                {summarizing ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    <span className="text-sm">Generating…</span>
-                  </>
-                ) : (
-                  <span className="text-sm">Generate Summary</span>
-                )}
-              </button>
-
               {/* Sync scroll — icon button */}
               <button
                 type="button"
@@ -563,9 +542,13 @@ export default function ResultsPage() {
                       )}
                       changes={toMiniChanges(analysis)}
                       onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
-                      className="w-6 h-full"
-                      soundEnabled={soundOn}   
-                    />
+                      className={`w-6 h-full rounded-md
+                        ${isLight
+                          ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                          : "bg-white/5 border border-white/10 hover:border-white/20"
+                        }`}
+                      soundEnabled={soundOn}
+                        />
                   </div>
                 </div>
 
@@ -573,7 +556,29 @@ export default function ResultsPage() {
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
                 </div>
-              </section>
+                <div className="mt-4 flex items-center justify-center">
+                  <button
+                    type="button"
+                    onClick={handleGenerateSummary}
+                    disabled={summarizing}
+                    className={`inline-flex items-center gap-2 px-4 h-9 rounded-full border transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed ${
+                      isLight
+                        ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
+                        : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
+                    }`}
+                    title="Generate a basic summary of the new query"
+                  >
+                    {summarizing ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        <span className="text-sm">Generating…</span>
+                      </>
+                    ) : (
+                      <span className="text-sm">Generate Summary</span>
+                    )}
+                  </button>
+                </div>
+                              </section>
 
               {/* Lower panels */}
               <section className="grid lg:grid-cols-2 gap-8">

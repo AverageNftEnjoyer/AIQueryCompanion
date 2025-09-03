@@ -132,7 +132,6 @@ function QueryComparisonInner(
         const ratio = Math.max(0, Math.min(1, (line - 1) / Math.max(1, total - 1)))
         primary.scrollTop = ratio * Math.max(1, primary.scrollHeight - primary.clientHeight)
       }
-      // horizontal stays where user left it for single-pane jumps
     },
   }))
 
@@ -146,13 +145,14 @@ function QueryComparisonInner(
     const refDiv = side === "old" ? leftRef : rightRef
     return (
       <div
-            ref={refDiv}
-            onScroll={() => onPaneScroll(side)}
-            className="rounded-lg border border-gray-200 bg-white overflow-auto hover-scroll focus:outline-none"
-            style={{ ...heightStyle, scrollbarGutter: "stable" }}
-            aria-label={ariaLabel}
-            tabIndex={0}
-          >
+          ref={refDiv}
+          onScroll={() => onPaneScroll(side)}
+          className="rounded-lg border border-gray-200 bg-white overflow-auto hover-scroll focus:outline-none"
+          style={{ ...heightStyle, scrollbarGutter: "stable" }}
+          aria-label={ariaLabel}
+          tabIndex={0}
+        >
+
         <div className="w-max p-4 font-mono text-[13px] leading-relaxed text-slate-800">
           {lines.map((line, idx) => {
             const n = idx + 1
