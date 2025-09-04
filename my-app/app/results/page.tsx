@@ -89,18 +89,26 @@ function FancyLoader() {
 
   const [index, setIndex] = useState(0)
   const [fading, setFading] = useState(false)
+  const timeoutRef = useRef<number | null>(null)
 
   useEffect(() => {
-    const id = setInterval(() => {
+    const tick = () => {
       setFading(true)
-      const t = setTimeout(() => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current)
+      timeoutRef.current = window.setTimeout(() => {
         setIndex((i) => (i + 1) % messages.length)
         setFading(false)
       }, 250)
-      return () => clearTimeout(t)
-    }, 4000)
-    return () => clearInterval(id)
-  }, [messages.length])
+    }
+
+    const id = window.setInterval(tick, 4000)
+    tick()
+
+    return () => {
+      if (timeoutRef.current) window.clearTimeout(timeoutRef.current)
+      window.clearInterval(id)
+    }
+  }, [])
 
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
@@ -119,7 +127,7 @@ function FancyLoader() {
           <div className="h-3 w-[92%] bg-white/10 rounded animate-pulse" />
           <div className="h-3 w-[84%] bg-white/10 rounded animate-pulse" />
         </div>
-        <div className="mt-6 flex items-center gap-2 text-white/70">
+        <div className="mt-6 flex items-center gap-2 text-white/70" aria-live="polite">
           <Zap className="w-4 h-4 animate-pulse" />
           <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
             {messages[index]}
@@ -141,23 +149,35 @@ export default function ResultsPage() {
 
   const doneAudioRef = useRef<HTMLAudioElement | null>(null)
   const switchAudioRef = useRef<HTMLAudioElement | null>(null)
-  const miniClickAudioRef = useRef<HTMLAudioElement | null>(null) // NEW: use same sound as minimap
+  const miniClickAudioRef = useRef<HTMLAudioElement | null>(null)
   const cmpRef = useRef<QueryComparisonHandle>(null)
+  const [typeFilter, setTypeFilter] = useState<ChangeType | "all">(
+    (typeof window !== "undefined" && (localStorage.getItem("qa:typeFilter") as any)) || "all"
+  )
+  const [sideFilter, setSideFilter] = useState<Side | "all">(
+    (typeof window !== "undefined" && (localStorage.getItem("qa:sideFilter") as any)) || "all"
+  )
 
-  const [syncEnabled, setSyncEnabled] = useState(true)
+  const [syncEnabled, setSyncEnabled] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true
+    return localStorage.getItem("qa:syncScroll") !== "0"
+  })
   const [summary, setSummary] = useState<string>("")
   const [summarizing, setSummarizing] = useState(false)
   const summaryRef = useRef<HTMLDivElement | null>(null)
+  const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null)
+  const summarizeAbortRef = useRef<AbortController | null>(null)
 
   const [soundOn, setSoundOn] = useState(true)
   const [lightUI, setLightUI] = useState<boolean>(() => {
     if (typeof window === "undefined") return false
-    return localStorage.getItem("qa:lightUI") === "1"
+    const saved = localStorage.getItem("qa:lightUI")
+    if (saved === "1") return true
+    if (saved === "0") return false
+    return !window.matchMedia?.("(prefers-color-scheme: dark)")?.matches
   })
 
   const analysisDoneSoundPlayedRef = useRef(false)
-
-  // --- track any deferred "resume to play" handler so we can cancel it on mute ---
   const resumeHandlerRef = useRef<((e?: any) => void) | null>(null)
   const clearResumeHandler = () => {
     if (resumeHandlerRef.current) {
@@ -167,7 +187,6 @@ export default function ResultsPage() {
     }
   }
 
-  // ---- SFX helper (respects mute) ----
   const playSfx = (ref: React.RefObject<HTMLAudioElement>) => {
     if (!soundOn) return
     const el = ref.current
@@ -180,7 +199,6 @@ export default function ResultsPage() {
     } catch {}
   }
 
-  // NEW: play same sound the minimap uses when a change is clicked
   const playMiniClick = () => {
     if (!soundOn) return
     const el = miniClickAudioRef.current
@@ -194,7 +212,6 @@ export default function ResultsPage() {
     } catch {}
   }
 
-  // Done sound with deferred handler tracking
   const playDoneSound = async () => {
     if (!soundOn) return
     const el = doneAudioRef.current
@@ -227,7 +244,13 @@ export default function ResultsPage() {
       return
     }
 
-    const parsed = JSON.parse(raw) as { oldQuery: string; newQuery: string }
+    let parsed: { oldQuery: string; newQuery: string } | null = null
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      router.push("/")
+      return
+    }
     if (!parsed?.oldQuery || !parsed?.newQuery) {
       router.push("/")
       return
@@ -262,7 +285,6 @@ export default function ResultsPage() {
     })()
   }, [router])
 
-  // keep <audio> elements in sync with mute and kill pending resumes
   useEffect(() => {
     const audios = [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].filter(Boolean) as HTMLAudioElement[]
     audios.forEach((a) => (a.muted = !soundOn))
@@ -278,30 +300,49 @@ export default function ResultsPage() {
     }
   }, [soundOn])
 
-  // Load persisted sound setting
   useEffect(() => {
     const saved = typeof window !== "undefined" ? localStorage.getItem("qa:soundOn") : null
     if (saved === "0") setSoundOn(false)
   }, [])
 
-  // Play "done" when initial analysis completes (only once)
   useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("qa:typeFilter", typeFilter)
+  }, [typeFilter])
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter)
+  }, [sideFilter])
+
+  useEffect(() => {
+    if (!startedRef.current) return
     if (!loading && !error && analysis && !analysisDoneSoundPlayedRef.current) {
       analysisDoneSoundPlayedRef.current = true
       playDoneSound()
     }
-  }, [loading, error, analysis]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [loading, error, analysis])
 
-  const displayChanges = useMemo(() => deriveDisplayChanges(analysis), [analysis])
+  const displayChanges = useMemo(() => {
+    const items = deriveDisplayChanges(analysis)
+    return items.filter(
+      (chg) =>
+        (typeFilter === "all" || chg.type === typeFilter) &&
+        (sideFilter === "all" || chg.side === sideFilter)
+    )
+  }, [analysis, typeFilter, sideFilter])
+
+  const canonicalOld = useMemo(() => (oldQuery ? canonicalizeSQL(oldQuery) : ""), [oldQuery])
+  const canonicalNew = useMemo(() => (newQuery ? canonicalizeSQL(newQuery) : ""), [newQuery])
 
   const stats = useMemo(() => {
-    if (!oldQuery || !newQuery) return null
-    const diff: ComparisonResult = generateQueryDiff(oldQuery, newQuery)
+    if (!canonicalOld || !canonicalNew) return null
+    const diff: ComparisonResult = generateQueryDiff(canonicalOld, canonicalNew)
     return diff.stats
-  }, [oldQuery, newQuery])
+  }, [canonicalOld, canonicalNew])
 
   async function handleGenerateSummary() {
     if (!analysis) return
+    if (summarizeAbortRef.current) summarizeAbortRef.current.abort()
+    summarizeAbortRef.current = new AbortController()
+
     setSummarizing(true)
     setSummary("")
     try {
@@ -309,15 +350,17 @@ export default function ResultsPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          newQuery: canonicalizeSQL(newQuery),
+          newQuery: canonicalNew,
           analysis,
         }),
+        signal: summarizeAbortRef.current.signal,
       })
       if (res.ok) {
         const data = await res.json()
         setSummary(String(data?.tldr || ""))
         setTimeout(() => {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+          summaryHeaderRef.current?.focus()
         }, 100)
       } else {
         setSummary(
@@ -325,25 +368,35 @@ export default function ResultsPage() {
         )
         setTimeout(() => {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+          summaryHeaderRef.current?.focus()
         }, 100)
       }
       await playDoneSound()
-    } catch {
-      setSummary(
-        "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
-      )
-      setTimeout(() => {
-        summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-      }, 100)
-      await playDoneSound()
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        setSummary(
+          "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
+        )
+        setTimeout(() => {
+          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+          summaryHeaderRef.current?.focus()
+        }, 100)
+        await playDoneSound()
+      }
     } finally {
       setSummarizing(false)
     }
   }
 
   const handleToggleSync = () => {
-    setSyncEnabled((v) => !v)
-    playSfx(switchAudioRef)
+    setSyncEnabled((v) => {
+      const next = !v
+      if (typeof window !== "undefined") {
+        localStorage.setItem("qa:syncScroll", next ? "1" : "0")
+      }
+      playSfx(switchAudioRef)
+      return next
+    })
   }
 
   const toggleLightUI = () => {
@@ -364,7 +417,6 @@ export default function ResultsPage() {
         localStorage.setItem("qa:soundOn", next ? "1" : "0")
       }
       if (next) {
-        // play a click immediately when enabling (ignore old state)
         const el = switchAudioRef.current
         if (el) {
           try {
@@ -376,7 +428,6 @@ export default function ResultsPage() {
           } catch {}
         }
       } else {
-        // ensure silence immediately + no deferred resumes
         clearResumeHandler()
         ;[doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].forEach((a) => {
           try {
@@ -490,10 +541,10 @@ export default function ResultsPage() {
 
       <main className="relative z-10">
         {/* Muted bound to state as well for belt & suspenders */}
-        <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="auto" muted={!soundOn} />
-        <audio ref={switchAudioRef} src="/switch.mp3" preload="auto" muted={!soundOn} />
+        <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="metadata" muted={!soundOn} />
+        <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         {/* NEW: use the same sound the minimap uses */}
-        <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="auto" muted={!soundOn} />
+        <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
 
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
           {loading && !error && <FancyLoader />}
@@ -541,14 +592,14 @@ export default function ResultsPage() {
                 <div className="flex items-stretch gap-3">
                   <div className="flex-1 min-w-0 h-[90vh]">
                     <div id="query-comparison" className="h-full overflow-auto rounded-xl">
-                     <QueryComparison
-                      ref={cmpRef}
-                      oldQuery={oldQuery}
-                      newQuery={newQuery}
-                      showTitle={false}
-                      syncScrollEnabled={syncEnabled}
-                    />
-                  </div>
+                      <QueryComparison
+                        ref={cmpRef}
+                        oldQuery={oldQuery}
+                        newQuery={newQuery}
+                        showTitle={false}
+                        syncScrollEnabled={syncEnabled}
+                      />
+                    </div>
                   </div>
                   <div className="hidden lg:block h-[86vh]">
                     <MiniMap
@@ -597,12 +648,52 @@ export default function ResultsPage() {
               </section>
 
               {/* Lower panels */}
-              <section className="grid lg-grid-cols-2 lg:grid-cols-2 gap-8">
+              <section className="grid lg:grid-cols-2 gap-8">
                 {/* LEFT COLUMN */}
                 <div className="space-y-8">
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
-                      <h3 className="text-slate-900 font-semibold mb-4">Changes</h3>
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-slate-900 font-semibold">Changes</h3>
+                        <div className="flex items-center gap-2">
+                          {(typeFilter !== "all" || sideFilter !== "all") && (
+                            <button
+                              type="button"
+                              onClick={() => { setTypeFilter("all"); setSideFilter("all") }}
+                              className="h-8 px-3 text-sm rounded border border-gray-300 bg-white text-black"
+                              title="Clear filters"
+                            >
+                              Clear
+                            </button>
+                          )}
+                          <label className="sr-only" htmlFor="typeFilter">Filter by type</label>
+                          <select
+                            id="typeFilter"
+                            className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
+                            value={typeFilter}
+                            onChange={(e) => setTypeFilter(e.target.value as any)}
+                            title="Filter by type"
+                          >
+                            <option value="all">All Types</option>
+                            <option value="addition">Additions</option>
+                            <option value="modification">Modifications</option>
+                            <option value="deletion">Deletions</option>
+                          </select>
+
+                          <label className="sr-only" htmlFor="sideFilter">Filter by side</label>
+                          <select
+                            id="sideFilter"
+                            className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
+                            value={sideFilter}
+                            onChange={(e) => setSideFilter(e.target.value as any)}
+                            title="Filter by side"
+                          >
+                            <option value="all">Both</option>
+                            <option value="old">Old only</option>
+                            <option value="new">New only</option>
+                          </select>
+                        </div>
+                      </div>
                       <div
                         className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
                         style={{ scrollbarGutter: "stable" }}
@@ -616,16 +707,16 @@ export default function ResultsPage() {
                                 <button
                                   key={index}
                                   className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                                 onClick={(e) => {
+                                  onClick={(e) => {
                                     e.preventDefault()
-                                    playSfx(miniClickAudioRef)
+                                    playMiniClick()
                                     cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
                                     document
                                       .querySelector("#query-comparison")
                                       ?.scrollIntoView({ behavior: "smooth", block: "start" })
                                     ;(e.currentTarget as HTMLButtonElement).blur()
                                   }}
-                                    onKeyDown={(e) => {
+                                  onKeyDown={(e) => {
                                     if (e.key === "Enter" || e.key === " ") {
                                       e.preventDefault()
                                       playMiniClick()
@@ -667,7 +758,13 @@ export default function ResultsPage() {
                   {(summarizing || summary) && (
                     <Card ref={summaryRef} className="bg-white border-gray-200 shadow-lg">
                       <CardContent className="p-5">
-                        <h3 className="text-slate-900 font-semibold mb-4">Summary</h3>
+                        <h3
+                          ref={summaryHeaderRef}
+                          tabIndex={-1}
+                          className="text-slate-900 font-semibold mb-4 focus:outline-none"
+                        >
+                          Summary
+                        </h3>
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
                           {summarizing && !summary ? (
                             <div className="space-y-4">
