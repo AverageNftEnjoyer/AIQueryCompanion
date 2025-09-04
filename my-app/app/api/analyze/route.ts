@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
+/* ============================== Types & Config ============================== */
+
 type ChangeType = "addition" | "modification" | "deletion"
 type Side = "old" | "new" | "both"
 type GoodBad = "good" | "bad"
@@ -45,9 +47,79 @@ const DEFAULT_XAI_MODEL = "grok-4"
 const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 const MAX_QUERY_CHARS = 120_000
 
-// —— Grouping knobs ——
+// —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
-const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30)) 
+const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30))
+
+// —— Networking knobs ——
+const FETCH_TIMEOUT_MS = Math.max(8_000, Number(process.env.FETCH_TIMEOUT_MS ?? 12_000))
+const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1))
+
+// —— Model budget knobs ——
+const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80))
+
+/* ============================== Small Utilities ============================= */
+
+function isNonEmptyString(x: any): x is string {
+  return typeof x === "string" && x.trim().length > 0
+}
+
+function validateInput(body: any) {
+  if (!body || !isNonEmptyString(body.oldQuery) || !isNonEmptyString(body.newQuery)) {
+    throw new Error("oldQuery and newQuery must be non-empty strings.")
+  }
+  if (body.oldQuery.length > MAX_QUERY_CHARS || body.newQuery.length > MAX_QUERY_CHARS) {
+    throw new Error(`Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters.`)
+  }
+}
+
+function clamp(n: number, lo: number, hi: number) {
+  return Math.max(lo, Math.min(hi, n))
+}
+
+function groupingFromHeaders(req: Request) {
+  const h = new Headers(req.headers)
+  const thr = Number(h.get("x-group-threshold") ?? GROUP_THRESHOLD)
+  const max = Number(h.get("x-group-max-lines") ?? MAX_GROUP_LINES)
+  return {
+    threshold: clamp(isFinite(thr) ? thr : GROUP_THRESHOLD, 2, 50),
+    maxLines: clamp(isFinite(max) ? max : MAX_GROUP_LINES, 20, 200),
+  }
+}
+
+function safeErrMessage(e: any, fallback = "Unexpected error") {
+  const raw = typeof e?.message === "string" ? e.message : fallback
+  return raw
+    .replace(/(Bearer\s+)[\w\.\-]+/gi, "$1[REDACTED]")
+    .replace(/(api-key\s*:\s*)\w+/gi, "$1[REDACTED]")
+    .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]")
+}
+
+/* -------------------------- Fetch timeout & retry --------------------------- */
+
+async function fetchJSONWithTimeout(url: string, init: RequestInit, timeoutMs = FETCH_TIMEOUT_MS) {
+  const ac = new AbortController()
+  const t = setTimeout(() => ac.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, { ...init, signal: ac.signal })
+    return res
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+async function withRetry<T>(fn: () => Promise<T>, retries = RETRIES): Promise<T> {
+  let lastErr: any
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      lastErr = e
+      await new Promise((r) => setTimeout(r, 300 * (i + 1)))
+    }
+  }
+  throw lastErr
+}
 
 /* --------------------------------- Helpers -------------------------------- */
 
@@ -64,6 +136,9 @@ function shouldSuppressServer(desc: string): boolean {
   if (/^[(),;]+$/.test(tok)) return true
   if (/^\)$/.test(tok) || /^\($/.test(tok) || /^\)\s*,?$/.test(tok)) return true
   if (/\bAS\s*\($/i.test(tok)) return true
+  // additional trivial jitter
+  if (/^"(?:\w+)"$/.test(tok)) return true // alias-only quotations
+  if (/^\bON\b\s*$/i.test(tok)) return true // lonely ON
   return false
 }
 
@@ -76,17 +151,15 @@ function asGoodBad(v: any): GoodBad | undefined {
 
 // Extract a span (number of lines) from a grouped description, used to scale verbosity.
 function spanFromDescription(desc: string): number {
-  // matches: "added 7 lines", "removed 15 lines", "modified 3 lines"
   const m = desc.match(/\b(added|removed|modified)\s+(\d+)\s+lines?\b/i)
   if (m) return Math.max(1, Number(m[2]))
-  // single-line atomic changes default to 1
   return 1
 }
 
 function verbosityForSpan(span: number): "short" | "medium" | "long" {
-  if (span <= 2) return "short"       // quick fixes / tiny mods
-  if (span <= 10) return "medium"     // small blocks
-  return "long"                       // big blocks (procedures/CTEs etc.)
+  if (span <= 2) return "short"
+  if (span <= 10) return "medium"
+  return "long"
 }
 
 function coerceExplanations(content: string): ChangeExplanation[] {
@@ -103,7 +176,6 @@ function coerceExplanations(content: string): ChangeExplanation[] {
           syntax: asGoodBad(x.syntax),
           performance: asGoodBad(x.performance),
         }
-        // Optional conditional lines for bad ratings
         if (typeof x.syntax_explanation === "string") (item as any)._syntax_explanation = x.syntax_explanation.trim()
         if (typeof x.performance_explanation === "string") (item as any)._performance_explanation = x.performance_explanation.trim()
         if (Array.isArray(x.clauses)) (item as any)._clauses = x.clauses
@@ -136,30 +208,15 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
   return {
     task: "Explain each change so a junior developer understands what changed and why it matters.",
     guidance: [
-      // Verbosity control
       "Write length according to 'verbosity' per change: short=1–2 sentences, medium=3–5, long=5–8.",
-      "Short changes are often quick fixes—keep them concise. Large grouped blocks deserve more depth (e.g., new procedures/CTEs).",
-
-      // Scope & audience
-      "Audience is junior-level: use plain language; define jargon briefly the first time (e.g., 'sargable' = index-friendly).",
-      "Do not speculate. If business meaning is unclear from names, say so briefly.",
-
-      // What to cover
-      "Describe effect on the clauses actually touched: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
-      "Identify change_kind (e.g., filter_narrowed, filter_broadened, join_changed, join_added, join_removed, aggregation_changed, projection_changed, order_changed, limit_changed, window_changed/window_added, cte_changed, subquery_changed, literal_changed, function_added/function_changed).",
-
-      // Ratings & conditional explanations
-      "Provide 'syntax' and 'performance' ratings as 'good' or 'bad'.",
-      "If syntax='bad', include a single sentence 'syntax_explanation' describing the issue and how to address it.",
-      "If performance='bad', include a single sentence 'performance_explanation' describing the issue and how to address it.",
-      "If a rating is 'good', OMIT the corresponding explanation field.",
-
-      // Business impact
-      "If names imply business meaning (e.g., invoices/customers/currencies), add 1–2 sentences on business impact; otherwise set business_impact appropriately ('clear','weak','none').",
-      "For 'short' items, keep business comments concise.",
-
-      // Output
-      "Return JSON only matching the provided schema. No prose outside JSON.",
+      "Short changes are quick fixes; large grouped blocks (CTEs/procedures) deserve more depth.",
+      "Audience is junior-level: use plain language; define jargon briefly (e.g., 'sargable' = index-friendly).",
+      "Do not speculate beyond names.",
+      "Describe effects on touched clauses: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
+      "Identify change_kind (filter_narrowed, join_added, aggregation_changed, etc.).",
+      "Provide 'syntax' and 'performance' ratings as 'good' or 'bad'. If 'bad', include one-sentence *_explanation.",
+      "Add brief business impact if implied by names; else mark as 'weak' or 'none'.",
+      "Return JSON only matching the schema. No prose outside JSON.",
       "Preserve the provided 'index' exactly."
     ],
     dialect: "Oracle SQL",
@@ -178,7 +235,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
         performance_explanation: "string (present only if performance='bad', 1 sentence)",
         business_impact: "enum: ['clear','weak','none']",
         risk: "enum: ['low','medium','high']",
-        suggestions: "array of strings (0–2 items, concise, actionable)"
+        suggestions: "array of strings (0–2 items)"
       }]
     }
   }
@@ -192,72 +249,73 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
   if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY in environment.")
 
-  const resp = await fetch(`${XAI_BASE_URL}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
-    body: JSON.stringify({
-      model: XAI_MODEL,
-      temperature: 0.1,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "change_explanations",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              explanations: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    index: { type: "number" },
-                    text: { type: "string" },
-                    clauses: {
-                      type: "array",
-                      items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
-                      uniqueItems: true
+  const resp = await withRetry(() =>
+    fetchJSONWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
+      body: JSON.stringify({
+        model: XAI_MODEL,
+        temperature: 0.1,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "change_explanations",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                explanations: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      index: { type: "number" },
+                      text: { type: "string" },
+                      clauses: {
+                        type: "array",
+                        items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
+                        uniqueItems: true
+                      },
+                      change_kind: { type: "string" },
+                      syntax: { type: "string", enum: ["good", "bad"] },
+                      performance: { type: "string", enum: ["good", "bad"] },
+                      syntax_explanation: { type: "string" },
+                      performance_explanation: { type: "string" },
+                      business_impact: { type: "string", enum: ["clear","weak","none"] },
+                      risk: { type: "string", enum: ["low","medium","high"] },
+                      suggestions: {
+                        type: "array",
+                        items: { type: "string" },
+                        maxItems: 2
+                      }
                     },
-                    change_kind: { type: "string" },
-                    syntax: { type: "string", enum: ["good", "bad"] },
-                    performance: { type: "string", enum: ["good", "bad"] },
-                    syntax_explanation: { type: "string" },
-                    performance_explanation: { type: "string" },
-                    business_impact: { type: "string", enum: ["clear","weak","none"] },
-                    risk: { type: "string", enum: ["low","medium","high"] },
-                    suggestions: {
-                      type: "array",
-                      items: { type: "string" },
-                      maxItems: 2
-                    }
-                  },
-                  required: ["index","text","syntax","performance","business_impact","risk"],
-                  additionalProperties: false
+                    required: ["index","text","syntax","performance","business_impact","risk"],
+                    additionalProperties: false
+                  }
                 }
-              }
-            },
-            required: ["explanations"],
-            additionalProperties: false
+              },
+              required: ["explanations"],
+              additionalProperties: false
+            }
           }
-        }
-      },
-      messages: [
-        {
-          role: "system",
-          content: [
-            "You are a senior Oracle SQL reviewer for a junior developer audience.",
-            "Write length according to each change's 'verbosity' (short=1–2, medium=3–5, long=5–8 sentences).",
-            "Return JSON only, matching the schema—no extra keys or prose.",
-            "If syntax='bad', include 'syntax_explanation' (1 sentence). If performance='bad', include 'performance_explanation' (1 sentence).",
-            "If those ratings are 'good', omit the corresponding explanation fields."
-          ].join(" ")
         },
-        { role: "user", content: JSON.stringify(userPayload) },
-      ],
-    }),
-  })
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are a senior Oracle SQL reviewer for a junior developer audience.",
+              "Write length according to each change's 'verbosity'.",
+              "Return JSON only, matching the schema—no extra keys or prose.",
+              "If syntax='bad', include 'syntax_explanation' (1 sentence). If performance='bad', include 'performance_explanation' (1 sentence)."
+            ].join(" ")
+          },
+          { role: "user", content: JSON.stringify(userPayload) },
+        ],
+      }),
+    })
+  )
 
-  if (!resp.ok) throw new Error(`xAI API error: ${await resp.text()}`)
+  if (!resp.ok) throw new Error(`xAI API error (${resp.status})`)
   const data = await resp.json()
   const content = data?.choices?.[0]?.message?.content ?? ""
   return coerceExplanations(content)
@@ -274,97 +332,99 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
 
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
 
-  let res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "api-key": apiKey },
-    body: JSON.stringify({
-      temperature: 0.1,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          name: "change_explanations",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              explanations: {
-                type: "array",
-                items: {
-                  type: "object",
-                  properties: {
-                    index: { type: "number" },
-                    text: { type: "string" },
-                    clauses: {
-                      type: "array",
-                      items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
-                      uniqueItems: true
-                    },
-                    change_kind: { type: "string" },
-                    syntax: { type: "string", enum: ["good", "bad"] },
-                    performance: { type: "string", enum: ["good", "bad"] },
-                    syntax_explanation: { type: "string" },
-                    performance_explanation: { type: "string" },
-                    business_impact: { type: "string", enum: ["clear","weak","none"] },
-                    risk: { type: "string", enum: ["low","medium","high"] },
-                    suggestions: {
-                      type: "array",
-                      items: { type: "string" },
-                      maxItems: 2
-                    }
-                  },
-                  required: ["index","text","syntax","performance","business_impact","risk"],
-                  additionalProperties: false
-                }
-              }
-            },
-            required: ["explanations"],
-            additionalProperties: false
-          }
-        }
-      },
-      messages: [
-        {
-          role: "system",
-          content: [
-            "You are a senior Oracle SQL reviewer for a junior developer audience.",
-            "Write length according to each change's 'verbosity' (short=1–2, medium=3–5, long=5–8 sentences).",
-            "Return JSON only, matching the schema—no extra keys or prose.",
-            "If syntax='bad', include 'syntax_explanation' (1 sentence). If performance='bad', include 'performance_explanation' (1 sentence).",
-            "If those ratings are 'good', omit the corresponding explanation fields."
-          ].join(" ")
-        },
-        { role: "user", content: JSON.stringify(userPayload) },
-      ],
-    }),
-  })
-
-  if (!res.ok) {
-    const firstErr = await res.text()
-    // Retry without response_format (some deployments/models may ignore it),
-    // but keep strict JSON-only instructions in the system prompt.
-    res = await fetch(url, {
+  // First attempt with response_format
+  let res = await withRetry(() =>
+    fetchJSONWithTimeout(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "api-key": apiKey },
       body: JSON.stringify({
         temperature: 0.1,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "change_explanations",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                explanations: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      index: { type: "number" },
+                      text: { type: "string" },
+                      clauses: {
+                        type: "array",
+                        items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
+                        uniqueItems: true
+                      },
+                      change_kind: { type: "string" },
+                      syntax: { type: "string", enum: ["good", "bad"] },
+                      performance: { type: "string", enum: ["good", "bad"] },
+                      syntax_explanation: { type: "string" },
+                      performance_explanation: { type: "string" },
+                      business_impact: { type: "string", enum: ["clear","weak","none"] },
+                      risk: { type: "string", enum: ["low","medium","high"] },
+                      suggestions: {
+                        type: "array",
+                        items: { type: "string" },
+                        maxItems: 2
+                      }
+                    },
+                    required: ["index","text","syntax","performance","business_impact","risk"],
+                    additionalProperties: false
+                  }
+                }
+              },
+              required: ["explanations"],
+              additionalProperties: false
+            }
+          }
+        },
         messages: [
           {
             role: "system",
             content: [
               "You are a senior Oracle SQL reviewer for a junior developer audience.",
-              "Write length according to each change's 'verbosity' (short=1–2, medium=3–5, long=5–8 sentences).",
-              "Return a JSON object with key 'explanations': an array of items with keys:",
-              "index:number, text:string, clauses:string[], change_kind:string, syntax:'good'|'bad', performance:'good'|'bad',",
-              "syntax_explanation?:string (present only if syntax='bad'), performance_explanation?:string (present only if performance='bad'),",
-              "business_impact:'clear'|'weak'|'none', risk:'low'|'medium'|'high', suggestions?:string[] (max 2).",
-              "No prose outside JSON."
+              "Write length according to each change's 'verbosity'.",
+              "Return JSON only with key 'explanations'.",
+              "If syntax='bad', include 'syntax_explanation'; if performance='bad', include 'performance_explanation'."
             ].join(" ")
           },
           { role: "user", content: JSON.stringify(userPayload) },
         ],
       }),
     })
-    if (!res.ok) throw new Error(`Azure OpenAI error: ${firstErr} | Retry: ${await res.text()}`)
+  )
+
+  if (!res.ok) {
+    // Retry without response_format
+    res = await withRetry(() =>
+      fetchJSONWithTimeout(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "api-key": apiKey },
+        body: JSON.stringify({
+          temperature: 0.1,
+          messages: [
+            {
+              role: "system",
+              content: [
+                "You are a senior Oracle SQL reviewer for a junior developer audience.",
+                "Write length according to each change's 'verbosity' (short/medium/long).",
+                "Return a JSON object with key 'explanations': array of items with keys:",
+                "index:number, text:string, clauses:string[], change_kind:string, syntax:'good'|'bad', performance:'good'|'bad',",
+                "syntax_explanation?:string (only if syntax='bad'), performance_explanation?:string (only if performance='bad'),",
+                "business_impact:'clear'|'weak'|'none', risk:'low'|'medium'|'high', suggestions?:string[] (max 2).",
+                "No prose outside JSON."
+              ].join(" ")
+            },
+            { role: "user", content: JSON.stringify(userPayload) },
+          ],
+        }),
+      })
+    )
+    if (!res.ok) throw new Error(`Azure OpenAI error (${res.status})`)
   }
 
   const json = await res.json()
@@ -427,8 +487,11 @@ function buildSegmenter(sql: string): Segmenter {
     [/^\s*FROM\b/i, "FROM"],
     [/^\s*(INNER|LEFT|RIGHT|FULL)?\s*JOIN\b/i, "JOIN"],
     [/^\s*WHERE\b/i, "WHERE"],
+    [/^\s*CONNECT\s+BY\b/i, "CONNECT BY"],      // Oracle
+    [/^\s*START\s+WITH\b/i, "START WITH"],      // Oracle
     [/^\s*GROUP BY\b/i, "GROUP BY"],
     [/^\s*HAVING\b/i, "HAVING"],
+    [/^\s*MODEL\b/i, "MODEL"],                  // Oracle
     [/^\s*ORDER BY\b/i, "ORDER BY"],
     [/^\s*UNION(\s+ALL)?\b/i, "UNION"],
     [/^\s*INSERT\b/i, "INSERT"],
@@ -499,7 +562,6 @@ function groupChangesSmart(
 
     const runLen = end - start + 1
     if (runLen < threshold) {
-      // keep atomic items
       for (let k = start; k <= end; k++) grouped.push(items[k])
       i = end + 1
       continue
@@ -515,7 +577,6 @@ function groupChangesSmart(
       if (seg.boundaries.has(n)) cuts.push(n)
     }
 
-    // if no natural boundaries, split by window size
     if (cuts.length === 0) {
       let s = runStart
       while (s <= runEnd) {
@@ -527,19 +588,16 @@ function groupChangesSmart(
       continue
     }
 
-    // build segments from boundaries; also enforce maxBlock
     let segStart = runStart
     for (let c = 0; c < cuts.length; c++) {
       const segEndCandidate = cuts[c] - 1
       if (segEndCandidate < segStart) continue
 
-      // while segment too large, carve smaller chunks
       let a = segStart
       while (a <= segEndCandidate) {
         const b = Math.min(a + maxBlock - 1, segEndCandidate)
         if (b - a + 1 >= threshold) pushBlock(a, b)
         else {
-          // too tiny: fallback to atomic for this tiny tail
           const tailOffset = a - runStart
           const tailLen = b - a + 1
           for (let off = 0; off < tailLen; off++) grouped.push(items[start + tailOffset + off])
@@ -549,7 +607,6 @@ function groupChangesSmart(
       segStart = cuts[c]
     }
 
-    // final tail after last cut
     if (segStart <= runEnd) {
       let a = segStart
       while (a <= runEnd) {
@@ -571,7 +628,8 @@ function groupChangesSmart(
       const preview = tokenFromDescription(items[start].description)
       const label = findLabelInRange(seg, aLine, bLine)
       const rangeText = aLine === bLine ? `Line ${aLine}` : `Lines ${aLine}-${bLine}`
-      const scope = label ? ` (${label}${label === "BEGIN" && findLabelInRange(seg, bLine, bLine) === "END" ? "…END" : " block"})` : ""
+      const scope =
+        label ? ` (${label}${label === "BEGIN" && findLabelInRange(seg, bLine, bLine) === "END" ? "…END" : " block"})` : ""
       const desc =
         base.type === "addition"
           ? `${rangeText}${scope}: added ${spanLen} lines. Preview "${preview}"`
@@ -591,35 +649,49 @@ function groupChangesSmart(
   return grouped
 }
 
+/* =============================== In-memory cache =============================== */
+
+const cache = new Map<string, any>()
+function hashPair(a: string, b: string) {
+  // tiny FNV-ish hash (demo-grade)
+  let h = 2166136261
+  const s = a + "\u0000" + b
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
+  return (h >>> 0).toString(16)
+}
+
 /* ----------------------------------- Route ---------------------------------- */
 
 export async function POST(req: Request) {
   try {
-    const body = await req.json()
+    const body = await req.json().catch(() => null)
+    try {
+      validateInput(body)
+    } catch (e: any) {
+      return NextResponse.json({ error: e.message }, { status: 400, headers: { "Cache-Control": "no-store" } })
+    }
     const { oldQuery, newQuery, noAI } = body as { oldQuery: string; newQuery: string; noAI?: boolean }
-
-    if (typeof oldQuery !== "string" || typeof newQuery !== "string") {
-      return NextResponse.json({ error: "oldQuery and newQuery are required strings" }, { status: 400 })
-    }
-    if (oldQuery.length > MAX_QUERY_CHARS || newQuery.length > MAX_QUERY_CHARS) {
-      return NextResponse.json(
-        { error: `Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters.` },
-        { status: 413 }
-      )
-    }
 
     const canonOld = canonicalizeSQL(oldQuery)
     const canonNew = canonicalizeSQL(newQuery)
+
+    // cache hit?
+    const cacheKey = hashPair(canonOld, canonNew)
+    if (cache.has(cacheKey)) {
+      return NextResponse.json(cache.get(cacheKey), { headers: { "Cache-Control": "no-store" } })
+    }
 
     const diff = generateQueryDiff(canonOld, canonNew)
     const rawChanges = buildChanges(diff)
 
     const segNew = buildSegmenter(canonNew)
     const segOld = buildSegmenter(canonOld)
-    const changes = groupChangesSmart(rawChanges, segNew, segOld, GROUP_THRESHOLD, MAX_GROUP_LINES)
 
-    if (changes.length === 0) {
-      return NextResponse.json({
+    const { threshold, maxLines } = groupingFromHeaders(req)
+    const grouped = groupChangesSmart(rawChanges, segNew, segOld, threshold, maxLines)
+
+    if (grouped.length === 0) {
+      const payload = {
         analysis: {
           summary: "No substantive changes detected.",
           changes: [],
@@ -627,18 +699,46 @@ export async function POST(req: Request) {
           riskAssessment: "Low",
           performanceImpact: "Neutral",
         },
-      })
+      }
+      cache.set(cacheKey, payload)
+      return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } })
     }
+
+    // Cap model payload deterministically
+    const sorted = [...grouped].sort((a, b) => a.lineNumber - b.lineNumber)
+    const head = sorted.slice(0, MAX_ITEMS_TO_EXPLAIN)
+    const tailCount = Math.max(0, sorted.length - head.length)
+    const explainTargets: ChangeItem[] =
+      tailCount > 0
+        ? [
+            ...head,
+            {
+              type: "modification",
+              description: `+${tailCount} additional changes (collapsed)`,
+              lineNumber: head.at(-1)!.lineNumber + 1,
+              side: "new",
+            },
+          ]
+        : head
 
     // Env flag OR per-request flag from client
     const AI_DISABLED = process.env.DISABLE_AI_ANALYSIS === "true" || noAI === true
 
+    // Ask model(s)
     let modelExplanations: ChangeExplanation[] = []
     if (!AI_DISABLED) {
-      const payload = buildUserPayload(canonOld, canonNew, changes)
+      const payload = buildUserPayload(canonOld, canonNew, explainTargets)
       const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
-      if (provider === "azure") modelExplanations = await explainWithAzure(payload)
-      else modelExplanations = await explainWithXAI(payload)
+      try {
+        modelExplanations = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
+      } catch (primaryErr) {
+        // Fallback to the other provider
+        try {
+          modelExplanations = provider === "azure" ? await explainWithXAI(payload) : await explainWithAzure(payload)
+        } catch {
+          modelExplanations = []
+        }
+      }
     }
 
     const expMap = new Map<number, ChangeExplanation>()
@@ -646,32 +746,34 @@ export async function POST(req: Request) {
       if (typeof e.index === "number" && (e.explanation && e.explanation.length > 0)) expMap.set(e.index, e)
     })
 
-    const finalChanges = changes.map((c, idx) => {
-      const m = expMap.get(idx) as ChangeExplanation | undefined
+    const finalChanges = explainTargets.map((c, idx) => {
+      const m = expMap.get(idx)
       let explanation =
-        m?.explanation ||
+        m?.explanation?.trim() ||
         (AI_DISABLED
-          ? "AI analysis is currently disabled, Dev testing in progress."
-          : "This change adjusts the SQL, but details couldn’t be inferred confidently. Review surrounding context to confirm impact.")
-
-      const extra: string[] = []
-      if ((m as any)?._syntax_explanation && m?.syntax === "bad") extra.push(`Syntax: ${(m as any)._syntax_explanation}`)
-      if ((m as any)?._performance_explanation && m?.performance === "bad")
-        extra.push(`Performance: ${(m as any)._performance_explanation}`)
-      if (extra.length) explanation = `${explanation} ${extra.join(" ")}`
+          ? "AI analysis is disabled for this run."
+          : "Change detected — details could not be inferred confidently.")
+      const extras: string[] = []
+      if (m?.syntax === "bad" && (m as any)._syntax_explanation) extras.push(`Syntax: ${(m as any)._syntax_explanation}`)
+      if (m?.performance === "bad" && (m as any)._performance_explanation)
+        extras.push(`Performance: ${(m as any)._performance_explanation}`)
+      if (extras.length) explanation += ` ${extras.join(" ")}`
 
       return {
         ...c,
         explanation,
-        syntax: m?.syntax ?? "good",
-        performance: m?.performance ?? "good",
+        syntax: (m?.syntax === "bad" ? "bad" : "good") as GoodBad,
+        performance: (m?.performance === "bad" ? "bad" : "good") as GoodBad,
         meta: m
           ? {
-              clauses: (m as any)._clauses ?? [],
-              change_kind: (m as any)._change_kind,
-              business_impact: (m as any)._business_impact ?? "none",
-              risk: (m as any)._risk ?? "low",
-              suggestions: (m as any)._suggestions ?? [],
+              clauses: Array.isArray((m as any)._clauses) ? (m as any)._clauses : [],
+              change_kind: typeof (m as any)._change_kind === "string" ? (m as any)._change_kind : undefined,
+              business_impact:
+                (m as any)._business_impact === "clear" || (m as any)._business_impact === "weak"
+                  ? (m as any)._business_impact
+                  : "none",
+              risk: (m as any)._risk === "medium" || (m as any)._risk === "high" ? (m as any)._risk : "low",
+              suggestions: Array.isArray((m as any)._suggestions) ? (m as any)._suggestions.slice(0, 2) : [],
             }
           : undefined,
       }
@@ -687,7 +789,7 @@ export async function POST(req: Request) {
 
     const summary = `Detected ${finalChanges.length} substantive changes — ${counts.addition} additions, ${counts.modification} modifications, ${counts.deletion} deletions.`
 
-    return NextResponse.json({
+    const responsePayload = {
       analysis: {
         summary,
         changes: finalChanges,
@@ -695,8 +797,11 @@ export async function POST(req: Request) {
         riskAssessment: "Low",
         performanceImpact: "Neutral",
       },
-    })
+    }
+
+    cache.set(cacheKey, responsePayload)
+    return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } })
   } catch (err: any) {
-    return NextResponse.json({ error: err?.message || "Unexpected error" }, { status: 500 })
+    return NextResponse.json({ error: safeErrMessage(err) }, { status: 500, headers: { "Cache-Control": "no-store" } })
   }
 }

@@ -22,12 +22,12 @@ interface MiniMapProps {
   soundEnabled?: boolean
 }
 
-const colorFor = (t: ChangeType) =>
-  t === "addition"
-    ? "bg-emerald-500/70 hover:bg-emerald-500"
-    : t === "deletion"
-    ? "bg-rose-500/70 hover:bg-rose-500"
-    : "bg-amber-500/70 hover:bg-amber-500"
+/** Opaque, brand-stable colors (no alpha). */
+const SOLID_COLOR: Record<ChangeType, string> = {
+  addition: "#10b981",     // tailwind emerald-500
+  modification: "#f59e0b", // tailwind amber-500
+  deletion: "#ef4444",     // tailwind red-500  (bright, not rose/magenta)
+}
 
 export function MiniMap({
   totalLines,
@@ -91,11 +91,13 @@ export function MiniMap({
               playClick()
               onJump({ side: c.side as Side, line: c.lineNumber })
             }}
-            className={`absolute left-0 right-0 ${colorFor(c.type)} transition-opacity`}
+            className="absolute left-0 right-0 transition-[filter,transform] hover:brightness-110 active:brightness-125"
             style={{
               top: `calc(${topPct}% - ${hPx / 2}px)`,
               height: `${hPx}px`,
-              opacity: 0.9,
+              backgroundColor: SOLID_COLOR[c.type], 
+              opacity: 1,                       
+              mixBlendMode: "normal",            
             }}
             aria-label={`Jump to ${c.type} at line ${c.lineNumber}`}
           />

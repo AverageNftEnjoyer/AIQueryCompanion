@@ -695,8 +695,7 @@ export default function ResultsPage() {
                         </div>
                       </div>
                       <div
-                        className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
-                        style={{ scrollbarGutter: "stable" }}
+                        className="h-[28rem] scroll-overlay focus:outline-none pr-3"
                         tabIndex={0}>
                         {displayChanges.length > 0 ? (
                           <div className="space-y-3">
@@ -794,10 +793,8 @@ export default function ResultsPage() {
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
                       <div
-                        className="h-[28rem] overflow-auto hover-scroll focus:outline-none pr-[12px]"
-                        style={{ scrollbarGutter: "stable" }}
-                        tabIndex={0}
-                      >
+                        className="h-[28rem] scroll-overlay focus:outline-none pr-3"
+                        tabIndex={0}>
                         <div className="space-y-4">
                           {displayChanges.length > 0 ? (
                             displayChanges.map((chg, index) => (

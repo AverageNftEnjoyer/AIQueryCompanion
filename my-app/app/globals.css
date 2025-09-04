@@ -242,3 +242,48 @@ html.dark { color-scheme: dark; }
   transition: background-color 0.8s ease-out;
   border-radius: 0.25rem; /* a little softness */
 }
+
+/* Overlay + stable gutter to prevent layout shift */
+.scroll-overlay {
+  /* Reserve consistent space cross-browser */
+  scrollbar-gutter: stable both-edges;
+  /* Use overlay where supported so the bar floats over content */
+  overflow-y: auto;
+}
+
+@supports (overflow: overlay) {
+  .scroll-overlay {
+    overflow-y: overlay;
+  }
+}
+
+/* --- Chromium/WebKit (Chrome, Edge, Safari) --- */
+.scroll-overlay::-webkit-scrollbar {
+  width: 10px;                 /* constant width so no shift */
+  background: transparent;      /* no track when idle */
+}
+
+.scroll-overlay::-webkit-scrollbar-thumb {
+  background-color: transparent;    /* hidden by default */
+  border-radius: 8px;
+  transition: background-color 120ms ease;
+}
+
+.scroll-overlay:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(0,0,0,0.35);   /* show on hover */
+}
+
+.scroll-overlay::-webkit-scrollbar-thumb:active {
+  background-color: rgba(0,0,0,0.55);
+}
+
+/* --- Firefox --- */
+/* Keep the scrollbar width constant (thin), but make it transparent until hover */
+.scroll-overlay {
+  scrollbar-width: thin;                               /* constant width */
+  scrollbar-color: transparent transparent;            /* hidden by default */
+}
+
+.scroll-overlay:hover {
+  scrollbar-color: rgba(0,0,0,0.45) transparent;       /* show on hover */
+}
