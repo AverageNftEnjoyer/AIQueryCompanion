@@ -32,11 +32,11 @@ type ContextHints = {
 const DEFAULT_XAI_MODEL = "grok-4"
 const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 
-// Accept any input size; only clip what we *send to the model*
+// We accept any input size; only clip what we send to the model
 const MODEL_CLIP_BYTES = 12_000
 const REQUEST_TIMEOUT_MS = 28_000
 
-/* ---------- Route ---------- */
+/* ---------- Route: /api/summarize ---------- */
 
 export async function POST(req: Request) {
   const t0 = Date.now()
@@ -45,22 +45,22 @@ export async function POST(req: Request) {
     const newQuery = typeof body?.newQuery === "string" ? body.newQuery.trim() : ""
     if (!newQuery) return NextResponse.json({ error: "newQuery is required" }, { status: 400 })
 
-    // Audience: default to stakeholder (per your request)
+    // Audience defaults to stakeholder (explicitly allow developer via query or body)
     const url = new URL(req.url)
     const audienceParam = (url.searchParams.get("audience") || "").toLowerCase()
     const bodyAudience = (typeof (body as any)?.audience === "string" ? (body as any).audience : "").toLowerCase()
     const audience: "stakeholder" | "developer" =
       audienceParam === "developer" || bodyAudience === "developer" ? "developer" : "stakeholder"
 
-    // Detect statement type
+    // Detect statement type and provider
     const stmt = detectStmtType(newQuery)
     const provider: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
 
-    // Build hints/signals from full text (no clipping here)
+    // Hints/signals built from full text (no clipping)
     const hints = getQueryHints(newQuery)
     const signals = extractSignals(newQuery)
 
-    // Smart clip the payload for the model
+    // Smart clip for the model payload
     const { clip, clipBytes } = smartClip(newQuery, stmt, MODEL_CLIP_BYTES)
     const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
     const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
@@ -144,7 +144,7 @@ const BAD_PHRASES = [
 
 function isBoilerplate(text: string): boolean {
   const s = text.trim()
-  if (s.length < 40) return true
+  if (s.length < 30) return true
   return BAD_PHRASES.some(r => r.test(s))
 }
 
@@ -435,20 +435,19 @@ function composeTLDR(
     ? composeTLDR_Developer(stmt, d, entitiesTxt)
     : composeTLDR_Stakeholder(stmt, d, entitiesTxt)
 
-  // Stakeholder: expand acronyms and scrub any remaining tech identifiers
+  // Stakeholder: expand acronyms and scrub remaining tech identifiers
   const finalText = (audience === "stakeholder") ? softDeTech(expandAcronyms(base)) : base
   return scrubBoilerplate(finalText)
 }
 
 /* ---------- Stakeholder (plain-English, 4–6 sentences, no raw tech names) ---------- */
 
-function composeTLDR_Stakeholder(stmt: StmtType, d: any, entitiesTxt: string): string {
+function composeTLDR_Stakeholder(stmt: StmtType, d: any, _entitiesTxt: string): string {
   const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
   const purpose = d.purpose || (stmt === "select" ? "producing a clear report" : stmt === "dml" ? "applying targeted changes" : "running an end-to-end process")
-  const howSimple = simpleTechniqueLine(d) // e.g., “It uses lookups and simple checks to match records.”
+  const howSimple = simpleTechniqueLine(d)
   const freshness = d.freshness ? `You can expect ${trimPeriod(d.freshness)}.` : ""
 
-  // Describe “what it does” + “how it works” in basic terms; avoid naming entities directly.
   let body = ""
   if (stmt === "select") {
     const fgo = d.fgo ? simplifyFGO(d.fgo) : "It organizes the results so totals and comparisons are easy to read."
@@ -479,47 +478,50 @@ function composeTLDR_Stakeholder(stmt: StmtType, d: any, entitiesTxt: string): s
   }
 
   const constrained = clampSentences(body, 4, 6)
-  const closer = buildInShortStakeholder(stmt, d) // no entity names in closer
+  const closer = buildInShortStakeholder(stmt, d)
   return `${constrained} ${closer}`.trim()
 }
 
-/* ---------- Developer (can mention entities/techniques; still human) ---------- */
+/* ---------- Developer (5–7 sentences; syntax/technical focus) ---------- */
 
 function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): string {
   const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
-  const extras: string[] = []
-  if (d.specialTechniques) extras.push(sentenceize(d.specialTechniques))
-  if (d.fgo && stmt === "select") extras.push(sentenceize(d.fgo))
-  if (stmt === "dml" && d.effects) extras.push(sentenceize(d.effects))
-  if (d.freshness) extras.push(`Freshness/latency: ${trimPeriod(d.freshness)}.`)
-  if (d.risks) extras.push(`Risks/assumptions: ${trimPeriod(d.risks)}.`)
+  const lines: string[] = []
 
-  let first = ""
   if (stmt === "select") {
     const purpose = d.purpose || "producing an analytical dataset"
-    first = `This ${focus} generates ${purpose} from ${entitiesTxt}, emphasizing the business-relevant slice of data.`
+    const fgo = d.fgo ? sentenceize(d.fgo) : ""
+    const tech = d.specialTechniques ? sentenceize(d.specialTechniques) : ""
+    lines.push(`This ${focus} builds ${purpose} from ${entitiesTxt}, emphasizing the scoped slice of data.`)
+    if (fgo) lines.push(fgo) // joins, filters, grouping/ordering
+    if (tech) lines.push(tech) // windows, set ops, EXISTS/IN, etc.
+    lines.push("Predicates in the WHERE clause constrain rows to relevant business conditions; JOIN keys align fact and reference data.")
+    lines.push("If present, window functions compute rankings or running totals; set operations merge compatible result sets.")
+    lines.push("Result ordering is applied for deterministic presentation; grouping aggregates measures at the target grain.")
   } else if (stmt === "dml") {
     const purpose = d.purpose || "performing controlled updates"
-    first = `This ${focus} performs ${purpose} on ${entitiesTxt}, scoped by the intended predicates.`
+    lines.push(`This ${focus} executes ${purpose} against ${entitiesTxt}, driven by explicit predicates.`)
+    if (d.effects) lines.push(sentenceize(d.effects))
+    lines.push("It targets rows through WHERE conditions and applies modifications atomically within the transaction scope.")
+    lines.push("Join clauses (if used) correlate the target to driving tables; subqueries/EXISTS guard against unintended fan-out.")
+    lines.push("Constraints and indexes influence the execution plan; consider selective predicates and proper join order for performance.")
+    if (d.freshness) lines.push(`Visibility: ${trimPeriod(d.freshness)}.`)
   } else {
     const purpose = d.purpose || "coordinating batch logic and persistence"
     const routines = d.keyRoutines?.length ? ` Key routines: ${d.keyRoutines.slice(0,4).join(", ")}.` : ""
-    first = `This ${focus} handles ${purpose} across ${entitiesTxt}.${routines}`
+    lines.push(`This ${focus} orchestrates ${purpose} across ${entitiesTxt}.${routines}`)
+    if (d.flow) lines.push(sentenceize(d.flow))
+    if (d.specialTechniques) lines.push(sentenceize(d.specialTechniques))
+    lines.push("Control flow stages validations, calculations, and writes; error-handling and logging isolate failures without halting the run.")
+    if (d.freshness) lines.push(`Batch timing/freshness: ${trimPeriod(d.freshness)}.`)
   }
 
-  const body = [first, ...extras].filter(Boolean).join(" ")
-  const constrained = clampSentences(body, 5, 8)
+  const constrained = clampSentences(lines.join(" "), 5, 7)
   const closer = buildInShortDeveloper(stmt, d, entitiesTxt)
   return `${constrained} ${closer}`.trim()
 }
 
 /* ---------- Tone helpers & stakeholder simplifiers ---------- */
-
-function toClause(s?: string): string {
-  if (!s) return ""
-  const t = s.trim().replace(/^[Uu]ses\b/, "It uses")
-  return t.endsWith(".") ? t : `${t}.`
-}
 
 function sentenceize(s: string): string {
   if (!s) return ""
@@ -551,7 +553,6 @@ function simplifyEffects(s: string): string {
 }
 
 function simplifyFlow(s: string): string {
-  // De-tech: translate “steps include update/insert/log …” to plain English
   s = s.replace(/steps include/gi, "it proceeds through steps like")
   s = s.replace(/\blog(s|ging)?\b/gi, "recording activity")
   return sentenceize(s)
@@ -591,23 +592,14 @@ function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): str
   return `In short, it ${gist.toLowerCase()} using ${entitiesTxt}.${extra ? " " + (extra.endsWith(".") ? extra : extra + ".") : ""}`
 }
 
-
 /* ---------- De-tech: remove raw identifiers for stakeholder ---------- */
 
 function softDeTech(input: string): string {
   if (!input) return input
   let s = input
-
-  // schema.table → “business tables”
   s = s.replace(/\b[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*\b/g, "business tables")
-
-  // screaming_snake identifiers (tables, procs, funcs) → “business logic/data”
   s = s.replace(/\b([A-Z][A-Z0-9]*_){1,}[A-Z0-9]*\b/g, "business logic")
-
-  // “via logging_*” → “with supporting logs”
   s = s.replace(/via\s+logging[_a-z0-9]*/gi, "with supporting logs")
-
-  // collapse double spaces leftover
   return s.replace(/\s{2,}/g, " ").trim()
 }
 
@@ -720,8 +712,7 @@ async function callAzure(systemPrompt: string, userContent: string): Promise<{ t
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
   const body: any = {
     temperature: 0.15,
-    // If your deployment supports strict JSON:
-    // response_format: { type: "json_object" },
+    response_format: { type: "json_object" }, // encourage strict JSON
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
@@ -763,8 +754,11 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, time
 /* ---------- JSON parsing & misc ---------- */
 
 function tryParseLastJson(text: string): any {
-  try { return JSON.parse(text) } catch {}
-  const m = text.match(/\{[\s\S]*\}$/m)
+  if (!text) return {}
+  // Strip ```json fences if present
+  const defenced = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
+  try { return JSON.parse(defenced) } catch {}
+  const m = defenced.match(/\{[\s\S]*\}$/m)
   if (!m) return {}
   try { return JSON.parse(m[0]) } catch { return {} }
 }
