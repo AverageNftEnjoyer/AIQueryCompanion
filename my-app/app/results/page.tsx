@@ -56,6 +56,12 @@ const gridBg = (
     <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
   </div>
 )
+const gridBgLight = (
+  <div className="pointer-events-none absolute inset-0 opacity-90">
+    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.06),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.06),transparent_60%)]" />
+    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.04)_24px)]" />
+  </div>
+)
 
 function deriveDisplayChanges(analysis: AnalysisResult | null) {
   if (!analysis) return []
@@ -478,7 +484,7 @@ export default function ResultsPage() {
 
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
-      {!isLight && gridBg}
+      {isLight ? gridBgLight : gridBg}
 
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
@@ -660,7 +666,7 @@ export default function ResultsPage() {
               </section>
 
               {/* Lower panels */}
-              <section className="grid lg:grid-cols-2 gap-8">
+            <section className="mt-1 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
                 {/* LEFT COLUMN */}
                 <div className="space-y-8">
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
@@ -850,7 +856,7 @@ export default function ResultsPage() {
                {/* RIGHT COLUMN */}
 <div className="space-y-8">
   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-    <CardContent className="p-5">
+    <CardContent className="p-5 mt-2">
 
       {/* Title + chips inline (chips on the right) */}
       <div className="flex items-center justify-between mb-4">
@@ -862,7 +868,7 @@ export default function ResultsPage() {
               Filtered view
             </span>
             {typeFilter !== "all" && (
-              <span className="px-2 py-1 rounded bg-amber-100 border border-amber-200 text-amber-800">
+              <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
                 Type: {typeFilter}
               </span>
             )}

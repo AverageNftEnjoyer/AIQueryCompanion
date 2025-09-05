@@ -442,11 +442,41 @@ function composeTLDR(
 
 /* ---------- Stakeholder (plain-English, 4–6 sentences, no raw tech names) ---------- */
 
+/** Convert SQL-ish phrasing to plain English for stakeholders */
+function deJargonStakeholder(s: string): string {
+  if (!s) return s
+  let t = s.replace(/\s+/g, " ").trim()
+
+  // SQL → plain English
+  t = t.replace(/\bGROUP\s+BY\b/gi, "grouped by")
+  t = t.replace(/\bORDER\s+BY\b/gi, "sorted by")
+  t = t.replace(/\bHAVING\b/gi, "only where")
+  t = t.replace(/\bDESC\b/gi, "highest first")
+  t = t.replace(/\bASC\b/gi, "lowest first")
+
+  // Common TRUNC patterns
+  t = t.replace(/TRUNC\([^)]*'MM'\)/gi, "month")
+  t = t.replace(/TRUNC\([^)]*'IW'\)/gi, "week")
+  t = t.replace(/TRUNC\([^)]*'DD'\)/gi, "day")
+  t = t.replace(/TRUNC\([^)]*\)/gi, "date")
+
+  // FETCH FIRST / LIMIT
+  t = t.replace(/FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+(?:WITH\s+TIES\s+)?ONLY/gi, "top $1 rows")
+  t = t.replace(/LIMIT\s+(\d+)/gi, "top $1 rows")
+
+  // IN (...) → "in a defined list"
+  t = t.replace(/\bIN\s*\(\s*SELECT[^)]*\)/gi, "in a defined list")
+  t = t.replace(/\bIN\s*\([^)]*\)/gi, "in a defined list")
+
+  return t.replace(/\s*;\s*$/g, "")
+}
+
 function composeTLDR_Stakeholder(stmt: StmtType, d: any, _entitiesTxt: string): string {
   const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
-  const purpose = d.purpose || (stmt === "select" ? "producing a clear report" : stmt === "dml" ? "applying targeted changes" : "running an end-to-end process")
+  const purposeRaw = d.purpose || (stmt === "select" ? "producing a clear report" : stmt === "dml" ? "applying targeted changes" : "running an end-to-end process")
+  const purpose = deJargonStakeholder(purposeRaw)
   const howSimple = simpleTechniqueLine(d)
-  const freshness = d.freshness ? `You can expect ${trimPeriod(d.freshness)}.` : ""
+  const freshness = d.freshness ? `You can expect ${trimPeriod(deJargonStakeholder(d.freshness))}.` : ""
 
   let body = ""
   if (stmt === "select") {
@@ -477,7 +507,7 @@ function composeTLDR_Stakeholder(stmt: StmtType, d: any, _entitiesTxt: string): 
     ].filter(Boolean).join(" ")
   }
 
-  const constrained = clampSentences(body, 4, 6)
+  const constrained = clampSentences(deJargonStakeholder(body), 4, 6)
   const closer = buildInShortStakeholder(stmt, d)
   return `${constrained} ${closer}`.trim()
 }
@@ -540,19 +570,19 @@ function simpleTechniqueLine(d: any): string {
 }
 
 function simplifyFGO(s: string): string {
-  s = s.replace(/GROUP\s+BY/gi, "groups")
-  s = s.replace(/ORDER\s+BY/gi, "orders")
-  s = s.replace(/\bJOIN\b/gi, "joins")
+  s = deJargonStakeholder(s)
+  s = s.replace(/\bjoins\b/gi, "combines")
   return sentenceize(s)
 }
 
 function simplifyEffects(s: string): string {
-  s = s.replace(/WHERE/gi, "where")
-  s = s.replace(/IN\s*\(.+?\)/gi, "in a defined list")
+  s = deJargonStakeholder(s)
+  s = s.replace(/\bWHERE\b/gi, "where")
   return sentenceize(s)
 }
 
 function simplifyFlow(s: string): string {
+  s = deJargonStakeholder(s)
   s = s.replace(/steps include/gi, "it proceeds through steps like")
   s = s.replace(/\blog(s|ging)?\b/gi, "recording activity")
   return sentenceize(s)
@@ -566,14 +596,8 @@ function buildInShortStakeholder(stmt: StmtType, d: any): string {
       ? (d.purpose ? d.purpose : "applying the intended changes safely")
       : (d.purpose ? d.purpose : "running the end-to-end process reliably")
 
-  const addon =
-    stmt === "select"
-      ? d.fgo ? ` ${trimPeriod(d.fgo)}` : ""
-      : stmt === "dml"
-      ? d.effects ? ` ${trimPeriod(d.effects)}` : ""
-      : ""
-
-  return `In short, it ${gist.toLowerCase()} using the relevant business data.${addon ? " " + sentenceize(addon) : ""}`
+  // Keep this super plain; do NOT append fgo/effects here
+  return `In short, it ${deJargonStakeholder(gist).toLowerCase()} using the relevant business data.`
 }
 
 function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): string {
@@ -597,9 +621,19 @@ function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): str
 function softDeTech(input: string): string {
   if (!input) return input
   let s = input
+
+  // schema.table → “business tables”
   s = s.replace(/\b[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*\b/g, "business tables")
+
+  // screaming_snake identifiers → “business logic”
   s = s.replace(/\b([A-Z][A-Z0-9]*_){1,}[A-Z0-9]*\b/g, "business logic")
+
+  // ALLCAPS function-like tokens → “business calculation”
+  s = s.replace(/\b[A-Z]{3,}\s*\([^)]*\)/g, "business calculation")
+
+  // “via logging_*” → “with supporting logs”
   s = s.replace(/via\s+logging[_a-z0-9]*/gi, "with supporting logs")
+
   return s.replace(/\s{2,}/g, " ").trim()
 }
 
@@ -755,7 +789,6 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, time
 
 function tryParseLastJson(text: string): any {
   if (!text) return {}
-  // Strip ```json fences if present
   const defenced = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
   try { return JSON.parse(defenced) } catch {}
   const m = defenced.match(/\{[\s\S]*\}$/m)
@@ -771,7 +804,6 @@ function formatEntities(arr: any): string {
   return `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`
 }
 
-function ensurePeriod(s: string): string { s = s.trim(); return s.endsWith(".") ? s : s + "." }
 function trimPeriod(s: string): string { return s.trim().replace(/[.]+$/, "") }
 
 function clampSentences(text: string, min: number, max: number): string {
