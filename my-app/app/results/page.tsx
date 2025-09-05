@@ -26,6 +26,7 @@ import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib
 type ChangeType = "addition" | "modification" | "deletion"
 type Side = "old" | "new" | "both"
 type GoodBad = "good" | "bad"
+type Audience = "stakeholder" | "developer"
 
 interface AnalysisResult {
   summary: string
@@ -162,8 +163,13 @@ export default function ResultsPage() {
     if (typeof window === "undefined") return true
     return localStorage.getItem("qa:syncScroll") !== "0"
   })
-  const [summary, setSummary] = useState<string>("")
-  const [summarizing, setSummarizing] = useState(false)
+
+  const [audience, setAudience] = useState<Audience>("stakeholder")
+  const [summaryStakeholder, setSummaryStakeholder] = useState<string>("")
+  const [summaryDeveloper, setSummaryDeveloper] = useState<string>("")
+  const [summarizing, setSummarizing] = useState<boolean>(false) // generic flag for button state
+  const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null) // to show spinner on the active tab
+
   const summaryRef = useRef<HTMLDivElement | null>(null)
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null)
   const summarizeAbortRef = useRef<AbortController | null>(null)
@@ -288,13 +294,9 @@ export default function ResultsPage() {
   useEffect(() => {
     const audios = [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].filter(Boolean) as HTMLAudioElement[]
     audios.forEach((a) => (a.muted = !soundOn))
-
     if (!soundOn) {
       audios.forEach((a) => {
-        try {
-          a.pause()
-          a.currentTime = 0
-        } catch {}
+        try { a.pause(); a.currentTime = 0 } catch {}
       })
       clearResumeHandler()
     }
@@ -320,6 +322,10 @@ export default function ResultsPage() {
     }
   }, [loading, error, analysis])
 
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience)
+  }, [audience])
+
   const displayChanges = useMemo(() => {
     const items = deriveDisplayChanges(analysis)
     return items.filter(
@@ -338,34 +344,40 @@ export default function ResultsPage() {
     return diff.stats
   }, [canonicalOld, canonicalNew])
 
-  async function handleGenerateSummary() {
+  // ===== Summary fetching (updated) =====
+  async function fetchSummary(forAudience: Audience) {
     if (!analysis) return
     if (summarizeAbortRef.current) summarizeAbortRef.current.abort()
     summarizeAbortRef.current = new AbortController()
 
     setSummarizing(true)
-    setSummary("")
+    setLoadingAudience(forAudience)
     try {
-      const res = await fetch("/api/summarize", {
+      const res = await fetch(`/api/summarize?audience=${forAudience}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           newQuery: canonicalNew,
           analysis,
+          audience: forAudience, // body too, in case server reads body
         }),
         signal: summarizeAbortRef.current.signal,
       })
       if (res.ok) {
         const data = await res.json()
-        setSummary(String(data?.tldr || ""))
+        const t = String(data?.tldr || "")
+        if (forAudience === "stakeholder") setSummaryStakeholder(t)
+        else setSummaryDeveloper(t)
         setTimeout(() => {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
           summaryHeaderRef.current?.focus()
         }, 100)
       } else {
-        setSummary(
+        // Fallback text (kept from your original)
+        const fallback =
           "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
-        )
+        if (forAudience === "stakeholder") setSummaryStakeholder(fallback)
+        else setSummaryDeveloper(fallback)
         setTimeout(() => {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
           summaryHeaderRef.current?.focus()
@@ -374,9 +386,10 @@ export default function ResultsPage() {
       await playDoneSound()
     } catch (e: any) {
       if (e?.name !== "AbortError") {
-        setSummary(
+        const fallback =
           "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
-        )
+        if (forAudience === "stakeholder") setSummaryStakeholder(fallback)
+        else setSummaryDeveloper(fallback)
         setTimeout(() => {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
           summaryHeaderRef.current?.focus()
@@ -385,15 +398,38 @@ export default function ResultsPage() {
       }
     } finally {
       setSummarizing(false)
+      setLoadingAudience(null)
     }
   }
+
+  async function handleGenerateSummary() {
+    // generate for the currently selected audience
+    await fetchSummary(audience)
+  }
+
+  async function handleSwitchAudience(nextAudience: Audience) {
+    setAudience(nextAudience)
+    // If we already have that summary cached, just show it; otherwise fetch it
+    const hasCached =
+      (nextAudience === "stakeholder" && summaryStakeholder) ||
+      (nextAudience === "developer" && summaryDeveloper)
+    if (!hasCached) {
+      await fetchSummary(nextAudience)
+    } else {
+      // still bring the Summary into view for UX consistency
+      setTimeout(() => {
+        summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+        summaryHeaderRef.current?.focus()
+      }, 80)
+    }
+  }
+
+  const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper
 
   const handleToggleSync = () => {
     setSyncEnabled((v) => {
       const next = !v
-      if (typeof window !== "undefined") {
-        localStorage.setItem("qa:syncScroll", next ? "1" : "0")
-      }
+      if (typeof window !== "undefined") localStorage.setItem("qa:syncScroll", next ? "1" : "0")
       playSfx(switchAudioRef)
       return next
     })
@@ -402,9 +438,7 @@ export default function ResultsPage() {
   const toggleLightUI = () => {
     setLightUI((v) => {
       const next = !v
-      if (typeof window !== "undefined") {
-        localStorage.setItem("qa:lightUI", next ? "1" : "0")
-      }
+      if (typeof window !== "undefined") localStorage.setItem("qa:lightUI", next ? "1" : "0")
       return next
     })
     playSfx(switchAudioRef)
@@ -413,9 +447,7 @@ export default function ResultsPage() {
   const handleToggleSound = () => {
     setSoundOn((prev) => {
       const next = !prev
-      if (typeof window !== "undefined") {
-        localStorage.setItem("qa:soundOn", next ? "1" : "0")
-      }
+      if (typeof window !== "undefined") localStorage.setItem("qa:soundOn", next ? "1" : "0")
       if (next) {
         const el = switchAudioRef.current
         if (el) {
@@ -430,13 +462,7 @@ export default function ResultsPage() {
       } else {
         clearResumeHandler()
         ;[doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].forEach((a) => {
-          try {
-            if (a) {
-              a.muted = true
-              a.pause()
-              a.currentTime = 0
-            }
-          } catch {}
+          try { if (a) { a.muted = true; a.pause(); a.currentTime = 0 } } catch {}
         })
       }
       return next
@@ -479,45 +505,32 @@ export default function ResultsPage() {
               </span>
             </div>
 
-            {/* Right: Generate Summary + Sync + Light UI + Sound */}
+            {/* Right Controls */}
             <div className="flex items-center justify-end gap-2">
-              {/* Sync scroll — icon button */}
               <button
                 type="button"
                 onClick={handleToggleSync}
                 title="Toggle synced scrolling"
-                className={`relative p-2 rounded-full transition ${
-                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
-                }`}
+                className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
               >
                 <Link2
                   className={`h-5 w-5 transition ${
                     isLight
-                      ? syncEnabled
-                        ? "text-gray-700"
-                        : "text-gray-400"
-                      : syncEnabled
-                      ? "text-white"
-                      : "text-white/60"
+                      ? syncEnabled ? "text-gray-700" : "text-gray-400"
+                      : syncEnabled ? "text-white" : "text-white/60"
                   }`}
                 />
               </button>
 
-              {/* Light UI toggle — header & page background only */}
               <button
                 type="button"
                 onClick={toggleLightUI}
                 title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
                 className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
               >
-                {isLight ? (
-                  <Sun className="h-5 w-5 text-gray-700" />
-                ) : (
-                  <Moon className="h-5 w-5 text-white" />
-                )}
+                {isLight ? <Sun className="h-5 w-5 text-gray-700" /> : <Moon className="h-5 w-5 text-white" />}
               </button>
 
-              {/* Sound toggle */}
               <button
                 type="button"
                 onClick={handleToggleSound}
@@ -540,10 +553,8 @@ export default function ResultsPage() {
       </header>
 
       <main className="relative z-10">
-        {/* Muted bound to state as well for belt & suspenders */}
         <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
-        {/* NEW: use the same sound the minimap uses */}
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
 
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
@@ -568,8 +579,8 @@ export default function ResultsPage() {
           {!loading && !error && analysis && (
             <div className="space-y-8">
               {/* Stat chips */}
-              <section className="mt-0 mb-2">
-                {stats && (
+              {stats && (
+                <section className="mt-0 mb-2">
                   <div className={`flex items-center justify-center gap-2 text-xs ${chipText}`}>
                     <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
                       {stats.additions} additions
@@ -584,8 +595,8 @@ export default function ResultsPage() {
                       {stats.unchanged} unchanged
                     </span>
                   </div>
-                )}
-              </section>
+                </section>
+              )}
 
               {/* Diff + MiniMap */}
               <section className="mt-1">
@@ -623,6 +634,7 @@ export default function ResultsPage() {
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
                 </div>
+
                 <div className="mt-4 flex items-center justify-center">
                   <button
                     type="button"
@@ -633,7 +645,7 @@ export default function ResultsPage() {
                         ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
                         : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
                     }`}
-                    title="Generate a basic summary of the new query"
+                    title="Generate a summary for the selected audience"
                   >
                     {summarizing ? (
                       <>
@@ -694,12 +706,11 @@ export default function ResultsPage() {
                           </select>
                         </div>
                       </div>
-                      <div
-                        className="h-[28rem] scroll-overlay focus:outline-none pr-3"
-                        tabIndex={0}>
-                        {displayChanges.length > 0 ? (
+
+                      <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
+                        {deriveDisplayChanges(analysis).length > 0 ? (
                           <div className="space-y-3">
-                            {displayChanges.map((chg, index) => {
+                            {deriveDisplayChanges(analysis).map((chg, index) => {
                               const jumpSide: "old" | "new" | "both" =
                                 chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
                               return (
@@ -710,9 +721,7 @@ export default function ResultsPage() {
                                     e.preventDefault()
                                     playMiniClick()
                                     cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-                                    document
-                                      .querySelector("#query-comparison")
-                                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                                    document.querySelector("#query-comparison")?.scrollIntoView({ behavior: "smooth", block: "start" })
                                     ;(e.currentTarget as HTMLButtonElement).blur()
                                   }}
                                   onKeyDown={(e) => {
@@ -754,22 +763,69 @@ export default function ResultsPage() {
                     </CardContent>
                   </Card>
 
-                  {(summarizing || summary) && (
+                  {/* ===== Summary Card (with audience switch) ===== */}
+                  {(summarizing || summaryStakeholder || summaryDeveloper) && (
                     <Card ref={summaryRef} className="bg-white border-gray-200 shadow-lg">
                       <CardContent className="p-5">
-                        <h3
-                          ref={summaryHeaderRef}
-                          tabIndex={-1}
-                          className="text-slate-900 font-semibold mb-4 focus:outline-none"
-                        >
-                          Summary
-                        </h3>
+                        <div className="flex items-center justify-between mb-4">
+                          <h3
+                            ref={summaryHeaderRef}
+                            tabIndex={-1}
+                            className="text-slate-900 font-semibold focus:outline-none"
+                          >
+                            Summary
+                          </h3>
+
+                          {/* Audience toggle */}
+                          <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => handleSwitchAudience("stakeholder")}
+                              disabled={loadingAudience === "stakeholder"}
+                              className={`px-3 h-8 rounded-full text-sm transition
+                                ${audience === "stakeholder"
+                                  ? "bg-white text-gray-900 shadow"
+                                  : "text-gray-600 hover:text-gray-900"}
+                              `}
+                              title="Stakeholder-friendly summary"
+                            >
+                              {loadingAudience === "stakeholder" ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
+                                </span>
+                              ) : (
+                                "Stakeholder"
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSwitchAudience("developer")}
+                              disabled={loadingAudience === "developer"}
+                              className={`px-3 h-8 rounded-full text-sm transition
+                                ${audience === "developer"
+                                  ? "bg-white text-gray-900 shadow"
+                                  : "text-gray-600 hover:text-gray-900"}
+                              `}
+                              title="Developer-focused summary"
+                            >
+                              {loadingAudience === "developer" ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
+                                </span>
+                              ) : (
+                                "Developer"
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          {summarizing && !summary ? (
+                          {/* Placeholder skeleton while nothing fetched yet */}
+                          {!currentSummary && (summarizing || loadingAudience) ? (
                             <div className="space-y-4">
                               <div className="inline-flex items-center gap-2 text-gray-700">
                                 <Loader2 className="h-4 w-4 animate-spin" />
-                                <span>Generating summary…</span>
+                                <span>Generating {audience} summary…</span>
                               </div>
                               <div className="space-y-2">
                                 <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
@@ -778,8 +834,12 @@ export default function ResultsPage() {
                                 <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
                               </div>
                             </div>
+                          ) : currentSummary ? (
+                            <p className="text-gray-800 text-sm leading-relaxed">{currentSummary}</p>
                           ) : (
-                            <p className="text-gray-800 text-sm leading-relaxed">{summary}</p>
+                            <div className="text-gray-600 text-sm">
+                              Click <strong>Generate Summary ({audience})</strong> above to create a {audience} summary.
+                            </div>
                           )}
                         </div>
                       </CardContent>
@@ -792,12 +852,10 @@ export default function ResultsPage() {
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
-                      <div
-                        className="h-[28rem] scroll-overlay focus:outline-none pr-3"
-                        tabIndex={0}>
+                      <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
                         <div className="space-y-4">
-                          {displayChanges.length > 0 ? (
-                            displayChanges.map((chg, index) => (
+                          {deriveDisplayChanges(analysis).length > 0 ? (
+                            deriveDisplayChanges(analysis).map((chg, index) => (
                               <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                                 <div className="flex items-start gap-4">
                                   <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
@@ -816,20 +874,10 @@ export default function ResultsPage() {
                                       {chg.type}
                                     </span>
                                     <div className="flex flex-col gap-1 pt-1">
-                                      <span
-                                        className={
-                                          "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                          (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-                                        }
-                                      >
+                                      <span className={"px-2 py-0.5 rounded text-[10px] font-medium " + (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
                                         Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
                                       </span>
-                                      <span
-                                        className={
-                                          "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                          (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-                                        }
-                                      >
+                                      <span className={"px-2 py-0.5 rounded text-[10px] font-medium " + (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")}>
                                         Performance: {chg.performance === "good" ? "Good" : "Bad"}
                                       </span>
                                     </div>
@@ -847,15 +895,6 @@ export default function ResultsPage() {
                       </div>
                     </CardContent>
                   </Card>
-
-                  {false && (
-                    <Card className="bg-white border-gray-200 shadow-lg">
-                      <CardContent className="p-5">
-                        <h3 className="text-slate-900 font-semibold mb-4">[Fourth Panel]</h3>
-                        <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4" />
-                      </CardContent>
-                    </Card>
-                  )}
                 </div>
               </section>
             </div>
