@@ -848,41 +848,41 @@ export default function ResultsPage() {
                 </div>
 
                {/* RIGHT COLUMN */}
-              <div className="space-y-8">
-                <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-                  <CardContent className="p-5">
-                    <h3 className="text-slate-900 font-semibold mb-4">AI Analysis</h3>
+<div className="space-y-8">
+  <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
+    <CardContent className="p-5">
 
-                    {/* Active filter chips for AI Analysis */}
-                    {(typeFilter !== "all" || sideFilter !== "all") && (
-                      <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
-                        <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
-                          Filtered view
-                        </span>
-                        {typeFilter !== "all" && (
-                          <span className="px-2 py-1 rounded bg-amber-100 border border-amber-200 text-amber-800">
-                            Type: {typeFilter}
-                          </span>
-                        )}
-                        {sideFilter !== "all" && (
-                          <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">
-                            Side: {sideFilter}
-                          </span>
-                        )}
-                        <span className="px-2 py-1 rounded bg-emerald-100 border border-emerald-200 text-emerald-800">
-                          {displayChanges.length} match{displayChanges.length === 1 ? "" : "es"}
-                        </span>
-                      </div>
-                    )}
+      {/* Title + chips inline (chips on the right) */}
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-slate-900 font-semibold">AI Analysis</h3>
+
+        {(typeFilter !== "all" || sideFilter !== "all") && (
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
+              Filtered view
+            </span>
+            {typeFilter !== "all" && (
+              <span className="px-2 py-1 rounded bg-amber-100 border border-amber-200 text-amber-800">
+                Type: {typeFilter}
+              </span>
+            )}
+            {sideFilter !== "all" && (
+              <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">
+                Side: {sideFilter}
+              </span>
+            )}
+            <span className="px-2 py-1 rounded bg-emerald-100 border border-emerald-200 text-emerald-800">
+              {displayChanges.length} match{displayChanges.length === 1 ? "" : "es"}
+            </span>
+          </div>
+        )}
+      </div>
 
       <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
         <div className="space-y-4">
           {displayChanges.length > 0 ? (
             displayChanges.map((chg, index) => (
-              <div
-                key={index}
-                className="bg-gray-50 border border-gray-200 rounded-lg p-4"
-              >
+              <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                 <div className="flex items-start gap-4">
                   <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
                     <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
@@ -903,9 +903,7 @@ export default function ResultsPage() {
                       <span
                         className={
                           "px-2 py-0.5 rounded text-[10px] font-medium " +
-                          (chg.syntax === "good"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-rose-100 text-rose-700")
+                          (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
                         }
                       >
                         Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
@@ -913,19 +911,14 @@ export default function ResultsPage() {
                       <span
                         className={
                           "px-2 py-0.5 rounded text-[10px] font-medium " +
-                          (chg.performance === "good"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-rose-100 text-rose-700")
+                          (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
                         }
                       >
-                        Performance:{" "}
-                        {chg.performance === "good" ? "Good" : "Bad"}
+                        Performance: {chg.performance === "good" ? "Good" : "Bad"}
                       </span>
                     </div>
                   </div>
-                  <p className="flex-1 text-gray-800 text-sm leading-relaxed">
-                    {chg.explanation}
-                  </p>
+                  <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
                 </div>
               </div>
             ))
@@ -935,19 +928,18 @@ export default function ResultsPage() {
                 <p>
                   No matching changes for the current filter
                   {typeFilter !== "all" ? ` (type: ${typeFilter})` : ""}
-                  {sideFilter !== "all" ? ` (side: ${sideFilter})` : ""}.
-                  Try clearing or adjusting the filters.
+                  {sideFilter !== "all" ? ` (side: ${sideFilter})` : ""}. Try clearing or adjusting the filters.
                 </p>
               ) : (
                 <p className="leading-relaxed">{analysis.summary}</p>
-                     )}
-                      </div>
-                      )}
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
+              )}
+               </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
            </section>
            </div>
           )}
