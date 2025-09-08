@@ -12,6 +12,8 @@ type ChangeItem = {
   description: string
   lineNumber: number
   side: Side
+  span?: number
+  jumpLine?: number
 }
 
 type ChangeExplanation = {
@@ -19,7 +21,7 @@ type ChangeExplanation = {
   explanation: string
   syntax?: GoodBad
   performance?: GoodBad
-  // internal optional fields (not required by UI but useful if needed)
+  // internal optional fields carried through (not required by UI)
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   _syntax_explanation?: string
@@ -125,8 +127,7 @@ async function withRetry<T>(fn: () => Promise<T>, retries = RETRIES): Promise<T>
 
 function tokenFromDescription(desc: string): string {
   const m =
-    desc.match(/:\s(?:added|removed|changed.*to)\s"([^"]*)"/i) ??
-    desc.match(/"([^"]*)"$/)
+    desc.match(/:\s(?:added|removed|changed.*to)\s"([^"]*)"/i) ?? desc.match(/"([^"]*)"$/)
   return (m?.[1] ?? "").trim()
 }
 
@@ -209,7 +210,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
     task: "Explain each change so a junior developer understands what changed and why it matters.",
     guidance: [
       "Write length according to 'verbosity' per change: short=1–2 sentences, medium=3–5, long=5–8.",
-      "Short changes are quick fixes; large grouped blocks (CTEs/procedures) deserve more depth.",
+      "Short changes are quick fixes; large grouped blocks (CTEs/subqueries/procedures) deserve more depth.",
       "Audience is junior-level: use plain language; define jargon briefly (e.g., 'sargable' = index-friendly).",
       "Do not speculate beyond names.",
       "Describe effects on touched clauses: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
@@ -468,30 +469,38 @@ function buildChanges(diff: ComparisonResult): ChangeItem[] {
   return out
 }
 
-/* ---------------------------- Structural segmentation ---------------------------- */
+/* --------------------- Subquery/CTE-aware structural analysis --------------------- */
 
-type Segmenter = {
+type SqlBlockKind = "CTE" | "SUBQUERY" | "BEGIN_END" | "CLAUSE"
+type SqlBlock = { kind: SqlBlockKind; start: number; end: number; label: string }
+
+type SqlStructure = {
   boundaries: Set<number>
   labels: Map<number, string>
+  blocks: SqlBlock[]
+  byLine: Map<number, number> // line -> primary block index
 }
 
-function buildSegmenter(sql: string): Segmenter {
+function buildSqlStructure(sql: string): SqlStructure {
+  const lines = sql.split("\n")
   const boundaries = new Set<number>()
   const labels = new Map<number, string>()
-  const lines = sql.split("\n")
+  const blocks: SqlBlock[] = []
+  const byLine = new Map<number, number>()
 
-  const rules: Array<[RegExp, string]> = [
+  // Clause boundaries
+  const clauseRules: Array<[RegExp, string]> = [
     [/^\s*(CREATE(\s+OR\s+REPLACE)?\s+)?(PROCEDURE|FUNCTION|TRIGGER|PACKAGE|VIEW|TABLE)\b/i, "CREATE"],
     [/^\s*WITH\b/i, "WITH"],
     [/^\s*SELECT\b/i, "SELECT"],
     [/^\s*FROM\b/i, "FROM"],
     [/^\s*(INNER|LEFT|RIGHT|FULL)?\s*JOIN\b/i, "JOIN"],
     [/^\s*WHERE\b/i, "WHERE"],
-    [/^\s*CONNECT\s+BY\b/i, "CONNECT BY"],      // Oracle
-    [/^\s*START\s+WITH\b/i, "START WITH"],      // Oracle
+    [/^\s*CONNECT\s+BY\b/i, "CONNECT BY"],
+    [/^\s*START\s+WITH\b/i, "START WITH"],
     [/^\s*GROUP BY\b/i, "GROUP BY"],
     [/^\s*HAVING\b/i, "HAVING"],
-    [/^\s*MODEL\b/i, "MODEL"],                  // Oracle
+    [/^\s*MODEL\b/i, "MODEL"],
     [/^\s*ORDER BY\b/i, "ORDER BY"],
     [/^\s*UNION(\s+ALL)?\b/i, "UNION"],
     [/^\s*INSERT\b/i, "INSERT"],
@@ -509,34 +518,105 @@ function buildSegmenter(sql: string): Segmenter {
   for (let idx = 0; idx < lines.length; idx++) {
     const n = idx + 1
     const t = lines[idx].trim()
-    if (t === "") {
-      boundaries.add(n)
-      continue
-    }
-    for (const [re, label] of rules) {
-      if (re.test(t)) {
-        boundaries.add(n)
-        if (!labels.has(n)) labels.set(n, label)
-        break
-      }
+    if (!t) { boundaries.add(n); continue }
+    for (const [re, label] of clauseRules) {
+      if (re.test(t)) { boundaries.add(n); if (!labels.has(n)) labels.set(n, label); break }
     }
   }
-  return { boundaries, labels }
+
+  const pushBlock = (start: number, end: number, kind: SqlBlockKind, label: string) => {
+    if (end < start) return
+    const b: SqlBlock = { kind, start, end, label }
+    const idx = blocks.push(b) - 1
+    for (let ln = start; ln <= end; ln++) if (!byLine.has(ln)) byLine.set(ln, idx)
+  }
+
+  // CTE bodies: WITH ... name AS ( ... )
+  const withRE = /^\s*WITH\b/i
+  const asOpenRE = /\bAS\s*\(\s*$/i
+  let inWith = false
+  for (let i = 0; i < lines.length; i++) {
+    const n = i + 1
+    const t = lines[i].trim()
+    if (withRE.test(t)) inWith = true
+    if (inWith && asOpenRE.test(t)) {
+      const startLine = n + 1
+      let depth = 1, j = i + 1
+      while (j < lines.length && depth > 0) {
+        const L = lines[j]
+        depth += (L.match(/\(/g) || []).length
+        depth -= (L.match(/\)/g) || []).length
+        j++
+      }
+      const endLine = Math.max(startLine, j)
+      pushBlock(startLine, endLine, "CTE", "CTE")
+    }
+    if (inWith && /^\s*SELECT\b/i.test(t)) inWith = false
+  }
+
+  // Subqueries: '(' ... SELECT ... ')'
+  type StackItem = { openLine: number; isSubquery: boolean }
+  const stack: StackItem[] = []
+  for (let i = 0; i < lines.length; i++) {
+    const n = i + 1
+    const line = lines[i]
+
+    // parenthesis scan
+    for (const ch of line) {
+      if (ch === "(") stack.push({ openLine: n, isSubquery: false })
+      else if (ch === ")") {
+        const itm = stack.pop()
+        if (itm && itm.isSubquery) pushBlock(itm.openLine, n, "SUBQUERY", "SUBQUERY")
+      }
+    }
+    // mark top-of-stack as subquery if SELECT appears before close
+    if (/\bSELECT\b/i.test(line) && stack.length > 0) {
+      const top = stack[stack.length - 1]
+      if (top && !top.isSubquery) top.isSubquery = true
+    }
+
+    // BEGIN..END (PL/SQL)
+    if (/^\s*BEGIN\b/i.test(line)) {
+      let j = i + 1, opens = 1
+      while (j < lines.length && opens > 0) {
+        if (/^\s*BEGIN\b/i.test(lines[j])) opens++
+        if (/^\s*END\b/i.test(lines[j])) opens--
+        j++
+      }
+      const endLine = Math.max(n, j)
+      pushBlock(n, endLine, "BEGIN_END", "BEGIN…END")
+    }
+  }
+
+  // Clause blocks (for nicer fallback grouping)
+  labels.forEach((lab, ln) => {
+    const next = [...labels.keys()].filter(k => k > ln).sort((a,b)=>a-b)[0] ?? lines.length + 1
+    pushBlock(ln, next - 1, "CLAUSE", lab)
+  })
+
+  return { boundaries, labels, blocks, byLine }
 }
 
-function findLabelInRange(seg: Segmenter, start: number, end: number): string | undefined {
+function blockContaining(struct: SqlStructure, line: number): SqlBlock | undefined {
+  const idx = struct.byLine.get(line)
+  return typeof idx === "number" ? struct.blocks[idx] : undefined
+}
+
+function findLabelInRange(struct: SqlStructure, start: number, end: number): string | undefined {
+  const b = blockContaining(struct, start)
+  if (b && start >= b.start && end <= b.end) return b.label
   for (let n = start; n <= end; n++) {
-    const l = seg.labels.get(n)
+    const l = struct.labels.get(n)
     if (l) return l
   }
   return undefined
 }
 
-/** Smarter grouping using consecutive runs + SQL boundaries. */
+/** Grouping that understands subqueries/CTEs/blocks. */
 function groupChangesSmart(
   items: ChangeItem[],
-  segNew: Segmenter,
-  segOld: Segmenter,
+  structNew: SqlStructure,
+  structOld: SqlStructure,
   threshold = GROUP_THRESHOLD,
   maxBlock = MAX_GROUP_LINES
 ): ChangeItem[] {
@@ -546,7 +626,6 @@ function groupChangesSmart(
   let i = 0
 
   while (i < items.length) {
-    const start = i
     const base = items[i]
     let end = i
 
@@ -556,94 +635,87 @@ function groupChangesSmart(
       items[end + 1].type === base.type &&
       items[end + 1].side === base.side &&
       items[end + 1].lineNumber === items[end].lineNumber + 1
-    ) {
-      end++
-    }
+    ) end++
 
-    const runLen = end - start + 1
-    if (runLen < threshold) {
-      for (let k = start; k <= end; k++) grouped.push(items[k])
-      i = end + 1
-      continue
-    }
-
-    // candidate boundaries inside the run
-    const seg = base.side === "old" ? segOld : segNew
-    const runStart = items[start].lineNumber
+    const runStart = items[i].lineNumber
     const runEnd = items[end].lineNumber
+    const runLen = end - i + 1
 
-    const cuts: number[] = []
-    for (let n = runStart + 1; n <= runEnd; n++) {
-      if (seg.boundaries.has(n)) cuts.push(n)
-    }
+    const struct = base.side === "old" ? structOld : structNew
 
-    if (cuts.length === 0) {
-      let s = runStart
-      while (s <= runEnd) {
-        const e = Math.min(s + maxBlock - 1, runEnd)
-        pushBlock(s, e)
-        s = e + 1
+    // majority block (CTE/SUBQUERY/BEGIN…END)
+    const majorityBlock = (() => {
+      const counts = new Map<number, number>()
+      for (let k = i; k <= end; k++) {
+        const b = blockContaining(struct, items[k].lineNumber)
+        if (!b) continue
+        const idx = struct.blocks.indexOf(b)
+        counts.set(idx, (counts.get(idx) ?? 0) + 1)
       }
-      i = end + 1
-      continue
-    }
+      let bestIdx = -1, best = 0
+      counts.forEach((v, key) => { if (v > best) { best = v; bestIdx = key } })
+      return bestIdx >= 0 && best >= Math.ceil(runLen * 0.6) ? struct.blocks[bestIdx] : undefined
+    })()
 
-    let segStart = runStart
-    for (let c = 0; c < cuts.length; c++) {
-      const segEndCandidate = cuts[c] - 1
-      if (segEndCandidate < segStart) continue
-
-      let a = segStart
-      while (a <= segEndCandidate) {
-        const b = Math.min(a + maxBlock - 1, segEndCandidate)
-        if (b - a + 1 >= threshold) pushBlock(a, b)
-        else {
-          const tailOffset = a - runStart
-          const tailLen = b - a + 1
-          for (let off = 0; off < tailLen; off++) grouped.push(items[start + tailOffset + off])
-        }
-        a = b + 1
-      }
-      segStart = cuts[c]
-    }
-
-    if (segStart <= runEnd) {
-      let a = segStart
-      while (a <= runEnd) {
-        const b = Math.min(a + maxBlock - 1, runEnd)
-        if (b - a + 1 >= threshold) pushBlock(a, b)
-        else {
-          const tailOffset = a - runStart
-          const tailLen = b - a + 1
-          for (let off = 0; off < tailLen; off++) grouped.push(items[start + tailOffset + off])
-        }
-        a = b + 1
-      }
-    }
-
-    i = end + 1
-
-    function pushBlock(aLine: number, bLine: number) {
+    const pushBlock = (aLine: number, bLine: number, labelHint?: string) => {
       const spanLen = bLine - aLine + 1
-      const preview = tokenFromDescription(items[start].description)
-      const label = findLabelInRange(seg, aLine, bLine)
+      const preview = tokenFromDescription(items[i].description)
+      const label = labelHint ?? findLabelInRange(struct, aLine, bLine)
       const rangeText = aLine === bLine ? `Line ${aLine}` : `Lines ${aLine}-${bLine}`
-      const scope =
-        label ? ` (${label}${label === "BEGIN" && findLabelInRange(seg, bLine, bLine) === "END" ? "…END" : " block"})` : ""
+      const scope = label ? ` (${label} block)` : ""
       const desc =
         base.type === "addition"
           ? `${rangeText}${scope}: added ${spanLen} lines. Preview "${preview}"`
           : base.type === "deletion"
           ? `${rangeText}${scope}: removed ${spanLen} lines. Preview "${preview}"`
-          : `${rangeText}${scope}: modified ${spanLen} lines in a block. Preview "${preview}"`
+          : `${rangeText}${scope}: modified ${spanLen} lines. Preview "${preview}"`
 
-      grouped.push({
-        type: base.type,
-        description: desc,
-        lineNumber: aLine,
-        side: base.side,
-      })
+      grouped.push({ type: base.type, description: desc, lineNumber: aLine, side: base.side, span: spanLen, })
     }
+
+    if (majorityBlock && runLen >= threshold) {
+      // expand to the containing block; chunk if too large
+      let a = majorityBlock.start
+      let b = Math.min(majorityBlock.end, a + maxBlock - 1)
+      while (a <= majorityBlock.end) {
+        pushBlock(a, b, majorityBlock.label)
+        a = b + 1
+        b = Math.min(majorityBlock.end, a + maxBlock - 1)
+      }
+      i = end + 1
+      continue
+    }
+
+    // Fallback: split by clause boundaries within the run
+    if (runLen >= threshold) {
+      let segStart = runStart
+      for (let n = runStart + 1; n <= runEnd; n++) {
+        if (struct.boundaries.has(n)) {
+          const segEnd = n - 1
+          if (segEnd >= segStart) {
+            if (segEnd - segStart + 1 >= threshold) pushBlock(segStart, segEnd)
+            else {
+              const off0 = segStart - runStart
+              for (let k = 0; k < (segEnd - segStart + 1); k++) grouped.push(items[i + off0 + k])
+            }
+            segStart = n
+          }
+        }
+      }
+      if (segStart <= runEnd) {
+        if (runEnd - segStart + 1 >= threshold) pushBlock(segStart, runEnd)
+        else {
+          const off0 = segStart - runStart
+          for (let k = 0; k < (runEnd - segStart + 1); k++) grouped.push(items[i + off0 + k])
+        }
+      }
+      i = end + 1
+      continue
+    }
+
+    // Too small: pass through
+    for (let k = i; k <= end; k++) grouped.push(items[k])
+    i = end + 1
   }
 
   return grouped
@@ -684,11 +756,12 @@ export async function POST(req: Request) {
     const diff = generateQueryDiff(canonOld, canonNew)
     const rawChanges = buildChanges(diff)
 
-    const segNew = buildSegmenter(canonNew)
-    const segOld = buildSegmenter(canonOld)
+    // NEW: structure aware (subqueries/CTEs/BEGIN…END + clauses)
+    const structNew = buildSqlStructure(canonNew)
+    const structOld = buildSqlStructure(canonOld)
 
     const { threshold, maxLines } = groupingFromHeaders(req)
-    const grouped = groupChangesSmart(rawChanges, segNew, segOld, threshold, maxLines)
+    const grouped = groupChangesSmart(rawChanges, structNew, structOld, threshold, maxLines)
 
     if (grouped.length === 0) {
       const payload = {
@@ -731,7 +804,7 @@ export async function POST(req: Request) {
       const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
       try {
         modelExplanations = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
-      } catch (primaryErr) {
+      } catch {
         // Fallback to the other provider
         try {
           modelExplanations = provider === "azure" ? await explainWithXAI(payload) : await explainWithAzure(payload)
@@ -750,9 +823,7 @@ export async function POST(req: Request) {
       const m = expMap.get(idx)
       let explanation =
         m?.explanation?.trim() ||
-        (AI_DISABLED
-          ? "AI analysis is disabled for this run."
-          : "AI analysis is disabled Dev is testing..")
+        (AI_DISABLED ? "AI analysis is disabled for this run." : "AI analysis is disabled Dev is testing..")
       const extras: string[] = []
       if (m?.syntax === "bad" && (m as any)._syntax_explanation) extras.push(`Syntax: ${(m as any)._syntax_explanation}`)
       if (m?.performance === "bad" && (m as any)._performance_explanation)

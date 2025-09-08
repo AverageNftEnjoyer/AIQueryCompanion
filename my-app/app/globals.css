@@ -277,8 +277,6 @@ html.dark { color-scheme: dark; }
   background-color: rgba(0,0,0,0.55);
 }
 
-/* --- Firefox --- */
-/* Keep the scrollbar width constant (thin), but make it transparent until hover */
 .scroll-overlay {
   scrollbar-width: thin;                               /* constant width */
   scrollbar-color: transparent transparent;            /* hidden by default */
@@ -286,4 +284,13 @@ html.dark { color-scheme: dark; }
 
 .scroll-overlay:hover {
   scrollbar-color: rgba(0,0,0,0.45) transparent;       /* show on hover */
+}
+
+.card.bg-white {
+  background-color: #f9fafb !important; /* Tailwind slate-50 */
+}
+
+.query-comparison-pane {
+  background-color: #0d0d0e !important;
+  border-color: #1e1f20 !important; 
 }

@@ -38,6 +38,7 @@ interface AnalysisResult {
     side: Side
     syntax: GoodBad
     performance: GoodBad
+    span?: number 
   }>
   recommendations: Array<{
     type: "optimization" | "best_practice" | "warning" | "analysis"
@@ -74,7 +75,7 @@ function toMiniChanges(analysis: AnalysisResult | null) {
     type: c.type,
     side: c.side,
     lineNumber: c.lineNumber,
-    span: 1,
+    span: c.span ?? 1,           
     label: c.description,
   }))
 }
@@ -186,6 +187,26 @@ export default function ResultsPage() {
   const [summaryDeveloper, setSummaryDeveloper] = useState<string>("")
   const [summarizing, setSummarizing] = useState<boolean>(false) // generic flag for button state
   const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null) // to show spinner on the active tab
+  const totalOldLines = useMemo(
+  () => (oldQuery ? oldQuery.split("\n").length : 0),
+  [oldQuery]
+)
+const totalNewLines = useMemo(
+  () => (newQuery ? newQuery.split("\n").length : 0),
+  [newQuery]
+)
+
+const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis])
+
+const miniOld = useMemo(
+  () => allMiniChanges.filter((c) => c.side === "old"),
+  [allMiniChanges]
+)
+
+const miniNew = useMemo(
+  () => allMiniChanges.filter((c) => c.side !== "old"),
+  [allMiniChanges]
+)
 
   const summaryRef = useRef<HTMLDivElement | null>(null)
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null)
@@ -613,36 +634,51 @@ const headerBgClass = isLight
               )}
 
               {/* Diff + MiniMap */}
-              <section className="mt-1">
-                <div className="flex items-stretch gap-3">
-                  <div className="flex-1 min-w-0 h-[90vh]">
-                    <div id="query-comparison" className="h-full overflow-auto rounded-xl">
-                      <QueryComparison
-                        ref={cmpRef}
-                        oldQuery={oldQuery}
-                        newQuery={newQuery}
-                        showTitle={false}
-                        syncScrollEnabled={syncEnabled}
-                      />
-                    </div>
-                  </div>
-                  <div className="hidden lg:block h-[86vh]">
-                    <MiniMap
-                      totalLines={Math.max(
-                        oldQuery ? oldQuery.split("\n").length : 0,
-                        newQuery ? newQuery.split("\n").length : 0
-                      )}
-                      changes={toMiniChanges(analysis)}
-                      onJump={({ side, line }) => cmpRef.current?.scrollTo({ side, line })}
-                      className={`w-6 h-full rounded-md
-                        ${isLight
-                          ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                          : "bg-white/5 border border-white/10 hover:border-white/20"
-                        }`}
-                      soundEnabled={soundOn}
-                    />
-                  </div>
-                </div>
+<section className="mt-1">
+  <div className="flex items-stretch gap-3 h-[86vh] min-h-0">
+    {/* Query Comparison */}
+    <div className="flex-1 min-w-0 h-full rounded-xl">
+      <QueryComparison
+        ref={cmpRef}
+        oldQuery={oldQuery}
+        newQuery={newQuery}
+        showTitle={false}
+        syncScrollEnabled={syncEnabled}
+      />
+    </div>
+
+    {/* Dual minimaps */}
+    <div className="hidden lg:flex h-full items-stretch gap-2">
+      {/* OLD minimap */}
+      <MiniMap
+        totalLines={totalOldLines}
+        changes={miniOld}
+        forceSide="old"
+        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
+        className={`w-6 h-full rounded-md
+          ${isLight
+            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+            : "bg-white/5 border border-white/10 hover:border-white/20"
+          }`}
+        soundEnabled={soundOn}
+      />
+
+      {/* NEW minimap */}
+      <MiniMap
+        totalLines={totalNewLines}
+        changes={miniNew}
+        forceSide="new"
+        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
+        className={`w-6 h-full rounded-md
+          ${isLight
+            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+            : "bg-white/5 border border-white/10 hover:border-white/20"
+          }`}
+        soundEnabled={soundOn}
+      />
+    </div>
+  </div>
+
 
                 <div className={`flex items-center justify-center text-xs mt-1 ${isLight ? "text-gray-500" : "text-white/60"}`}>
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
@@ -735,7 +771,7 @@ const headerBgClass = isLight
                                   e.preventDefault()
                                   playMiniClick()
                                   cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-                                  document.querySelector("#query-comparison")?.scrollIntoView({ behavior: "smooth", block: "start" })
+                                  window.scrollTo({ top: 0, behavior: "smooth" })
                                   ;(e.currentTarget as HTMLButtonElement).blur()
                                 }}
                                 onKeyDown={(e) => {

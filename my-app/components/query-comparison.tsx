@@ -104,7 +104,6 @@ function QueryComparisonInner(
     if (src && dst) syncOther(src, dst)
   }
 
-  // --- Flash highlight helper ---
   function flashLine(side: "old" | "new", line: number) {
     const pane = side === "old" ? leftRef.current : rightRef.current
     if (!pane) return
@@ -112,11 +111,8 @@ function QueryComparisonInner(
     if (!el) return
 
     el.classList.remove("qa-flash-highlight")
-    // Force reflow to restart the animation if the same line is clicked repeatedly
     void el.offsetWidth
     el.classList.add("qa-flash-highlight")
-
-    // Safety cleanup
     window.setTimeout(() => el.classList.remove("qa-flash-highlight"), 1500)
   }
 
@@ -126,8 +122,9 @@ function QueryComparisonInner(
         const l = leftRef.current
         const r = rightRef.current
         if (!l || !r) return
-        const tR = r.querySelector<HTMLElement>(`[data-side="new"][data-line="${line}"]`) ||
-                   r.querySelector<HTMLElement>(`[data-line="${line}"]`)
+        const tR =
+          r.querySelector<HTMLElement>(`[data-side="new"][data-line="${line}"]`) ||
+          r.querySelector<HTMLElement>(`[data-line="${line}"]`)
         suppressSync.current.old = true
         suppressSync.current.new = true
         if (tR) r.scrollTop = tR.offsetTop - r.clientHeight / 2
@@ -135,7 +132,7 @@ function QueryComparisonInner(
         const rh = r.scrollLeft / Math.max(1, r.scrollWidth - r.clientWidth)
         l.scrollTop = rv * Math.max(1, l.scrollHeight - l.clientHeight)
         l.scrollLeft = rh * Math.max(1, l.scrollWidth - l.clientWidth)
-        if (flash) flashLine("new", line) // prefer flashing the updated pane for "both"
+        if (flash) flashLine("new", line)
         return
       }
 
@@ -170,24 +167,19 @@ function QueryComparisonInner(
       <div
         ref={refDiv}
         onScroll={() => onPaneScroll(side)}
-        className="rounded-lg border border-gray-200 bg-white overflow-auto hover-scroll focus:outline-none"
+        className="rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
         style={{ ...heightStyle, scrollbarGutter: "stable" }}
         aria-label={ariaLabel}
         tabIndex={0}
       >
-        <div className="w-max p-4 font-mono text-[13px] leading-relaxed text-slate-800">
+        <div className="w-max p-3 font-mono text-[11px] leading-snug text-slate-800">
           {lines.map((line, idx) => {
             const n = idx + 1
             const tag = tags.get(n)
             const rowBg =
               tag === "modified" ? theme.modified : tag === "removed" ? theme.removed : tag === "added" ? theme.added : ""
             return (
-              <div
-                key={n}
-                data-side={side}
-                data-line={n}
-                className={`${theme.baseRow} ${rowBg}`}
-              >
+              <div key={n} data-side={side} data-line={n} className={`${theme.baseRow} ${rowBg}`}>
                 <span className={`w-10 shrink-0 mt-0.5 text-xs ${theme.num}`}>{n}</span>
                 <div className={`flex items-center gap-2 ${theme.code} shrink-0`}>
                   <code className="whitespace-pre pr-4">{renderHighlightedSQL(line)}</code>
@@ -203,7 +195,7 @@ function QueryComparisonInner(
   return (
     <>
       <div className={className}>
-        <Card className="mb-6 bg-white border-gray-200">
+        <Card className="mb-6 bg-slate-50 border-slate-200 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
           {showTitle && (
             <CardHeader className="pb-3">
               <CardTitle className="flex items-center gap-2 font-heading text-slate-900">

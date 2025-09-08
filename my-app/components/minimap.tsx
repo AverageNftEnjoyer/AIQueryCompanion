@@ -20,13 +20,18 @@ interface MiniMapProps {
   className?: string
   soundSrc?: string
   soundEnabled?: boolean
+
+  mapHeightPx?: number
+  minBlockPx?: number
+
+  /** Optional override: force all jumps to go to this side */
+  forceSide?: Side
 }
 
-/** Opaque, brand-stable colors (no alpha). */
 const SOLID_COLOR: Record<ChangeType, string> = {
-  addition: "#10b981",     // tailwind emerald-500
-  modification: "#f59e0b", // tailwind amber-500
-  deletion: "#ef4444",     // tailwind red-500  (bright, not rose/magenta)
+  addition: "#10b981",     // green
+  modification: "#f59e0b", // yellow
+  deletion: "#ef4444",     // red
 }
 
 export function MiniMap({
@@ -36,8 +41,10 @@ export function MiniMap({
   className,
   soundSrc = "/minimapbar.mp3",
   soundEnabled = true,
+  mapHeightPx = 220,
+  minBlockPx = 6,
+  forceSide,
 }: MiniMapProps) {
-  const minBlock = 6
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null)
 
   const playClick = () => {
@@ -45,7 +52,7 @@ export function MiniMap({
     const el = clickAudioRef.current
     if (!el) return
     try {
-      el.muted = !soundEnabled
+      el.muted = false
       el.pause()
       el.currentTime = 0
       el.volume = 0.6
@@ -79,27 +86,35 @@ export function MiniMap({
 
       {changes.map((c, i) => {
         const span = Math.max(1, c.span ?? 1)
-        const topPct = (c.lineNumber / Math.max(1, totalLines)) * 100
-        const hPx = Math.max(minBlock, (span / Math.max(1, totalLines)) * 220)
+        const centerLine = c.lineNumber + (span - 1) / 2
+        const topPct = (centerLine / Math.max(1, totalLines)) * 100
+
+        const hPx = Math.max(
+            minBlockPx,
+            (span / Math.max(1, totalLines)) * mapHeightPx
+          )
 
         return (
           <button
             key={i}
-            title={`${c.label || c.type} @ line ${c.lineNumber}`}
+            title={`${c.label || c.type} @ lines ${c.lineNumber}-${c.lineNumber + span - 1}`}
             onClick={(e) => {
               e.preventDefault()
               playClick()
-              onJump({ side: c.side as Side, line: c.lineNumber })
+              onJump({
+                side: forceSide ?? (c.side as Side),
+                line: c.lineNumber,
+              })
             }}
             className="absolute left-0 right-0 transition-[filter,transform] hover:brightness-110 active:brightness-125"
             style={{
               top: `calc(${topPct}% - ${hPx / 2}px)`,
               height: `${hPx}px`,
-              backgroundColor: SOLID_COLOR[c.type], 
-              opacity: 1,                       
-              mixBlendMode: "normal",            
+              backgroundColor: SOLID_COLOR[c.type],
+              opacity: 1,
+              mixBlendMode: "normal",
             }}
-            aria-label={`Jump to ${c.type} at line ${c.lineNumber}`}
+            aria-label={`Jump to ${c.type} at lines ${c.lineNumber}-${c.lineNumber + span - 1}`}
           />
         )
       })}
