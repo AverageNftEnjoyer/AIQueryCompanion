@@ -57,9 +57,9 @@ const gridBg = (
   </div>
 )
 const gridBgLight = (
-  <div className="pointer-events-none absolute inset-0 opacity-90">
-    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.06),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.06),transparent_60%)]" />
-    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.04)_24px)]" />
+  <div className="pointer-events-none absolute inset-0 opacity-80">
+    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.035),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.035),transparent_60%)]" />
+    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
   </div>
 )
 
@@ -79,7 +79,7 @@ function toMiniChanges(analysis: AnalysisResult | null) {
   }))
 }
 
-function FancyLoader() {
+function FancyLoader({ isLight }: { isLight: boolean }) {
   const messages = [
     "Generating semantic diff, risk notes, and explanations…",
     "Analyzing SQL syntax and detecting anomalies…",
@@ -107,34 +107,45 @@ function FancyLoader() {
         setFading(false)
       }, 250)
     }
-
     const id = window.setInterval(tick, 4000)
     tick()
-
     return () => {
       if (timeoutRef.current) window.clearTimeout(timeoutRef.current)
       window.clearInterval(id)
     }
   }, [])
 
+  const barBase =
+    "rounded-sm animate-bounce"
+  const barShade1 = isLight ? "bg-gray-800" : "bg-white/90"
+  const barShade2 = isLight ? "bg-gray-700" : "bg-white/80"
+  const barShade3 = isLight ? "bg-gray-600" : "bg-white/70"
+
+  const cardBg = isLight
+    ? "bg-black/5 border-black/10"
+    : "bg-white/5 border-white/10"
+
+  const pulseBg = isLight ? "bg-black/10" : "bg-white/10"
+  const textColor = isLight ? "text-gray-700" : "text-white/70"
+
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
       <div className="flex items-end gap-1.5 mb-6">
-        <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" />
-        <span className="w-2 h-7 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
-        <span className="w-2 h-9 bg-white/70 rounded-sm animate-bounce" style={{ animationDelay: "240ms" }} />
-        <span className="w-2 h-7 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "360ms" }} />
-        <span className="w-2 h-5 bg-white/90 rounded-sm animate-bounce" style={{ animationDelay: "480ms" }} />
+        <span className={`w-2 h-5 ${barShade1} ${barBase}`} />
+        <span className={`w-2 h-7 ${barShade2} ${barBase}`} style={{ animationDelay: "120ms" }} />
+        <span className={`w-2 h-9 ${barShade3} ${barBase}`} style={{ animationDelay: "240ms" }} />
+        <span className={`w-2 h-7 ${barShade2} ${barBase}`} style={{ animationDelay: "360ms" }} />
+        <span className={`w-2 h-5 ${barShade1} ${barBase}`} style={{ animationDelay: "480ms" }} />
       </div>
 
-      <div className="w-full max-w-3xl rounded-xl border border-white/10 bg-white/5 backdrop-blur p-6">
-        <div className="h-4 w-40 bg-white/10 rounded mb-4 animate-pulse" />
+      <div className={`w-full max-w-3xl rounded-xl border ${cardBg} backdrop-blur p-6`}>
+        <div className={`h-4 w-40 ${pulseBg} rounded mb-4 animate-pulse`} />
         <div className="space-y-2">
-          <div className="h-3 w-full bg-white/10 rounded animate-pulse" />
-          <div className="h-3 w-[92%] bg-white/10 rounded animate-pulse" />
-          <div className="h-3 w-[84%] bg-white/10 rounded animate-pulse" />
+          <div className={`h-3 w-full ${pulseBg} rounded animate-pulse`} />
+          <div className={`h-3 w-[92%] ${pulseBg} rounded animate-pulse`} />
+          <div className={`h-3 w-[84%] ${pulseBg} rounded animate-pulse`} />
         </div>
-        <div className="mt-6 flex items-center gap-2 text-white/70" aria-live="polite">
+        <div className={`mt-6 flex items-center gap-2 ${textColor}`} aria-live="polite">
           <Zap className="w-4 h-4 animate-pulse" />
           <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
             {messages[index]}
@@ -182,13 +193,10 @@ export default function ResultsPage() {
 
   const [soundOn, setSoundOn] = useState(true)
   const [lightUI, setLightUI] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    const saved = localStorage.getItem("qa:lightUI")
-    if (saved === "1") return true
-    if (saved === "0") return false
-    return !window.matchMedia?.("(prefers-color-scheme: dark)")?.matches
-  })
-
+  if (typeof window === "undefined") return false
+  const saved = localStorage.getItem("qa:lightUI")
+  return saved === "1"
+})
   const analysisDoneSoundPlayedRef = useRef(false)
   const resumeHandlerRef = useRef<((e?: any) => void) | null>(null)
   const clearResumeHandler = () => {
@@ -476,11 +484,11 @@ export default function ResultsPage() {
   }
 
   const isLight = lightUI
-  const pageBgClass = isLight ? "bg-white text-gray-900" : "bg-neutral-950 text-white"
-  const headerBgClass = isLight
-    ? "bg-white/90 border-black/10 text-gray-900 shadow-sm"
-    : "bg-black/30 border-white/10 text-white"
-  const chipText = isLight ? "text-gray-800" : "text-white/80"
+  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white"
+const headerBgClass = isLight
+  ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+  : "bg-black/30 border-white/10 text-white"
+  const chipText = isLight ? "text-slate-700" : "text-white/80"
 
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
@@ -563,8 +571,8 @@ export default function ResultsPage() {
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
 
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-8">
-          {loading && !error && <FancyLoader />}
+            <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-24 md:pb-10">
+            {loading && !error && <FancyLoader isLight={isLight} />}
 
           {!loading && error && (
             <Alert className={`${isLight ? "bg-white border-red-500/40" : "bg-black/40"} backdrop-blur text-inherit`}>
@@ -641,7 +649,7 @@ export default function ResultsPage() {
                   Scroll for Changes & AI Analysis
                 </div>
 
-                <div className="mt-4 flex items-center justify-center">
+                  <div className="mt-4 mb-2 md:mb-0 flex items-center justify-center">
                   <button
                     type="button"
                     onClick={handleGenerateSummary}
@@ -666,9 +674,9 @@ export default function ResultsPage() {
               </section>
 
               {/* Lower panels */}
-            <section className="mt-1 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+                <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
                 {/* LEFT COLUMN */}
-                <div className="space-y-8">
+                  <div className="space-y-5 sm:space-y-6 md:space-y-8">
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <div className="flex items-center justify-between mb-4">
@@ -771,7 +779,9 @@ export default function ResultsPage() {
 
                   {/* ===== Summary Card (with audience switch) ===== */}
                   {(summarizing || summaryStakeholder || summaryDeveloper) && (
-                    <Card ref={summaryRef} className="bg-white border-gray-200 shadow-lg">
+                    <Card
+                      ref={summaryRef}
+                      className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">                      
                       <CardContent className="p-5">
                         <div className="flex items-center justify-between mb-4">
                           <h3
@@ -854,35 +864,35 @@ export default function ResultsPage() {
                 </div>
 
                {/* RIGHT COLUMN */}
-<div className="space-y-8">
-  <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-    <CardContent className="p-5 mt-2">
+                <div className="space-y-5 sm:space-y-6 md:space-y-8">
+                  <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
+                    <CardContent className="p-5 mt-2">
 
-      {/* Title + chips inline (chips on the right) */}
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-slate-900 font-semibold">AI Analysis</h3>
+                      {/* Title + chips inline (chips on the right) */}
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-slate-900 font-semibold">AI Analysis</h3>
 
-        {(typeFilter !== "all" || sideFilter !== "all") && (
-          <div className="flex items-center gap-2 text-xs">
-            <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
-              Filtered view
-            </span>
-            {typeFilter !== "all" && (
-              <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
-                Type: {typeFilter}
-              </span>
-            )}
-            {sideFilter !== "all" && (
-              <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">
-                Side: {sideFilter}
-              </span>
-            )}
-            <span className="px-2 py-1 rounded bg-emerald-100 border border-emerald-200 text-emerald-800">
-              {displayChanges.length} match{displayChanges.length === 1 ? "" : "es"}
-            </span>
-          </div>
-        )}
-      </div>
+                        {(typeFilter !== "all" || sideFilter !== "all") && (
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
+                              Filtered view
+                            </span>
+                            {typeFilter !== "all" && (
+                              <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
+                                Type: {typeFilter}
+                              </span>
+                            )}
+                            {sideFilter !== "all" && (
+                              <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">
+                                Side: {sideFilter}
+                              </span>
+                            )}
+                            <span className="px-2 py-1 rounded bg-emerald-100 border border-emerald-200 text-emerald-800">
+                              {displayChanges.length} match{displayChanges.length === 1 ? "" : "es"}
+                            </span>
+                          </div>
+                        )}
+                      </div>
 
       <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
         <div className="space-y-4">

@@ -752,7 +752,7 @@ export async function POST(req: Request) {
         m?.explanation?.trim() ||
         (AI_DISABLED
           ? "AI analysis is disabled for this run."
-          : "Change detected — details could not be inferred confidently.")
+          : "AI analysis is disabled Dev is testing..")
       const extras: string[] = []
       if (m?.syntax === "bad" && (m as any)._syntax_explanation) extras.push(`Syntax: ${(m as any)._syntax_explanation}`)
       if (m?.performance === "bad" && (m as any)._performance_explanation)
