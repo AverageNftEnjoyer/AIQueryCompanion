@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server"
 
+/* ============================== Types ============================== */
+
 type Provider = "xai" | "azure"
 type StmtType = "select" | "dml" | "plsql"
 
@@ -8,7 +10,7 @@ interface LLMResult {
   tldr: string
   structured: Record<string, any>
   meta: {
-    provider: Provider | "none"
+    provider: Provider
     model: string
     latencyMs: number
     pass: "model-p1" | "model-p2" | "heuristic"
@@ -26,35 +28,16 @@ type ContextHints = {
   setOpsHint: string | ""
 }
 
-/* ---------- Config ---------- */
+/* ============================== Config ============================== */
 
-const DEFAULT_XAI_MODEL = "grok-4"
-const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
+const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
+const DEFAULT_AZURE_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview"
 
 const MODEL_CLIP_BYTES = 12_000
-const REQUEST_TIMEOUT_MS = Math.max(28000, Number(process.env.SUMMARY_TIMEOUT_MS ?? 32000))
+const REQUEST_TIMEOUT_MS = Number(process.env.SUMMARY_REQUEST_TIMEOUT_MS || 30000)
+const PROVIDER: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
 
-/* ---------- Provider readiness ---------- */
-function hasXAI() { return Boolean(process.env.XAI_API_KEY) }
-function hasAzure() {
-  return Boolean(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY && process.env.AZURE_OPENAI_DEPLOYMENT)
-}
-function parseBoolEnv(v?: string | null) {
-  if (!v) return false
-  const t = v.trim().toLowerCase()
-  return t === "1" || t === "true" || t === "yes" || t === "on"
-}
-function pickProvider(): Provider | null {
-  const pref = (process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider
-  if (pref === "xai" && hasXAI()) return "xai"
-  if (pref === "azure" && hasAzure()) return "azure"
-  // fall back to whichever is available
-  if (hasXAI()) return "xai"
-  if (hasAzure()) return "azure"
-  return null
-}
-
-/* ---------- Route: /api/summarize ---------- */
+/* ============================== Route ============================== */
 
 export async function POST(req: Request) {
   const t0 = Date.now()
@@ -70,112 +53,103 @@ export async function POST(req: Request) {
       audienceParam === "developer" || bodyAudience === "developer" ? "developer" : "stakeholder"
 
     const stmt = detectStmtType(newQuery)
-    const provider = pickProvider()
-    const aiDisabled =
-      parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
-      parseBoolEnv(process.env.DISABLE_AI)
-
     const hints = getQueryHints(newQuery)
     const signals = extractSignals(newQuery)
     const { clip, clipBytes } = smartClip(newQuery, stmt, MODEL_CLIP_BYTES)
 
+    // Pass 1 (normal)
+    const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
+    const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
+
     let metaPass: LLMResult["meta"]["pass"] = "model-p1"
+    let metaProvider: Provider = PROVIDER
     let modelUsed = ""
-    let tldr = ""
-    let parsed: any = {}
-    let modelError: string | undefined
+    let text = ""
+    let lastError: string | undefined
 
-    if (!aiDisabled && provider) {
-      // ===== Model pass 1 (softer constraints) =====
+    try {
+      const r1 = PROVIDER === "azure"
+        ? await callAzure(systemPrompt1, userPayload1)
+        : await callXAI(systemPrompt1, userPayload1)
+      text = r1.text
+      modelUsed = r1.model
+    } catch (e: any) {
+      // Soft-fallback to the other provider (if env present), else continue to strict pass or heuristic
+      lastError = String(e?.message || e)
       try {
-        const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
-        const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
-        const first =
-          provider === "azure"
-            ? await callAzure(systemPrompt1, userPayload1)
-            : await callXAI(systemPrompt1, userPayload1)
-        modelUsed = first.model
-        parsed = tryParseLastJson(first.text)
-        if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
-        if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
-          parsed.entities = signals.tables.slice(0, 10)
-        }
-        tldr = composeTLDR(stmt, parsed, audience).trim()
-
-        // If boilerplate/weak, try pass 2 (strict-anti-boilerplate)
-        if (!tldr || isBoilerplate(tldr)) {
-          metaPass = "model-p2"
-          const systemPrompt2 = buildSystemPrompt(stmt, /*strict*/ true)
-          const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
-          const second =
-            provider === "azure"
-              ? await callAzure(systemPrompt2, userPayload2)
-              : await callXAI(systemPrompt2, userPayload2)
-          modelUsed = second.model
-          parsed = tryParseLastJson(second.text)
-          if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
-          if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
-            parsed.entities = signals.tables.slice(0, 10)
-          }
-          tldr = composeTLDR(stmt, parsed, audience).trim()
-        }
-      } catch (e: any) {
-        modelError = String(e?.message || e)
+        metaProvider = PROVIDER === "azure" ? "xai" : "azure"
+        const r1b = metaProvider === "azure"
+          ? await callAzure(systemPrompt1, userPayload1)
+          : await callXAI(systemPrompt1, userPayload1)
+        text = r1b.text
+        modelUsed = r1b.model
+      } catch (e2: any) {
+        lastError = `${lastError} | fallback: ${String(e2?.message || e2)}`
       }
     }
 
-    // Heuristic fallback if AI disabled, not configured, errored, or still boilerplate
-    if (aiDisabled || !provider || modelError || !tldr || isBoilerplate(tldr)) {
-      if (!tldr || isBoilerplate(tldr)) {
-        const heur = heuristicSummary(stmt, newQuery, hints, signals, audience)
-        parsed = { ...parsed, ...heur.structured }
-        tldr = heur.tldr
-        metaPass = "heuristic"
-        if (!modelUsed) modelUsed = "heuristic"
-      }
+    let parsed = tryParseLastJson(text)
+    if (!parsed?.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
+    if ((!parsed?.entities || parsed.entities.length === 0) && signals.tables.length) {
+      parsed.entities = signals.tables.slice(0, 10)
     }
 
-    // Always return 200 with a summary to avoid UI’s hardcoded boilerplate
+    let tldr = composeTLDR(stmt, parsed, audience).trim()
+
+    // If boilerplate or empty, run strict pass
+    if (!tldr || isBoilerplate(tldr)) {
+      const systemPrompt2 = buildSystemPrompt(stmt, /*strict*/ true)
+      const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
+      metaPass = "model-p2"
+      try {
+        const r2 = metaProvider === "azure"
+          ? await callAzure(systemPrompt2, userPayload2)
+          : await callXAI(systemPrompt2, userPayload2)
+        text = r2.text
+        modelUsed = r2.model
+      } catch (e3: any) {
+        lastError = (lastError ? lastError + " | " : "") + String(e3?.message || e3)
+        text = ""
+      }
+      parsed = tryParseLastJson(text)
+      if (!parsed?.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
+      if ((!parsed?.entities || parsed.entities.length === 0) && signals.tables.length) {
+        parsed.entities = signals.tables.slice(0, 10)
+      }
+      tldr = composeTLDR(stmt, parsed, audience).trim()
+    }
+
+    if (!tldr || isBoilerplate(tldr)) {
+      metaPass = "heuristic"
+      const heur = heuristicSummary(stmt, newQuery, hints, signals, audience)
+      parsed = { ...parsed, ...heur.structured }
+      tldr = heur.tldr
+    }
+
+    if (!tldr) return NextResponse.json({ error: "Empty summary" }, { status: 502 })
+
     const res: LLMResult = {
-      tldr: scrubBoilerplate(tldr),
+      tldr,
       structured: parsed,
       meta: {
-        provider: (provider || "none"),
-        model: modelUsed,
+        provider: metaProvider,
+        model: modelUsed || (metaProvider === "azure" ? (process.env.AZURE_OPENAI_DEPLOYMENT || "azure-deployment") : DEFAULT_XAI_MODEL),
         latencyMs: Date.now() - t0,
         pass: metaPass,
         largeInput: newQuery.length > MODEL_CLIP_BYTES,
         clipBytes,
         audience,
-        ...(modelError ? { error: modelError } : {}),
+        ...(lastError ? { error: lastError } : {}),
       },
     }
-    return NextResponse.json(res, { status: 200 })
+
+    return NextResponse.json(res)
   } catch (e: any) {
-    // Even if something unexpected happens at the route level, return a small heuristic summary
-    const msg = String(e?.message || "Unexpected error")
-    const tldr = "This SQL was analyzed heuristically due to a server error. It selects or modifies business data with filters and joins; see the code for exact logic."
-    return NextResponse.json(
-      {
-        tldr,
-        structured: {},
-        meta: {
-          provider: "none",
-          model: "heuristic",
-          latencyMs: 0,
-          pass: "heuristic",
-          largeInput: false,
-          clipBytes: 0,
-          audience: "stakeholder",
-          error: msg,
-        },
-      },
-      { status: 200 }
-    )
+    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 })
   }
 }
 
-/* ---------- Boilerplate detection ---------- */
+/* ============================== Boilerplate detection ============================== */
 
 const BAD_PHRASES = [
   /concise business-facing dataset/i,
@@ -197,7 +171,7 @@ function isBoilerplate(text: string): boolean {
   return BAD_PHRASES.some(r => r.test(s))
 }
 
-/* ---------- Statement detection ---------- */
+/* ============================== Statement detection ============================== */
 
 function detectStmtType(sql: string): StmtType {
   const s = stripComments(sql).trim().toUpperCase()
@@ -208,7 +182,7 @@ function detectStmtType(sql: string): StmtType {
   return "select"
 }
 
-/* ---------- Smart clipping ---------- */
+/* ============================== Smart clipping ============================== */
 
 function smartClip(sql: string, stmt: StmtType, budget: number): { clip: string; clipBytes: number } {
   const raw = sql.replace(/\r/g, "")
@@ -237,7 +211,7 @@ function smartClip(sql: string, stmt: StmtType, budget: number): { clip: string;
   return { clip, clipBytes: clip.length }
 }
 
-/* ---------- Hints (subqueries/windows/set ops + freshness) ---------- */
+/* ============================== Hints ============================== */
 
 function getQueryHints(sql: string): ContextHints {
   const s = sql.toUpperCase().replace(/\/\*[\s\S]*?\*\/|--.*$/gm, " ")
@@ -285,7 +259,13 @@ function deriveFreshnessHint(S: string): string {
   return ""
 }
 
-/* ---------- Signals extraction ---------- */
+/* ============================== Signals ============================== */
+
+const STOP_WORDS = new Set([
+  "SELECT","FROM","JOIN","WHERE","GROUP","ORDER","BY","ON","AND","OR","NOT",
+  "INSERT","UPDATE","DELETE","MERGE","CREATE","PACKAGE","PROCEDURE","FUNCTION",
+  "BEGIN","END","DECLARE","VALUES","SET","WITH","UNION","INTERSECT","MINUS"
+])
 
 function extractSignals(sql: string) {
   const up = sql.toUpperCase()
@@ -315,13 +295,7 @@ function extractSignals(sql: string) {
   return { tables, procs, funcs, businessVerbs, wherePredicates: samplePredicates.slice(0, 8), flags: { hasRMA, hasIntraCo, hasCredit }, grouping, ordering, joins }
 }
 
-const STOP_WORDS = new Set([
-  "SELECT","FROM","JOIN","WHERE","GROUP","ORDER","BY","ON","AND","OR","NOT",
-  "INSERT","UPDATE","DELETE","MERGE","CREATE","PACKAGE","PROCEDURE","FUNCTION",
-  "BEGIN","END","DECLARE","VALUES","SET","WITH","UNION","INTERSECT","MINUS"
-])
-
-/* ---------- Prompting ---------- */
+/* ============================== Prompting ============================== */
 
 function buildSystemPrompt(stmt: StmtType, strict: boolean): string {
   const commonEnd = strict
@@ -400,21 +374,54 @@ function buildUserPayload(
   })
 }
 
-/* ---------- Acronyms (stakeholder expansion) ---------- */
+/* ============================== Acronyms ============================== */
 
 const ACRONYM_MAP: Record<string,string> = {
-  AP:"Accounts Payable", AR:"Accounts Receivable", GL:"General Ledger", COGS:"Cost of Goods Sold",
-  PO:"Purchase Order", PR:"Purchase Requisition", INV:"Invoice", CM:"Credit Memo", DM:"Debit Memo",
-  VAT:"Value-Added Tax", FX:"Foreign Exchange", MTD:"Month to Date", QTD:"Quarter to Date", YTD:"Year to Date",
-  EOM:"End of Month", BOM:"Bill of Materials", MRP:"Material Requirements Planning", WIP:"Work in Process",
-  SKU:"Stock Keeping Unit", RMA:"Return Material Authorization", ASN:"Advanced Shipping Notice",
-  ETA:"Estimated Time of Arrival", ETD:"Estimated Time of Departure", SLA:"Service Level Agreement",
-  DC:"Distribution Center", WH:"Warehouse", UOM:"Unit of Measure", LT:"Lead Time", MOQ:"Minimum Order Quantity",
-  EBS:"E-Business Suite", HCM:"Human Capital Management", CRM:"Customer Relationship Management",
-  ERP:"Enterprise Resource Planning", BI:"Business Intelligence", UDM:"Unified Data Model",
-  ETL:"Extract, Transform, Load", ELT:"Extract, Load, Transform", KPI:"Key Performance Indicator",
-  OLAP:"Online Analytical Processing", OLTP:"Online Transaction Processing", SQL:"Structured Query Language",
-  DDL:"Data Definition Language", DML:"Data Manipulation Language", PK:"Primary Key", FK:"Foreign Key",
+  "AP": "Accounts Payable",
+  "AR": "Accounts Receivable",
+  "GL": "General Ledger",
+  "COGS": "Cost of Goods Sold",
+  "PO": "Purchase Order",
+  "PR": "Purchase Requisition",
+  "INV": "Invoice",
+  "CM": "Credit Memo",
+  "DM": "Debit Memo",
+  "VAT": "Value-Added Tax",
+  "FX": "Foreign Exchange",
+  "MTD": "Month to Date",
+  "QTD": "Quarter to Date",
+  "YTD": "Year to Date",
+  "EOM": "End of Month",
+  "BOM": "Bill of Materials",
+  "MRP": "Material Requirements Planning",
+  "WIP": "Work in Process",
+  "SKU": "Stock Keeping Unit",
+  "RMA": "Return Material Authorization",
+  "ASN": "Advanced Shipping Notice",
+  "ETA": "Estimated Time of Arrival",
+  "ETD": "Estimated Time of Departure",
+  "SLA": "Service Level Agreement",
+  "DC": "Distribution Center",
+  "WH": "Warehouse",
+  "UOM": "Unit of Measure",
+  "LT": "Lead Time",
+  "MOQ": "Minimum Order Quantity",
+  "EBS": "E-Business Suite",
+  "HCM": "Human Capital Management",
+  "CRM": "Customer Relationship Management",
+  "ERP": "Enterprise Resource Planning",
+  "BI": "Business Intelligence",
+  "UDM": "Unified Data Model",
+  "ETL": "Extract, Transform, Load",
+  "ELT": "Extract, Load, Transform",
+  "KPI": "Key Performance Indicator",
+  "OLAP": "Online Analytical Processing",
+  "OLTP": "Online Transaction Processing",
+  "SQL": "Structured Query Language",
+  "DDL": "Data Definition Language",
+  "DML": "Data Manipulation Language",
+  "PK": "Primary Key",
+  "FK": "Foreign Key",
 }
 
 function expandAcronyms(text: string, seen = new Set<string>()): string {
@@ -423,12 +430,15 @@ function expandAcronyms(text: string, seen = new Set<string>()): string {
   if (!keys) return text
   const rx = new RegExp(`\\b(${keys})\\b`, "g")
   return text.replace(rx, (m) => {
-    if (!seen.has(m)) { seen.add(m); return `${ACRONYM_MAP[m]} (${m})` }
+    if (!seen.has(m)) {
+      seen.add(m)
+      return `${ACRONYM_MAP[m]} (${m})`
+    }
     return m
   })
 }
 
-/* ---------- TLDR composition ---------- */
+/* ============================== TLDR Composition ============================== */
 
 function composeTLDR(
   stmt: StmtType,
@@ -444,172 +454,6 @@ function composeTLDR(
   return scrubBoilerplate(finalText)
 }
 
-function deJargonStakeholder(s: string): string {
-  if (!s) return s
-  let t = s.replace(/\s+/g, " ").trim()
-  t = t.replace(/\bGROUP\s+BY\b/gi, "grouped by")
-  t = t.replace(/\bORDER\s+BY\b/gi, "sorted by")
-  t = t.replace(/\bHAVING\b/gi, "only where")
-  t = t.replace(/\bDESC\b/gi, "highest first")
-  t = t.replace(/\bASC\b/gi, "lowest first")
-  t = t.replace(/TRUNC\([^)]*'MM'\)/gi, "month")
-  t = t.replace(/TRUNC\([^)]*'IW'\)/gi, "week")
-  t = t.replace(/TRUNC\([^)]*'DD'\)/gi, "day")
-  t = t.replace(/TRUNC\([^)]*\)/gi, "date")
-  t = t.replace(/FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+(?:WITH\s+TIES\s+)?ONLY/gi, "top $1 rows")
-  t = t.replace(/LIMIT\s+(\d+)/gi, "top $1 rows")
-  t = t.replace(/\bIN\s*\(\s*SELECT[^)]*\)/gi, "in a defined list")
-  t = t.replace(/\bIN\s*\([^)]*\)/gi, "in a defined list")
-  return t.replace(/\s*;\s*$/g, "")
-}
-
-function composeTLDR_Stakeholder(stmt: StmtType, d: any, _entitiesTxt: string): string {
-  const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
-  const purposeRaw = d.purpose || (stmt === "select" ? "producing a clear report" : stmt === "dml" ? "applying targeted changes" : "running an end-to-end process")
-  const purpose = deJargonStakeholder(purposeRaw)
-  const howSimple = simpleTechniqueLine(d)
-  const freshness = d.freshness ? `You can expect ${trimPeriod(deJargonStakeholder(d.freshness))}.` : ""
-
-  let body = ""
-  if (stmt === "select") {
-    const fgo = d.fgo ? simplifyFGO(d.fgo) : "It organizes the results so totals and comparisons are easy to read."
-    body = [
-      `To start, this ${focus} focuses on ${purpose}.`,
-      `It pulls the right business records and ${fgo}`,
-      howSimple,
-      freshness,
-    ].filter(Boolean).join(" ")
-  } else if (stmt === "dml") {
-    const effects = d.effects ? simplifyEffects(d.effects) : "It updates only the rows that meet the intended conditions."
-    const fresh2 = freshness ? freshness.replace(/^You can expect/, "Changes become visible when") : ""
-    body = [
-      `To start, this ${focus} focuses on ${purpose}.`,
-      `It works on the relevant business records. ${effects}`,
-      howSimple,
-      fresh2,
-    ].filter(Boolean).join(" ")
-  } else {
-    const flow = d.flow ? simplifyFlow(d.flow) : "It processes the inputs step-by-step and writes back the results."
-    const fresh3 = freshness ? freshness.replace(/^You can expect/, "Timing and freshness:") : ""
-    body = [
-      `To start, this ${focus} focuses on ${purpose}.`,
-      flow,
-      howSimple,
-      fresh3,
-    ].filter(Boolean).join(" ")
-  }
-
-  const constrained = clampSentences(deJargonStakeholder(body), 4, 6)
-  const closer = buildInShortStakeholder(stmt, d)
-  return `${constrained} ${closer}`.trim()
-}
-
-function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): string {
-  const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
-  const lines: string[] = []
-
-  if (stmt === "select") {
-    const purpose = d.purpose || "producing an analytical dataset"
-    const fgo = d.fgo ? sentenceize(d.fgo) : ""
-    const tech = d.specialTechniques ? sentenceize(d.specialTechniques) : ""
-    lines.push(`This ${focus} builds ${purpose} from ${entitiesTxt}, emphasizing the scoped slice of data.`)
-    if (fgo) lines.push(fgo)
-    if (tech) lines.push(tech)
-    lines.push("Predicates in the WHERE clause constrain rows to relevant business conditions; JOIN keys align fact and reference data.")
-    lines.push("If present, window functions compute rankings or running totals; set operations merge compatible result sets.")
-    lines.push("Result ordering is applied for deterministic presentation; grouping aggregates measures at the target grain.")
-  } else if (stmt === "dml") {
-    const purpose = d.purpose || "performing controlled updates"
-    lines.push(`This ${focus} executes ${purpose} against ${entitiesTxt}, driven by explicit predicates.`)
-    if (d.effects) lines.push(sentenceize(d.effects))
-    lines.push("It targets rows through WHERE conditions and applies modifications atomically within the transaction scope.")
-    lines.push("Join clauses (if used) correlate the target to driving tables; subqueries/EXISTS guard against unintended fan-out.")
-    lines.push("Constraints and indexes influence the execution plan; consider selective predicates and proper join order for performance.")
-    if (d.freshness) lines.push(`Visibility: ${trimPeriod(d.freshness)}.`)
-  } else {
-    const purpose = d.purpose || "coordinating batch logic and persistence"
-    const routines = d.keyRoutines?.length ? ` Key routines: ${d.keyRoutines.slice(0,4).join(", ")}.` : ""
-    lines.push(`This ${focus} orchestrates ${purpose} across ${entitiesTxt}.${routines}`)
-    if (d.flow) lines.push(sentenceize(d.flow))
-    if (d.specialTechniques) lines.push(sentenceize(d.specialTechniques))
-    lines.push("Control flow stages validations, calculations, and writes; error-handling and logging isolate failures without halting the run.")
-    if (d.freshness) lines.push(`Batch timing/freshness: ${trimPeriod(d.freshness)}.`)
-  }
-
-  const constrained = clampSentences(lines.join(" "), 5, 7)
-  const closer = buildInShortDeveloper(stmt, d, entitiesTxt)
-  return `${constrained} ${closer}`.trim()
-}
-
-/* ---------- Stakeholder simplifiers ---------- */
-
-function sentenceize(s: string): string {
-  if (!s) return ""
-  s = s.trim()
-  s = s.replace(/\b(GROUP|ORDER|WHERE|JOIN)\b/gi, (m) => m.toLowerCase())
-  return s.endsWith(".") ? s : `${s}.`
-}
-function simpleTechniqueLine(d: any): string {
-  const bits: string[] = []
-  if (d.specialTechniques?.match(/window|analytic/i)) bits.push("running totals or rankings")
-  if (d.specialTechniques?.match(/set operations|UNION|INTERSECT|MINUS/i)) bits.push("combining lists")
-  if (d.specialTechniques?.match(/IN|EXISTS/i)) bits.push("membership or existence checks")
-  if (bits.length === 0) return ""
-  return `It uses simple techniques like ${bits.join(", ")} to match and combine the right records.`
-}
-function simplifyFGO(s: string): string {
-  s = deJargonStakeholder(s)
-  s = s.replace(/\bjoins\b/gi, "combines")
-  return sentenceize(s)
-}
-function simplifyEffects(s: string): string {
-  s = deJargonStakeholder(s)
-  s = s.replace(/\bWHERE\b/gi, "where")
-  return sentenceize(s)
-}
-function simplifyFlow(s: string): string {
-  s = deJargonStakeholder(s)
-  s = s.replace(/steps include/gi, "it proceeds through steps like")
-  s = s.replace(/\blog(s|ging)?\b/gi, "recording activity")
-  return sentenceize(s)
-}
-function buildInShortStakeholder(stmt: StmtType, d: any): string {
-  const gist =
-    stmt === "select"
-      ? (d.purpose ? d.purpose : "summarizing the right data for decision-making")
-      : stmt === "dml"
-      ? (d.purpose ? d.purpose : "applying the intended changes safely")
-      : (d.purpose ? d.purpose : "running the end-to-end process reliably")
-  return `In short, it ${deJargonStakeholder(gist).toLowerCase()} using the relevant business data.`
-}
-function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): string {
-  const gist =
-    stmt === "select"
-      ? (d.purpose ? d.purpose : "summarizing the right data for decision-making")
-      : stmt === "dml"
-      ? (d.purpose ? d.purpose : "applying the intended changes safely")
-      : (d.purpose ? d.purpose : "running the end-to-end process reliably")
-  const extra =
-    stmt === "select" ? (d.fgo ? ` ${trimPeriod(d.fgo)}` : "")
-    : stmt === "dml" ? (d.effects ? ` ${trimPeriod(d.effects)}` : "")
-    : d.keyRoutines?.length ? ` via ${d.keyRoutines.slice(0,2).join(" & ")}` : ""
-  return `In short, it ${gist.toLowerCase()} using ${entitiesTxt}.${extra ? " " + (extra.endsWith(".") ? extra : extra + ".") : ""}`
-}
-
-/* ---------- De-tech ---------- */
-
-function softDeTech(input: string): string {
-  if (!input) return input
-  let s = input
-  s = s.replace(/\b[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*\b/g, "business tables")
-  s = s.replace(/\b([A-Z][A-Z0-9]*_){1,}[A-Z0-9]*\b/g, "business logic")
-  s = s.replace(/\b[A-Z]{3,}\s*\([^)]*\)/g, "business calculation")
-  s = s.replace(/via\s+logging[_a-z0-9]*/gi, "with supporting logs")
-  return s.replace(/\s{2,}/g, " ").trim()
-}
-
-/* ---------- Heuristic fallback ---------- */
-
 function heuristicSummary(
   stmt: StmtType,
   sql: string,
@@ -619,8 +463,9 @@ function heuristicSummary(
 ) {
   const structured: any = {}
   structured.entities = sig.tables.slice(0, 10)
+
   if (stmt === "select") {
-    structured.purpose = guessPurposeFromTables(sig.tables) || "reporting on key metrics"
+    structured.purpose = guessPurposeFromTables(sig.tables) || "a reporting dataset"
     structured.fgo = [
       sig.joins ? `${sig.joins} join(s) across ${structured.entities.length || "multiple"} table(s)` : "",
       sig.wherePredicates?.length ? `filters such as ${sig.wherePredicates.slice(0,3).join("; ")}` : "",
@@ -649,10 +494,12 @@ function heuristicSummary(
     structured.specialTechniques = [hints.windowFnHint, ...hints.subqueryHints, hints.setOpsHint, flags.join(", ")].filter(Boolean).join("; ")
     structured.risks = "error rows isolated; late postings can shift totals"
   }
+
   const tldr = composeTLDR(stmt, structured, audience)
   return { tldr, structured }
 }
 
+// Basic intent guessers used by the heuristic path
 function guessPurposeFromTables(tables: string[]): string | undefined {
   const t = tables.join(" ")
   if (/ORDER/i.test(t)) return "order and fulfillment metrics"
@@ -662,6 +509,7 @@ function guessPurposeFromTables(tables: string[]): string | undefined {
   if (/PRODUCT|ITEM/i.test(t)) return "product-level performance"
   return undefined
 }
+
 function guessPurposeFromVerbs(verbs: string[]): string | undefined {
   if (!verbs?.length) return undefined
   if (verbs.includes("ALLOCATE")) return "allocation of costs or amounts"
@@ -671,23 +519,261 @@ function guessPurposeFromVerbs(verbs: string[]): string | undefined {
   if (verbs.includes("UPDATE") || verbs.includes("INSERT") || verbs.includes("DELETE")) return "data maintenance operations"
   return undefined
 }
+
 function buildFlow(sig: ReturnType<typeof extractSignals>): string {
   const steps = []
-  if (sig.businessVerbs.length) steps.push(`steps include ${sig.businessVerbs.slice(0,3).map(v=>v.toLowerCase()).join(", ")}`)
+  if (sig.businessVerbs.length) steps.push(`it proceeds through steps like ${sig.businessVerbs.slice(0,3).map(v=>v.toLowerCase()).join(", ")}`)
   if (sig.procs.length || sig.funcs.length) steps.push("key routines invoked for calculation and persistence")
   if (sig.wherePredicates.length) steps.push("conditions applied to target the right records")
   return steps.join("; ")
 }
 
-/* ---------- Providers (retries + timeout) ---------- */
+/* ---- grammar safety for “In short, it …” ---- */
+function ensureVerbPhrase(s: string): string {
+  const t = (s || "").trim()
+  if (!t) return "does the intended work"
+  // If looks verbal already, keep it
+  if (/^(select|update|insert|delete|merge|allocate|reconcile|export|process|calculate|post|log|orchestrate|compute|generate)\b/i.test(t)) return t
+  if (/\b\w+ing\b/i.test(t)) return t
+  // Noun phrases → convert to a verb phrase
+  if (/^(allocation|reconciliation|calculation|export|processing|update|insertion|deletion)\b/i.test(t)) return `performs ${t}`
+  if (/\b\w+(ion|tion|ment|ance|ing)\b/i.test(t)) return `performs ${t}`
+  return `performs ${t}`
+}
+
+/* ---------- Stakeholder (plain-English) ---------- */
+
+function deJargonStakeholder(s: string): string {
+  if (!s) return s
+  let t = s.replace(/\s+/g, " ").trim()
+  t = t.replace(/\bGROUP\s+BY\b/gi, "grouped by")
+  t = t.replace(/\bORDER\s+BY\b/gi, "sorted by")
+  t = t.replace(/\bHAVING\b/gi, "only where")
+  t = t.replace(/\bDESC\b/gi, "highest first")
+  t = t.replace(/\bASC\b/gi, "lowest first")
+  t = t.replace(/TRUNC\([^)]*'MM'\)/gi, "month")
+  t = t.replace(/TRUNC\([^)]*'IW'\)/gi, "week")
+  t = t.replace(/TRUNC\([^)]*'DD'\)/gi, "day")
+  t = t.replace(/TRUNC\([^)]*\)/gi, "date")
+  t = t.replace(/FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+(?:WITH\s+TIES\s+)?ONLY/gi, "top $1 rows")
+  t = t.replace(/\bIN\s*\(\s*SELECT[^)]*\)/gi, "in a defined list")
+  t = t.replace(/\bIN\s*\([^)]*\)/gi, "in a defined list")
+  return t.replace(/\s*;\s*$/g, "")
+}
+
+function composeTLDR_Stakeholder(stmt: StmtType, d: any, _entitiesTxt: string): string {
+  const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
+  const purposeRaw = d.purpose || (stmt === "select" ? "producing a clear report" : stmt === "dml" ? "applying targeted changes" : "coordinating a cost allocation process")
+  const purpose = deJargonStakeholder(purposeRaw)
+  const howSimple = simpleTechniqueLine(d)
+  const freshness = d.freshness ? `Timing and freshness: ${trimPeriod(deJargonStakeholder(d.freshness))}.` : ""
+
+  let body = ""
+  if (stmt === "select") {
+    const fgo = d.fgo ? simplifyFGO(d.fgo) : "It organizes the results so totals and comparisons are easy to read."
+    body = [
+      `To start, this ${focus} focuses on ${purpose}.`,
+      fgo,
+      howSimple,
+      freshness,
+    ].filter(Boolean).join(" ")
+  } else if (stmt === "dml") {
+    const effects = d.effects ? simplifyEffects(d.effects) : "It updates only the rows that meet the intended conditions."
+    body = [
+      `To start, this ${focus} focuses on ${purpose}.`,
+      effects,
+      howSimple,
+      freshness,
+    ].filter(Boolean).join(" ")
+  } else {
+    const flow = d.flow ? simplifyFlow(d.flow) : "It processes the inputs step-by-step and writes back the results."
+    body = [
+      `To start, this ${focus} focuses on ${purpose}.`,
+      flow,
+      howSimple,
+      freshness,
+    ].filter(Boolean).join(" ")
+  }
+
+  const constrained = clampSentences(deJargonStakeholder(body), 4, 6)
+  const closer = buildInShortStakeholder(stmt, d)
+  return `${constrained} ${closer}`.trim()
+}
+
+/* ---------- Developer ---------- */
+
+function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): string {
+  const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
+  const lines: string[] = []
+
+  if (stmt === "select") {
+    const purpose = d.purpose || "producing an analytical dataset"
+    const fgo = d.fgo ? sentenceize(d.fgo) : ""
+    const tech = d.specialTechniques ? sentenceize(d.specialTechniques) : ""
+    lines.push(`This ${focus} builds ${purpose} from ${entitiesTxt}, emphasizing the scoped slice of data.`)
+    if (fgo) lines.push(fgo)
+    if (tech) lines.push(tech)
+    lines.push("Predicates in the WHERE clause constrain rows; JOIN keys align fact and reference data.")
+    lines.push("Window functions compute rankings or running totals; set operations merge compatible result sets when present.")
+    lines.push("Ordering provides deterministic presentation; grouping aggregates at the target grain.")
+  } else if (stmt === "dml") {
+    const purpose = d.purpose || "performing controlled updates"
+    lines.push(`This ${focus} executes ${purpose} against ${entitiesTxt}, driven by explicit predicates.`)
+    if (d.effects) lines.push(sentenceize(d.effects))
+    lines.push("It targets rows via WHERE conditions and applies modifications atomically in transaction scope.")
+    lines.push("JOINs (if used) correlate the target to driving tables; EXISTS/IN guard against unintended fan-out.")
+    if (d.freshness) lines.push(`Visibility: ${trimPeriod(d.freshness)}.`)
+  } else {
+    const purpose = d.purpose || "coordinating cost allocation logic and persistence"
+    const routines = d.keyRoutines?.length ? ` Key routines: ${d.keyRoutines.slice(0,4).join(", ")}.` : ""
+    lines.push(`This ${focus} orchestrates ${purpose} across ${entitiesTxt}.${routines}`)
+    if (d.flow) lines.push(sentenceize(d.flow))
+    if (d.specialTechniques) lines.push(sentenceize(d.specialTechniques))
+    lines.push("Control flow stages validations, calculations, and writes; error-handling and logging isolate failures without halting the run.")
+    if (d.freshness) lines.push(`Batch timing/freshness: ${trimPeriod(d.freshness)}.`)
+  }
+
+  const constrained = clampSentences(lines.join(" "), 5, 7)
+  const closer = buildInShortDeveloper(stmt, d, entitiesTxt)
+  return `${constrained} ${closer}`.trim()
+}
+
+/* ---------- Tone helpers & stakeholder simplifiers ---------- */
+
+function sentenceize(s: string): string {
+  if (!s) return ""
+  s = s.trim()
+  s = s.replace(/\b(GROUP|ORDER|WHERE|JOIN)\b/gi, (m) => m.toLowerCase())
+  return s.endsWith(".") ? s : `${s}.`
+}
+
+function simpleTechniqueLine(d: any): string {
+  const bits: string[] = []
+  if (d.specialTechniques?.match(/window|analytic/i)) bits.push("running totals or rankings")
+  if (d.specialTechniques?.match(/set operations|UNION|INTERSECT|MINUS/i)) bits.push("combining lists")
+  if (d.specialTechniques?.match(/IN|EXISTS/i)) bits.push("membership or existence checks")
+  if (bits.length === 0) return ""
+  return `It uses simple techniques like ${bits.join(", ")} to match and combine the right records.`
+}
+
+function simplifyFGO(s: string): string {
+  s = deJargonStakeholder(s)
+  s = s.replace(/\bjoins\b/gi, "combines")
+  return sentenceize(s)
+}
+
+function simplifyEffects(s: string): string {
+  s = deJargonStakeholder(s)
+  s = s.replace(/\bWHERE\b/gi, "where")
+  return sentenceize(s)
+}
+
+function simplifyFlow(s: string): string {
+  s = deJargonStakeholder(s)
+  s = s.replace(/steps include/gi, "it proceeds through steps like")
+  s = s.replace(/\blog(s|ging)?\b/gi, "recording activity")
+  return sentenceize(s)
+}
+
+function buildInShortStakeholder(stmt: StmtType, d: any): string {
+  const gist =
+    stmt === "select"
+      ? (d.purpose ? d.purpose : "summarizing the right data for decision-making")
+      : stmt === "dml"
+      ? (d.purpose ? d.purpose : "applying the intended changes safely")
+      : (d.purpose ? d.purpose : "running the end-to-end allocation process")
+
+  const gistNoun = deJargonStakeholder(gist).toLowerCase()
+  return `In short, it ${ensureVerbPhrase(gistNoun)} using the relevant business data.`
+}
+
+function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): string {
+  const gist =
+    stmt === "select"
+      ? (d.purpose ? d.purpose : "summarizing the right data for decision-making")
+      : stmt === "dml"
+      ? (d.purpose ? d.purpose : "applying the intended changes safely")
+      : (d.purpose ? d.purpose : "coordinating allocation and persistence")
+
+  const extra =
+    stmt === "select" ? (d.fgo ? ` ${trimPeriod(d.fgo)}` : "")
+    : stmt === "dml" ? (d.effects ? ` ${trimPeriod(d.effects)}` : "")
+    : d.keyRoutines?.length ? ` via ${d.keyRoutines.slice(0,2).join(" & ")}` : ""
+
+  const gistNoun = gist.toLowerCase()
+  return `In short, it ${ensureVerbPhrase(gistNoun)} using ${entitiesTxt}.${extra ? " " + (extra.endsWith(".") ? extra : extra + ".") : ""}`
+}
+
+/* ---------- De-tech & entity formatting ---------- */
+
+function softDeTech(input: string): string {
+  if (!input) return input
+  let s = input
+  s = s.replace(/\b[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*\b/g, "business tables")
+  s = s.replace(/\b([A-Z][A-Z0-9]*_){1,}[A-Z0-9]*\b/g, "business logic")
+  s = s.replace(/\b[A-Z]{3,}\s*\([^)]*\)/g, "business calculation")
+  s = s.replace(/via\s+logging[_a-z0-9]*/gi, "with supporting logs")
+  return s.replace(/\s{2,}/g, " ").trim()
+}
+
+// NEW: normalize noisy identifiers for developer view, too
+function normalizeEntityName(x: string): string {
+  let s = String(x || "").trim()
+  s = s.replace(/\b[A-Z][A-Z0-9_]*\./gi, "") // drop schema
+  s = s.replace(/\.PKB\b/i, "")              // drop package body suffix
+  s = s.replace(/[_]{2,}/g, "_")
+  s = s.replace(/[^A-Z0-9_]/gi, "_")
+  s = s.replace(/^_+|_+$/g, "")
+  return s || "object"
+}
+
+function formatEntities(arr: any): string {
+  if (!Array.isArray(arr) || arr.length === 0) return "identified tables (names extracted from code)"
+  const cleaned = Array.from(new Set(arr.map((e: any) => normalizeEntityName(String(e))))).filter(Boolean)
+  const list = cleaned.slice(0, 6)
+  if (list.length === 1) return list[0]
+  if (list.length === 2) return `${list[0]} and ${list[1]}`
+  return `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`
+}
+
+/* ---------- JSON parsing & misc ---------- */
+
+function tryParseLastJson(text: string): any {
+  if (!text) return {}
+  const defenced = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
+  try { return JSON.parse(defenced) } catch {}
+  const m = defenced.match(/\{[\s\S]*\}$/m)
+  if (!m) return {}
+  try { return JSON.parse(m[0]) } catch { return {} }
+}
+
+function trimPeriod(s: string): string { return (s || "").trim().replace(/[.]+$/, "") }
+
+function clampSentences(text: string, min: number, max: number): string {
+  const sentences = (text.replace(/\s+/g, " ").match(/[^.!?]+[.!?]+/g) || [text]).map(s => s.trim())
+  if (sentences.length > max) return sentences.slice(0, max).join(" ").trim()
+  if (sentences.length < min) return text.trim()
+  return text.trim()
+}
+
+function scrubBoilerplate(s: string): string {
+  let out = s
+  for (const r of BAD_PHRASES) out = out.replace(r, "")
+  return out.replace(/\s{2,}/g, " ").trim()
+}
+
+function stripComments(sql: string): string {
+  return sql.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, "")
+}
+
+/* ============================== Providers (retries + timeout) ============================== */
 
 async function callXAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
   const XAI_API_KEY = process.env.XAI_API_KEY
-  const XAI_MODEL = process.env.XAI_MODEL || DEFAULT_XAI_MODEL
   const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
   if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY")
 
-  const body = { model: XAI_MODEL, temperature: 0.15, messages: [
+  const body = { model: DEFAULT_XAI_MODEL, temperature: 0.15, messages: [
     { role: "system", content: systemPrompt },
     { role: "user", content: userContent },
   ]}
@@ -702,14 +788,14 @@ async function callXAI(systemPrompt: string, userContent: string): Promise<{ tex
   if (!r.ok) throw new Error(await r.text())
   const j = await r.json()
   const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
-  return { text, model: XAI_MODEL }
+  return { text, model: DEFAULT_XAI_MODEL }
 }
 
 async function callAzure(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
   const endpoint = process.env.AZURE_OPENAI_ENDPOINT
   const apiKey = process.env.AZURE_OPENAI_API_KEY
   const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
-  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || DEFAULT_AZURE_API_VERSION
+  const apiVersion = DEFAULT_AZURE_API_VERSION
   if (!endpoint || !apiKey || !deployment) throw new Error("Missing Azure OpenAI env vars")
 
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
@@ -741,7 +827,7 @@ async function withRetries<T>(fn: () => Promise<T>, max = 3, baseDelay = 400): P
     try { return await fn() } catch (e: any) {
       lastErr = e
       const msg = String(e?.message || "")
-      if (!/429|5\d\d|timeout|exceeded|aborted|Temporary|Again/i.test(msg)) break
+      if (!/429|5\d\d|timeout|exceeded|aborted/i.test(msg)) break
       await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)))
     }
   }
@@ -752,42 +838,4 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, time
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try { return await fetch(input, { ...init, signal: controller.signal }) } finally { clearTimeout(t) }
-}
-
-/* ---------- JSON parsing & misc ---------- */
-
-function tryParseLastJson(text: string): any {
-  if (!text) return {}
-  const defenced = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
-  try { return JSON.parse(defenced) } catch {}
-  const m = defenced.match(/\{[\s\S]*\}$/m)
-  if (!m) return {}
-  try { return JSON.parse(m[0]) } catch { return {} }
-}
-
-function formatEntities(arr: any): string {
-  if (!Array.isArray(arr) || arr.length === 0) return "identified tables (names extracted from code)"
-  const list = arr.slice(0, 6)
-  if (list.length === 1) return list[0]
-  if (list.length === 2) return `${list[0]} and ${list[1]}`
-  return `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`
-}
-
-function trimPeriod(s: string): string { return s.trim().replace(/[.]+$/, "") }
-
-function clampSentences(text: string, min: number, max: number): string {
-  const sentences = (text.replace(/\s+/g, " ").match(/[^.!?]+[.!?]+/g) || [text]).map(s => s.trim())
-  if (sentences.length > max) return sentences.slice(0, max).join(" ").trim()
-  if (sentences.length < min) return text.trim()
-  return text.trim()
-}
-
-function scrubBoilerplate(s: string): string {
-  let out = s
-  for (const r of BAD_PHRASES) out = out.replace(r, "")
-  return out.replace(/\s{2,}/g, " ").trim()
-}
-
-function stripComments(sql: string): string {
-  return sql.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, "")
 }
