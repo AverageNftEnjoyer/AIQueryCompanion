@@ -219,7 +219,6 @@ function QueryComparisonInner(
         </Card>
       </div>
 
-      {/* Global CSS for the flash animation */}
       <style jsx global>{`
         @keyframes qa-flash {
           0%   { background-color: rgba(250, 204, 21, 0.65); box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.85); }

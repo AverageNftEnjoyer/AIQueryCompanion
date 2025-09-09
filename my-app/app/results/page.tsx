@@ -185,8 +185,8 @@ export default function ResultsPage() {
   const [audience, setAudience] = useState<Audience>("stakeholder")
   const [summaryStakeholder, setSummaryStakeholder] = useState<string>("")
   const [summaryDeveloper, setSummaryDeveloper] = useState<string>("")
-  const [summarizing, setSummarizing] = useState<boolean>(false) // generic flag for button state
-  const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null) // to show spinner on the active tab
+  const [summarizing, setSummarizing] = useState<boolean>(false) 
+  const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null) 
   const totalOldLines = useMemo(
   () => (oldQuery ? oldQuery.split("\n").length : 0),
   [oldQuery]
@@ -379,7 +379,6 @@ const miniNew = useMemo(
     return diff.stats
   }, [canonicalOld, canonicalNew])
 
-  // ===== Summary fetching (updated) =====
   async function fetchSummary(forAudience: Audience) {
     if (!analysis) return
     if (summarizeAbortRef.current) summarizeAbortRef.current.abort()
@@ -394,7 +393,7 @@ const miniNew = useMemo(
         body: JSON.stringify({
           newQuery: canonicalNew,
           analysis,
-          audience: forAudience, // body too, in case server reads body
+          audience: forAudience, 
         }),
         signal: summarizeAbortRef.current.signal,
       })
@@ -408,7 +407,6 @@ const miniNew = useMemo(
           summaryHeaderRef.current?.focus()
         }, 100)
       } else {
-        // Fallback text (kept from your original)
         const fallback =
           "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows."
         if (forAudience === "stakeholder") setSummaryStakeholder(fallback)
@@ -438,20 +436,17 @@ const miniNew = useMemo(
   }
 
   async function handleGenerateSummary() {
-    // generate for the currently selected audience
     await fetchSummary(audience)
   }
 
   async function handleSwitchAudience(nextAudience: Audience) {
     setAudience(nextAudience)
-    // If we already have that summary cached, just show it; otherwise fetch it
     const hasCached =
       (nextAudience === "stakeholder" && summaryStakeholder) ||
       (nextAudience === "developer" && summaryDeveloper)
     if (!hasCached) {
       await fetchSummary(nextAudience)
     } else {
-      // still bring the Summary into view for UX consistency
       setTimeout(() => {
         summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
         summaryHeaderRef.current?.focus()
@@ -632,54 +627,50 @@ const headerBgClass = isLight
                   </div>
                 </section>
               )}
+               {/* Diff + MiniMap */}
+                <section className="mt-1">
+                  <div className="flex items-stretch gap-3 h-[86vh] min-h-0">
+                    {/* Query Comparison */}
+                    <div className="flex-1 min-w-0 h-full rounded-xl">
+                      <QueryComparison
+                        ref={cmpRef}
+                        oldQuery={oldQuery}
+                        newQuery={newQuery}
+                        showTitle={false}
+                        syncScrollEnabled={syncEnabled}
+                      />
+                    </div>
+                    {/* Dual minimaps */}
+                    <div className="hidden lg:flex h-full items-stretch gap-2">
+                      {/* OLD minimap */}
+                      <MiniMap
+                        totalLines={totalOldLines}
+                        changes={miniOld}
+                        forceSide="old"
+                        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
+                        className={`w-6 h-full rounded-md
+                          ${isLight
+                            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                            : "bg-white/5 border border-white/10 hover:border-white/20"
+                          }`}
+                        soundEnabled={soundOn}
+                      />
 
-              {/* Diff + MiniMap */}
-<section className="mt-1">
-  <div className="flex items-stretch gap-3 h-[86vh] min-h-0">
-    {/* Query Comparison */}
-    <div className="flex-1 min-w-0 h-full rounded-xl">
-      <QueryComparison
-        ref={cmpRef}
-        oldQuery={oldQuery}
-        newQuery={newQuery}
-        showTitle={false}
-        syncScrollEnabled={syncEnabled}
-      />
-    </div>
-
-    {/* Dual minimaps */}
-    <div className="hidden lg:flex h-full items-stretch gap-2">
-      {/* OLD minimap */}
-      <MiniMap
-        totalLines={totalOldLines}
-        changes={miniOld}
-        forceSide="old"
-        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
-        className={`w-6 h-full rounded-md
-          ${isLight
-            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-            : "bg-white/5 border border-white/10 hover:border-white/20"
-          }`}
-        soundEnabled={soundOn}
-      />
-
-      {/* NEW minimap */}
-      <MiniMap
-        totalLines={totalNewLines}
-        changes={miniNew}
-        forceSide="new"
-        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
-        className={`w-6 h-full rounded-md
-          ${isLight
-            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-            : "bg-white/5 border border-white/10 hover:border-white/20"
-          }`}
-        soundEnabled={soundOn}
-      />
-    </div>
-  </div>
-
-
+                      {/* NEW minimap */}
+                      <MiniMap
+                        totalLines={totalNewLines}
+                        changes={miniNew}
+                        forceSide="new"
+                        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
+                        className={`w-6 h-full rounded-md
+                          ${isLight
+                            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                            : "bg-white/5 border border-white/10 hover:border-white/20"
+                          }`}
+                        soundEnabled={soundOn}
+                      />
+                    </div>
+                  </div>
                 <div className={`flex items-center justify-center text-xs mt-1 ${isLight ? "text-gray-500" : "text-white/60"}`}>
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
@@ -695,8 +686,7 @@ const headerBgClass = isLight
                         ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
                         : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
                     }`}
-                    title="Generate a summary for the selected audience"
-                  >
+                    title="Generate a summary for the selected audience">
                     {summarizing ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -813,7 +803,7 @@ const headerBgClass = isLight
                     </CardContent>
                   </Card>
 
-                  {/* ===== Summary Card (with audience switch) ===== */}
+                  {/* ===== Summary Card ===== */}
                   {(summarizing || summaryStakeholder || summaryDeveloper) && (
                     <Card
                       ref={summaryRef}

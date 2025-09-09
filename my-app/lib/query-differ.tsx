@@ -1,10 +1,8 @@
-// /lib/query-differ.tsx
 import React from "react"
 
 export interface QueryDiff {
   type: "addition" | "deletion" | "modification" | "unchanged"
   content: string
-  /** Anchor to UPDATED-side numbering for UI */
   lineNumber: number
   oldLineNumber?: number
   newLineNumber?: number
@@ -136,8 +134,6 @@ export function canonicalizeSQL(input: string): string {
       continue
     }
 
-    // Leading comma or semicolon → attach to previous, keep remainder on this line
-    // (Do NOT attach leading ');' — handled above)
     let m: RegExpMatchArray | null
     if ((m = line.match(/^\s*,\s*(.*)$/)) && merged.length > 0) {
       merged[merged.length - 1] = rtrim(merged[merged.length - 1]) + ","
@@ -150,7 +146,6 @@ export function canonicalizeSQL(input: string): string {
       continue
     }
 
-    // Numbers (optionally ending with ',' or ')' or ',)') should never be alone
     if (numberLineRE.test(t) && merged.length > 0) {
       merged[merged.length - 1] = rtrim(merged[merged.length - 1]) + " " + t
       continue

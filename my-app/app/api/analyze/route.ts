@@ -97,7 +97,6 @@ function safeErrMessage(e: any, fallback = "Unexpected error") {
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]")
 }
 
-/** robust boolean parser for env flags */
 function parseBoolEnv(v?: string | null) {
   if (!v) return false
   const t = v.trim().toLowerCase()
@@ -144,9 +143,8 @@ function shouldSuppressServer(desc: string): boolean {
   if (/^[(),;]+$/.test(tok)) return true
   if (/^\)$/.test(tok) || /^\($/.test(tok) || /^\)\s*,?$/.test(tok)) return true
   if (/\bAS\s*\($/i.test(tok)) return true
-  // additional trivial jitter
-  if (/^"(?:\w+)"$/.test(tok)) return true // alias-only quotations
-  if (/^\bON\b\s*$/i.test(tok)) return true // lonely ON
+  if (/^"(?:\w+)"$/.test(tok)) return true 
+  if (/^\bON\b\s*$/i.test(tok)) return true 
   return false
 }
 
@@ -157,7 +155,6 @@ function asGoodBad(v: any): GoodBad | undefined {
   return undefined
 }
 
-// Extract a span (number of lines) from a grouped description, used to scale verbosity.
 function spanFromDescription(desc: string): number {
   const m = desc.match(/\b(added|removed|modified)\s+(\d+)\s+lines?\b/i)
   if (m) return Math.max(1, Number(m[2]))
@@ -340,7 +337,6 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
 
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
 
-  // First attempt with response_format
   let res = await withRetry(() =>
     fetchJSONWithTimeout(url, {
       method: "POST",
@@ -407,7 +403,6 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
   )
 
   if (!res.ok) {
-    // Retry without response_format
     res = await withRetry(() =>
       fetchJSONWithTimeout(url, {
         method: "POST",
@@ -485,7 +480,7 @@ type SqlStructure = {
   boundaries: Set<number>
   labels: Map<number, string>
   blocks: SqlBlock[]
-  byLine: Map<number, number> // line -> primary block index
+  byLine: Map<number, number> 
 }
 
 function buildSqlStructure(sql: string): SqlStructure {
@@ -538,7 +533,6 @@ function buildSqlStructure(sql: string): SqlStructure {
     for (let ln = start; ln <= end; ln++) if (!byLine.has(ln)) byLine.set(ln, idx)
   }
 
-  // CTE bodies: WITH ... name AS ( ... )
   const withRE = /^\s*WITH\b/i
   const asOpenRE = /\bAS\s*\(\s*$/i
   let inWith = false
@@ -636,7 +630,6 @@ function groupChangesSmart(
     const base = items[i]
     let end = i
 
-    // grow run while same type+side and consecutive lineNumbers
     while (
       end + 1 < items.length &&
       items[end + 1].type === base.type &&
@@ -650,7 +643,6 @@ function groupChangesSmart(
 
     const struct = base.side === "old" ? structOld : structNew
 
-    // majority block (CTE/SUBQUERY/BEGIN…END)
     const majorityBlock = (() => {
       const counts = new Map<number, number>()
       for (let k = i; k <= end; k++) {
@@ -681,7 +673,6 @@ function groupChangesSmart(
     }
 
     if (majorityBlock && runLen >= threshold) {
-      // expand to the containing block; chunk if too large
       let a = majorityBlock.start
       let b = Math.min(majorityBlock.end, a + maxBlock - 1)
       while (a <= majorityBlock.end) {
@@ -693,7 +684,6 @@ function groupChangesSmart(
       continue
     }
 
-    // Fallback: split by clause boundaries within the run
     if (runLen >= threshold) {
       let segStart = runStart
       for (let n = runStart + 1; n <= runEnd; n++) {
@@ -720,7 +710,6 @@ function groupChangesSmart(
       continue
     }
 
-    // Too small: pass through
     for (let k = i; k <= end; k++) grouped.push(items[k])
     i = end + 1
   }
@@ -763,7 +752,6 @@ export async function POST(req: Request) {
     const diff = generateQueryDiff(canonOld, canonNew)
     const rawChanges = buildChanges(diff)
 
-    // NEW: structure aware (subqueries/CTEs/BEGIN…END + clauses)
     const structNew = buildSqlStructure(canonNew)
     const structOld = buildSqlStructure(canonOld)
 
