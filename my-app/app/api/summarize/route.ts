@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
 
-
 type Provider = "xai" | "azure"
 type StmtType = "select" | "dml" | "plsql"
 
@@ -9,13 +8,14 @@ interface LLMResult {
   tldr: string
   structured: Record<string, any>
   meta: {
-    provider: Provider
+    provider: Provider | "none"
     model: string
     latencyMs: number
     pass: "model-p1" | "model-p2" | "heuristic"
     largeInput: boolean
     clipBytes: number
     audience: "stakeholder" | "developer"
+    error?: string
   }
 }
 
@@ -32,7 +32,27 @@ const DEFAULT_XAI_MODEL = "grok-4"
 const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 
 const MODEL_CLIP_BYTES = 12_000
-const REQUEST_TIMEOUT_MS = 28_000
+const REQUEST_TIMEOUT_MS = Math.max(28000, Number(process.env.SUMMARY_TIMEOUT_MS ?? 32000))
+
+/* ---------- Provider readiness ---------- */
+function hasXAI() { return Boolean(process.env.XAI_API_KEY) }
+function hasAzure() {
+  return Boolean(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY && process.env.AZURE_OPENAI_DEPLOYMENT)
+}
+function parseBoolEnv(v?: string | null) {
+  if (!v) return false
+  const t = v.trim().toLowerCase()
+  return t === "1" || t === "true" || t === "yes" || t === "on"
+}
+function pickProvider(): Provider | null {
+  const pref = (process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider
+  if (pref === "xai" && hasXAI()) return "xai"
+  if (pref === "azure" && hasAzure()) return "azure"
+  // fall back to whichever is available
+  if (hasXAI()) return "xai"
+  if (hasAzure()) return "azure"
+  return null
+}
 
 /* ---------- Route: /api/summarize ---------- */
 
@@ -50,68 +70,108 @@ export async function POST(req: Request) {
       audienceParam === "developer" || bodyAudience === "developer" ? "developer" : "stakeholder"
 
     const stmt = detectStmtType(newQuery)
-    const provider: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
+    const provider = pickProvider()
+    const aiDisabled =
+      parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
+      parseBoolEnv(process.env.DISABLE_AI)
 
     const hints = getQueryHints(newQuery)
     const signals = extractSignals(newQuery)
     const { clip, clipBytes } = smartClip(newQuery, stmt, MODEL_CLIP_BYTES)
-    const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
-    const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
 
     let metaPass: LLMResult["meta"]["pass"] = "model-p1"
-    let { text, model } =
-      provider === "azure" ? await callAzure(systemPrompt1, userPayload1) : await callXAI(systemPrompt1, userPayload1)
+    let modelUsed = ""
+    let tldr = ""
+    let parsed: any = {}
+    let modelError: string | undefined
 
-    let parsed = tryParseLastJson(text)
-    if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
-    if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
-      parsed.entities = signals.tables.slice(0, 10)
+    if (!aiDisabled && provider) {
+      // ===== Model pass 1 (softer constraints) =====
+      try {
+        const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
+        const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
+        const first =
+          provider === "azure"
+            ? await callAzure(systemPrompt1, userPayload1)
+            : await callXAI(systemPrompt1, userPayload1)
+        modelUsed = first.model
+        parsed = tryParseLastJson(first.text)
+        if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
+        if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
+          parsed.entities = signals.tables.slice(0, 10)
+        }
+        tldr = composeTLDR(stmt, parsed, audience).trim()
+
+        // If boilerplate/weak, try pass 2 (strict-anti-boilerplate)
+        if (!tldr || isBoilerplate(tldr)) {
+          metaPass = "model-p2"
+          const systemPrompt2 = buildSystemPrompt(stmt, /*strict*/ true)
+          const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
+          const second =
+            provider === "azure"
+              ? await callAzure(systemPrompt2, userPayload2)
+              : await callXAI(systemPrompt2, userPayload2)
+          modelUsed = second.model
+          parsed = tryParseLastJson(second.text)
+          if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
+          if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
+            parsed.entities = signals.tables.slice(0, 10)
+          }
+          tldr = composeTLDR(stmt, parsed, audience).trim()
+        }
+      } catch (e: any) {
+        modelError = String(e?.message || e)
+      }
     }
 
-    let tldr = composeTLDR(stmt, parsed, audience).trim()
-
-    if (!tldr || isBoilerplate(tldr)) {
-      const systemPrompt2 = buildSystemPrompt(stmt, /*strict*/ true)
-      const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
-      metaPass = "model-p2"
-      const second =
-        provider === "azure" ? await callAzure(systemPrompt2, userPayload2) : await callXAI(systemPrompt2, userPayload2)
-      text = second.text; model = second.model
-
-      parsed = tryParseLastJson(text)
-      if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
-      if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
-        parsed.entities = signals.tables.slice(0, 10)
-      }
-      tldr = composeTLDR(stmt, parsed, audience).trim()
-
+    // Heuristic fallback if AI disabled, not configured, errored, or still boilerplate
+    if (aiDisabled || !provider || modelError || !tldr || isBoilerplate(tldr)) {
       if (!tldr || isBoilerplate(tldr)) {
-        metaPass = "heuristic"
         const heur = heuristicSummary(stmt, newQuery, hints, signals, audience)
         parsed = { ...parsed, ...heur.structured }
         tldr = heur.tldr
+        metaPass = "heuristic"
+        if (!modelUsed) modelUsed = "heuristic"
       }
     }
 
-    if (!tldr) return NextResponse.json({ error: "Empty summary" }, { status: 502 })
-
+    // Always return 200 with a summary to avoid UI’s hardcoded boilerplate
     const res: LLMResult = {
-      tldr,
+      tldr: scrubBoilerplate(tldr),
       structured: parsed,
       meta: {
-        provider,
-        model,
+        provider: (provider || "none"),
+        model: modelUsed,
         latencyMs: Date.now() - t0,
         pass: metaPass,
         largeInput: newQuery.length > MODEL_CLIP_BYTES,
         clipBytes,
         audience,
+        ...(modelError ? { error: modelError } : {}),
       },
     }
-
-    return NextResponse.json(res)
+    return NextResponse.json(res, { status: 200 })
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 })
+    // Even if something unexpected happens at the route level, return a small heuristic summary
+    const msg = String(e?.message || "Unexpected error")
+    const tldr = "This SQL was analyzed heuristically due to a server error. It selects or modifies business data with filters and joins; see the code for exact logic."
+    return NextResponse.json(
+      {
+        tldr,
+        structured: {},
+        meta: {
+          provider: "none",
+          model: "heuristic",
+          latencyMs: 0,
+          pass: "heuristic",
+          largeInput: false,
+          clipBytes: 0,
+          audience: "stakeholder",
+          error: msg,
+        },
+      },
+      { status: 200 }
+    )
   }
 }
 
@@ -340,54 +400,21 @@ function buildUserPayload(
   })
 }
 
-/* ---------- Acronyms (expanded for stakeholder) ---------- */
+/* ---------- Acronyms (stakeholder expansion) ---------- */
 
 const ACRONYM_MAP: Record<string,string> = {
-  "AP": "Accounts Payable",
-  "AR": "Accounts Receivable",
-  "GL": "General Ledger",
-  "COGS": "Cost of Goods Sold",
-  "PO": "Purchase Order",
-  "PR": "Purchase Requisition",
-  "INV": "Invoice",
-  "CM": "Credit Memo",
-  "DM": "Debit Memo",
-  "VAT": "Value-Added Tax",
-  "FX": "Foreign Exchange",
-  "MTD": "Month to Date",
-  "QTD": "Quarter to Date",
-  "YTD": "Year to Date",
-  "EOM": "End of Month",
-  "BOM": "Bill of Materials",
-  "MRP": "Material Requirements Planning",
-  "WIP": "Work in Process",
-  "SKU": "Stock Keeping Unit",
-  "RMA": "Return Material Authorization",
-  "ASN": "Advanced Shipping Notice",
-  "ETA": "Estimated Time of Arrival",
-  "ETD": "Estimated Time of Departure",
-  "SLA": "Service Level Agreement",
-  "DC": "Distribution Center",
-  "WH": "Warehouse",
-  "UOM": "Unit of Measure",
-  "LT": "Lead Time",
-  "MOQ": "Minimum Order Quantity",
-  "EBS": "E-Business Suite",
-  "HCM": "Human Capital Management",
-  "CRM": "Customer Relationship Management",
-  "ERP": "Enterprise Resource Planning",
-  "BI": "Business Intelligence",
-  "UDM": "Unified Data Model",
-  "ETL": "Extract, Transform, Load",
-  "ELT": "Extract, Load, Transform",
-  "KPI": "Key Performance Indicator",
-  "OLAP": "Online Analytical Processing",
-  "OLTP": "Online Transaction Processing",
-  "SQL": "Structured Query Language",
-  "DDL": "Data Definition Language",
-  "DML": "Data Manipulation Language",
-  "PK": "Primary Key",
-  "FK": "Foreign Key",
+  AP:"Accounts Payable", AR:"Accounts Receivable", GL:"General Ledger", COGS:"Cost of Goods Sold",
+  PO:"Purchase Order", PR:"Purchase Requisition", INV:"Invoice", CM:"Credit Memo", DM:"Debit Memo",
+  VAT:"Value-Added Tax", FX:"Foreign Exchange", MTD:"Month to Date", QTD:"Quarter to Date", YTD:"Year to Date",
+  EOM:"End of Month", BOM:"Bill of Materials", MRP:"Material Requirements Planning", WIP:"Work in Process",
+  SKU:"Stock Keeping Unit", RMA:"Return Material Authorization", ASN:"Advanced Shipping Notice",
+  ETA:"Estimated Time of Arrival", ETD:"Estimated Time of Departure", SLA:"Service Level Agreement",
+  DC:"Distribution Center", WH:"Warehouse", UOM:"Unit of Measure", LT:"Lead Time", MOQ:"Minimum Order Quantity",
+  EBS:"E-Business Suite", HCM:"Human Capital Management", CRM:"Customer Relationship Management",
+  ERP:"Enterprise Resource Planning", BI:"Business Intelligence", UDM:"Unified Data Model",
+  ETL:"Extract, Transform, Load", ELT:"Extract, Load, Transform", KPI:"Key Performance Indicator",
+  OLAP:"Online Analytical Processing", OLTP:"Online Transaction Processing", SQL:"Structured Query Language",
+  DDL:"Data Definition Language", DML:"Data Manipulation Language", PK:"Primary Key", FK:"Foreign Key",
 }
 
 function expandAcronyms(text: string, seen = new Set<string>()): string {
@@ -396,15 +423,12 @@ function expandAcronyms(text: string, seen = new Set<string>()): string {
   if (!keys) return text
   const rx = new RegExp(`\\b(${keys})\\b`, "g")
   return text.replace(rx, (m) => {
-    if (!seen.has(m)) {
-      seen.add(m)
-      return `${ACRONYM_MAP[m]} (${m})`
-    }
+    if (!seen.has(m)) { seen.add(m); return `${ACRONYM_MAP[m]} (${m})` }
     return m
   })
 }
 
-/* ---------- TLDR composition router ---------- */
+/* ---------- TLDR composition ---------- */
 
 function composeTLDR(
   stmt: StmtType,
@@ -420,32 +444,22 @@ function composeTLDR(
   return scrubBoilerplate(finalText)
 }
 
-/* ---------- Stakeholder (plain-English, 4–6 sentences, no raw tech names) ---------- */
-
 function deJargonStakeholder(s: string): string {
   if (!s) return s
   let t = s.replace(/\s+/g, " ").trim()
-
   t = t.replace(/\bGROUP\s+BY\b/gi, "grouped by")
   t = t.replace(/\bORDER\s+BY\b/gi, "sorted by")
   t = t.replace(/\bHAVING\b/gi, "only where")
   t = t.replace(/\bDESC\b/gi, "highest first")
   t = t.replace(/\bASC\b/gi, "lowest first")
-
-  // Common TRUNC patterns
   t = t.replace(/TRUNC\([^)]*'MM'\)/gi, "month")
   t = t.replace(/TRUNC\([^)]*'IW'\)/gi, "week")
   t = t.replace(/TRUNC\([^)]*'DD'\)/gi, "day")
   t = t.replace(/TRUNC\([^)]*\)/gi, "date")
-
-  // FETCH FIRST / LIMIT
   t = t.replace(/FETCH\s+FIRST\s+(\d+)\s+ROWS?\s+(?:WITH\s+TIES\s+)?ONLY/gi, "top $1 rows")
   t = t.replace(/LIMIT\s+(\d+)/gi, "top $1 rows")
-
-  // IN (...) → "in a defined list"
   t = t.replace(/\bIN\s*\(\s*SELECT[^)]*\)/gi, "in a defined list")
   t = t.replace(/\bIN\s*\([^)]*\)/gi, "in a defined list")
-
   return t.replace(/\s*;\s*$/g, "")
 }
 
@@ -490,8 +504,6 @@ function composeTLDR_Stakeholder(stmt: StmtType, d: any, _entitiesTxt: string): 
   return `${constrained} ${closer}`.trim()
 }
 
-/* ---------- Developer (5–7 sentences; syntax/technical focus) ---------- */
-
 function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): string {
   const focus = stmt === "select" ? "query" : stmt === "dml" ? "statement" : "PL/SQL unit"
   const lines: string[] = []
@@ -501,8 +513,8 @@ function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): str
     const fgo = d.fgo ? sentenceize(d.fgo) : ""
     const tech = d.specialTechniques ? sentenceize(d.specialTechniques) : ""
     lines.push(`This ${focus} builds ${purpose} from ${entitiesTxt}, emphasizing the scoped slice of data.`)
-    if (fgo) lines.push(fgo) 
-    if (tech) lines.push(tech) 
+    if (fgo) lines.push(fgo)
+    if (tech) lines.push(tech)
     lines.push("Predicates in the WHERE clause constrain rows to relevant business conditions; JOIN keys align fact and reference data.")
     lines.push("If present, window functions compute rankings or running totals; set operations merge compatible result sets.")
     lines.push("Result ordering is applied for deterministic presentation; grouping aggregates measures at the target grain.")
@@ -529,7 +541,7 @@ function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): str
   return `${constrained} ${closer}`.trim()
 }
 
-/* ---------- Tone helpers & stakeholder simplifiers ---------- */
+/* ---------- Stakeholder simplifiers ---------- */
 
 function sentenceize(s: string): string {
   if (!s) return ""
@@ -537,7 +549,6 @@ function sentenceize(s: string): string {
   s = s.replace(/\b(GROUP|ORDER|WHERE|JOIN)\b/gi, (m) => m.toLowerCase())
   return s.endsWith(".") ? s : `${s}.`
 }
-
 function simpleTechniqueLine(d: any): string {
   const bits: string[] = []
   if (d.specialTechniques?.match(/window|analytic/i)) bits.push("running totals or rankings")
@@ -546,26 +557,22 @@ function simpleTechniqueLine(d: any): string {
   if (bits.length === 0) return ""
   return `It uses simple techniques like ${bits.join(", ")} to match and combine the right records.`
 }
-
 function simplifyFGO(s: string): string {
   s = deJargonStakeholder(s)
   s = s.replace(/\bjoins\b/gi, "combines")
   return sentenceize(s)
 }
-
 function simplifyEffects(s: string): string {
   s = deJargonStakeholder(s)
   s = s.replace(/\bWHERE\b/gi, "where")
   return sentenceize(s)
 }
-
 function simplifyFlow(s: string): string {
   s = deJargonStakeholder(s)
   s = s.replace(/steps include/gi, "it proceeds through steps like")
   s = s.replace(/\blog(s|ging)?\b/gi, "recording activity")
   return sentenceize(s)
 }
-
 function buildInShortStakeholder(stmt: StmtType, d: any): string {
   const gist =
     stmt === "select"
@@ -573,10 +580,8 @@ function buildInShortStakeholder(stmt: StmtType, d: any): string {
       : stmt === "dml"
       ? (d.purpose ? d.purpose : "applying the intended changes safely")
       : (d.purpose ? d.purpose : "running the end-to-end process reliably")
-
   return `In short, it ${deJargonStakeholder(gist).toLowerCase()} using the relevant business data.`
 }
-
 function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): string {
   const gist =
     stmt === "select"
@@ -584,33 +589,22 @@ function buildInShortDeveloper(stmt: StmtType, d: any, entitiesTxt: string): str
       : stmt === "dml"
       ? (d.purpose ? d.purpose : "applying the intended changes safely")
       : (d.purpose ? d.purpose : "running the end-to-end process reliably")
-
   const extra =
     stmt === "select" ? (d.fgo ? ` ${trimPeriod(d.fgo)}` : "")
     : stmt === "dml" ? (d.effects ? ` ${trimPeriod(d.effects)}` : "")
     : d.keyRoutines?.length ? ` via ${d.keyRoutines.slice(0,2).join(" & ")}` : ""
-
   return `In short, it ${gist.toLowerCase()} using ${entitiesTxt}.${extra ? " " + (extra.endsWith(".") ? extra : extra + ".") : ""}`
 }
 
-/* ---------- De-tech: remove raw identifiers for stakeholder ---------- */
+/* ---------- De-tech ---------- */
 
 function softDeTech(input: string): string {
   if (!input) return input
   let s = input
-
-  // schema.table → “business tables”
   s = s.replace(/\b[A-Z][A-Z0-9_]*\.[A-Z][A-Z0-9_]*\b/g, "business tables")
-
-  // screaming_snake identifiers → “business logic”
   s = s.replace(/\b([A-Z][A-Z0-9]*_){1,}[A-Z0-9]*\b/g, "business logic")
-
-  // ALLCAPS function-like tokens → “business calculation”
   s = s.replace(/\b[A-Z]{3,}\s*\([^)]*\)/g, "business calculation")
-
-  // “via logging_*” → “with supporting logs”
   s = s.replace(/via\s+logging[_a-z0-9]*/gi, "with supporting logs")
-
   return s.replace(/\s{2,}/g, " ").trim()
 }
 
@@ -626,7 +620,7 @@ function heuristicSummary(
   const structured: any = {}
   structured.entities = sig.tables.slice(0, 10)
   if (stmt === "select") {
-    structured.purpose = guessPurposeFromTables(sig.tables) || "a reporting dataset"
+    structured.purpose = guessPurposeFromTables(sig.tables) || "reporting on key metrics"
     structured.fgo = [
       sig.joins ? `${sig.joins} join(s) across ${structured.entities.length || "multiple"} table(s)` : "",
       sig.wherePredicates?.length ? `filters such as ${sig.wherePredicates.slice(0,3).join("; ")}` : "",
@@ -668,7 +662,6 @@ function guessPurposeFromTables(tables: string[]): string | undefined {
   if (/PRODUCT|ITEM/i.test(t)) return "product-level performance"
   return undefined
 }
-
 function guessPurposeFromVerbs(verbs: string[]): string | undefined {
   if (!verbs?.length) return undefined
   if (verbs.includes("ALLOCATE")) return "allocation of costs or amounts"
@@ -678,7 +671,6 @@ function guessPurposeFromVerbs(verbs: string[]): string | undefined {
   if (verbs.includes("UPDATE") || verbs.includes("INSERT") || verbs.includes("DELETE")) return "data maintenance operations"
   return undefined
 }
-
 function buildFlow(sig: ReturnType<typeof extractSignals>): string {
   const steps = []
   if (sig.businessVerbs.length) steps.push(`steps include ${sig.businessVerbs.slice(0,3).map(v=>v.toLowerCase()).join(", ")}`)
@@ -723,7 +715,7 @@ async function callAzure(systemPrompt: string, userContent: string): Promise<{ t
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
   const body: any = {
     temperature: 0.15,
-    response_format: { type: "json_object" }, 
+    response_format: { type: "json_object" },
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
@@ -749,7 +741,7 @@ async function withRetries<T>(fn: () => Promise<T>, max = 3, baseDelay = 400): P
     try { return await fn() } catch (e: any) {
       lastErr = e
       const msg = String(e?.message || "")
-      if (!/429|5\d\d|timeout|exceeded|aborted/i.test(msg)) break
+      if (!/429|5\d\d|timeout|exceeded|aborted|Temporary|Again/i.test(msg)) break
       await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)))
     }
   }
