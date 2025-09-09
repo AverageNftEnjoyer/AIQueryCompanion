@@ -1,9 +1,9 @@
 # AI Powered Query Companion
 
 An AI-driven SQL query comparison and analysis tool powered by **xAI** and **Azure OpenAI**.  
-It highlights differences between SQL queries, groups changes intelligently (including nested subqueries), and provides natural-language explanations tailored for both **developers** and **stakeholders**.
+It highlights differences between SQL queries, groups changes intelligently, and provides natural-language explanations tailored for both **developers** and **stakeholders**.
 
-> 🔍 Compare. Understand. Explain. — Powered by AI.
+> 🔍 Compare. Analyze. Understand.
 
 ---
 
@@ -11,7 +11,7 @@ It highlights differences between SQL queries, groups changes intelligently (inc
 
 <img src="demo.gif" alt="AI Query Companion Demo" width="100%"/>
 
-> 🎥 Coming soon: Full video walkthrough (or replace with screenshots)
+> 🎥 Coming soon: 
 
 ---
 
@@ -36,8 +36,8 @@ It highlights differences between SQL queries, groups changes intelligently (inc
 - **Frontend**: React (Next.js 14), Tailwind CSS
 - **Backend**: Node.js (Next.js API Routes)
 - **AI Providers**: 
-  - xAI (Grok-4) via API
-  - Azure OpenAI (GPT-4o / 2024‑02‑15‑preview)
+  - xAI (Grok-4) 
+  - Azure OpenAI 
 - **Diff Engine**: LCS-based canonical SQL differ
 - **Language**: TypeScript
 
