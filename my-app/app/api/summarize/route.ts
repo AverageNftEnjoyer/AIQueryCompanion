@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server"
 
-/* ---------- Types ---------- */
 
 type Provider = "xai" | "azure"
 type StmtType = "select" | "dml" | "plsql"
@@ -32,7 +31,6 @@ type ContextHints = {
 const DEFAULT_XAI_MODEL = "grok-4"
 const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 
-// We accept any input size; only clip what we send to the model
 const MODEL_CLIP_BYTES = 12_000
 const REQUEST_TIMEOUT_MS = 28_000
 
@@ -45,33 +43,26 @@ export async function POST(req: Request) {
     const newQuery = typeof body?.newQuery === "string" ? body.newQuery.trim() : ""
     if (!newQuery) return NextResponse.json({ error: "newQuery is required" }, { status: 400 })
 
-    // Audience defaults to stakeholder (explicitly allow developer via query or body)
     const url = new URL(req.url)
     const audienceParam = (url.searchParams.get("audience") || "").toLowerCase()
     const bodyAudience = (typeof (body as any)?.audience === "string" ? (body as any).audience : "").toLowerCase()
     const audience: "stakeholder" | "developer" =
       audienceParam === "developer" || bodyAudience === "developer" ? "developer" : "stakeholder"
 
-    // Detect statement type and provider
     const stmt = detectStmtType(newQuery)
     const provider: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
 
-    // Hints/signals built from full text (no clipping)
     const hints = getQueryHints(newQuery)
     const signals = extractSignals(newQuery)
-
-    // Smart clip for the model payload
     const { clip, clipBytes } = smartClip(newQuery, stmt, MODEL_CLIP_BYTES)
     const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
     const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
 
-    // Pass 1
     let metaPass: LLMResult["meta"]["pass"] = "model-p1"
     let { text, model } =
       provider === "azure" ? await callAzure(systemPrompt1, userPayload1) : await callXAI(systemPrompt1, userPayload1)
 
     let parsed = tryParseLastJson(text)
-    // Backfill basics if model missed them
     if (!parsed.freshness && hints.freshnessHint) parsed.freshness = hints.freshnessHint
     if ((!parsed.entities || parsed.entities.length === 0) && signals.tables.length) {
       parsed.entities = signals.tables.slice(0, 10)
@@ -79,7 +70,6 @@ export async function POST(req: Request) {
 
     let tldr = composeTLDR(stmt, parsed, audience).trim()
 
-    // Anti-boilerplate second pass
     if (!tldr || isBoilerplate(tldr)) {
       const systemPrompt2 = buildSystemPrompt(stmt, /*strict*/ true)
       const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
@@ -95,7 +85,6 @@ export async function POST(req: Request) {
       }
       tldr = composeTLDR(stmt, parsed, audience).trim()
 
-      // Heuristic fallback
       if (!tldr || isBoilerplate(tldr)) {
         metaPass = "heuristic"
         const heur = heuristicSummary(stmt, newQuery, hints, signals, audience)
@@ -181,7 +170,6 @@ function smartClip(sql: string, stmt: StmtType, budget: number): { clip: string;
     return { clip, clipBytes: clip.length }
   }
 
-  // PLSQL
   const header = (raw.match(/\bCREATE\s+(OR\s+REPLACE\s+)?(PACKAGE|PROCEDURE|FUNCTION)[\s\S]{0,3000}/i)?.[0] || raw.slice(0, 3000))
   const sigs = (raw.match(/\b(PROCEDURE|FUNCTION)\s+[A-Z0-9_]+\s*\([^\)]{0,400}\)/gi) || []).slice(0, 6).join("\n")
   const bodies = (raw.match(/\b(PROCEDURE|FUNCTION)\s+[A-Z0-9_]+[\s\S]{0,1200}?END\s+\1/gi) || []).slice(0, 2).join("\n/* ...clipped... */\n")
@@ -355,7 +343,6 @@ function buildUserPayload(
 /* ---------- Acronyms (expanded for stakeholder) ---------- */
 
 const ACRONYM_MAP: Record<string,string> = {
-  // Finance & Accounting
   "AP": "Accounts Payable",
   "AR": "Accounts Receivable",
   "GL": "General Ledger",
@@ -371,8 +358,6 @@ const ACRONYM_MAP: Record<string,string> = {
   "QTD": "Quarter to Date",
   "YTD": "Year to Date",
   "EOM": "End of Month",
-
-  // Supply Chain / Logistics
   "BOM": "Bill of Materials",
   "MRP": "Material Requirements Planning",
   "WIP": "Work in Process",
@@ -387,16 +372,12 @@ const ACRONYM_MAP: Record<string,string> = {
   "UOM": "Unit of Measure",
   "LT": "Lead Time",
   "MOQ": "Minimum Order Quantity",
-
-  // Oracle / ERP
   "EBS": "E-Business Suite",
   "HCM": "Human Capital Management",
   "CRM": "Customer Relationship Management",
   "ERP": "Enterprise Resource Planning",
   "BI": "Business Intelligence",
   "UDM": "Unified Data Model",
-
-  // Data / Analytics / DB
   "ETL": "Extract, Transform, Load",
   "ELT": "Extract, Load, Transform",
   "KPI": "Key Performance Indicator",
@@ -435,19 +416,16 @@ function composeTLDR(
     ? composeTLDR_Developer(stmt, d, entitiesTxt)
     : composeTLDR_Stakeholder(stmt, d, entitiesTxt)
 
-  // Stakeholder: expand acronyms and scrub remaining tech identifiers
   const finalText = (audience === "stakeholder") ? softDeTech(expandAcronyms(base)) : base
   return scrubBoilerplate(finalText)
 }
 
 /* ---------- Stakeholder (plain-English, 4–6 sentences, no raw tech names) ---------- */
 
-/** Convert SQL-ish phrasing to plain English for stakeholders */
 function deJargonStakeholder(s: string): string {
   if (!s) return s
   let t = s.replace(/\s+/g, " ").trim()
 
-  // SQL → plain English
   t = t.replace(/\bGROUP\s+BY\b/gi, "grouped by")
   t = t.replace(/\bORDER\s+BY\b/gi, "sorted by")
   t = t.replace(/\bHAVING\b/gi, "only where")
@@ -523,8 +501,8 @@ function composeTLDR_Developer(stmt: StmtType, d: any, entitiesTxt: string): str
     const fgo = d.fgo ? sentenceize(d.fgo) : ""
     const tech = d.specialTechniques ? sentenceize(d.specialTechniques) : ""
     lines.push(`This ${focus} builds ${purpose} from ${entitiesTxt}, emphasizing the scoped slice of data.`)
-    if (fgo) lines.push(fgo) // joins, filters, grouping/ordering
-    if (tech) lines.push(tech) // windows, set ops, EXISTS/IN, etc.
+    if (fgo) lines.push(fgo) 
+    if (tech) lines.push(tech) 
     lines.push("Predicates in the WHERE clause constrain rows to relevant business conditions; JOIN keys align fact and reference data.")
     lines.push("If present, window functions compute rankings or running totals; set operations merge compatible result sets.")
     lines.push("Result ordering is applied for deterministic presentation; grouping aggregates measures at the target grain.")
@@ -596,7 +574,6 @@ function buildInShortStakeholder(stmt: StmtType, d: any): string {
       ? (d.purpose ? d.purpose : "applying the intended changes safely")
       : (d.purpose ? d.purpose : "running the end-to-end process reliably")
 
-  // Keep this super plain; do NOT append fgo/effects here
   return `In short, it ${deJargonStakeholder(gist).toLowerCase()} using the relevant business data.`
 }
 
@@ -746,7 +723,7 @@ async function callAzure(systemPrompt: string, userContent: string): Promise<{ t
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
   const body: any = {
     temperature: 0.15,
-    response_format: { type: "json_object" }, // encourage strict JSON
+    response_format: { type: "json_object" }, 
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },

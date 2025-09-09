@@ -97,6 +97,13 @@ function safeErrMessage(e: any, fallback = "Unexpected error") {
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]")
 }
 
+/** robust boolean parser for env flags */
+function parseBoolEnv(v?: string | null) {
+  if (!v) return false
+  const t = v.trim().toLowerCase()
+  return ["1", "true", "yes", "on"].includes(t)
+}
+
 /* -------------------------- Fetch timeout & retry --------------------------- */
 
 async function fetchJSONWithTimeout(url: string, init: RequestInit, timeoutMs = FETCH_TIMEOUT_MS) {
@@ -670,7 +677,7 @@ function groupChangesSmart(
           ? `${rangeText}${scope}: removed ${spanLen} lines. Preview "${preview}"`
           : `${rangeText}${scope}: modified ${spanLen} lines. Preview "${preview}"`
 
-      grouped.push({ type: base.type, description: desc, lineNumber: aLine, side: base.side, span: spanLen, })
+      grouped.push({ type: base.type, description: desc, lineNumber: aLine, side: base.side, span: spanLen })
     }
 
     if (majorityBlock && runLen >= threshold) {
@@ -794,21 +801,26 @@ export async function POST(req: Request) {
           ]
         : head
 
-    // Env flag OR per-request flag from client
-    const AI_DISABLED = process.env.DISABLE_AI_ANALYSIS === "true" || noAI === true
+    // ======== AI enablement & provider selection (fixed) ========
+    const AI_DISABLED =
+      parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
+      parseBoolEnv(process.env.DISABLE_AI) ||
+      noAI === true
 
-    // Ask model(s)
     let modelExplanations: ChangeExplanation[] = []
+    let modelError: string | null = null
+
     if (!AI_DISABLED) {
       const payload = buildUserPayload(canonOld, canonNew, explainTargets)
       const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
       try {
         modelExplanations = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
-      } catch {
-        // Fallback to the other provider
+      } catch (e: any) {
+        modelError = `Primary provider failed: ${safeErrMessage(e)}`
         try {
           modelExplanations = provider === "azure" ? await explainWithXAI(payload) : await explainWithAzure(payload)
-        } catch {
+        } catch (e2: any) {
+          modelError += ` | Fallback failed: ${safeErrMessage(e2)}`
           modelExplanations = []
         }
       }
@@ -821,9 +833,18 @@ export async function POST(req: Request) {
 
     const finalChanges = explainTargets.map((c, idx) => {
       const m = expMap.get(idx)
-      let explanation =
-        m?.explanation?.trim() ||
-        (AI_DISABLED ? "AI analysis is disabled for this run." : "AI analysis is disabled Dev is testing..")
+      let explanation: string
+
+      if (m?.explanation?.trim()) {
+        explanation = m.explanation.trim()
+      } else if (AI_DISABLED) {
+        explanation = "AI analysis is disabled for this run."
+      } else if (modelError) {
+        explanation = `AI analysis temporarily unavailable: ${modelError}`
+      } else {
+        explanation = "No AI explanation was produced."
+      }
+
       const extras: string[] = []
       if (m?.syntax === "bad" && (m as any)._syntax_explanation) extras.push(`Syntax: ${(m as any)._syntax_explanation}`)
       if (m?.performance === "bad" && (m as any)._performance_explanation)
@@ -868,6 +889,14 @@ export async function POST(req: Request) {
         riskAssessment: "Low",
         performanceImpact: "Neutral",
       },
+      ...(process.env.NODE_ENV !== "production" && {
+        _debug: {
+          aiDisabled: AI_DISABLED,
+          provider: process.env.LLM_PROVIDER || "xai",
+          usedExplanations: modelExplanations.length,
+          modelError,
+        },
+      }),
     }
 
     cache.set(cacheKey, responsePayload)
