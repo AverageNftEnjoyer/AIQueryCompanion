@@ -21,7 +21,7 @@ type ChangeExplanation = {
   explanation: string
   syntax?: GoodBad
   performance?: GoodBad
-  // internal optional fields carried through (not required by UI)
+  // optional diagnostics (not required by UI)
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   _syntax_explanation?: string
@@ -45,20 +45,24 @@ type ChangeExplanation = {
   _suggestions?: string[]
 }
 
-const DEFAULT_XAI_MODEL = "grok-4"
-const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
+const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
+const DEFAULT_AZURE_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview"
 const MAX_QUERY_CHARS = 120_000
 
 // —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30))
 
 // —— Networking knobs ——
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const FETCH_TIMEOUT_MS = Math.max(8_000, Number(process.env.FETCH_TIMEOUT_MS ?? 12_000))
 const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1))
 
 // —— Model budget knobs ——
+// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80))
+const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 12_000))
 
 /* ============================== Small Utilities ============================= */
 
@@ -143,8 +147,8 @@ function shouldSuppressServer(desc: string): boolean {
   if (/^[(),;]+$/.test(tok)) return true
   if (/^\)$/.test(tok) || /^\($/.test(tok) || /^\)\s*,?$/.test(tok)) return true
   if (/\bAS\s*\($/i.test(tok)) return true
-  if (/^"(?:\w+)"$/.test(tok)) return true 
-  if (/^\bON\b\s*$/i.test(tok)) return true 
+  if (/^"(?:\w+)"$/.test(tok)) return true
+  if (/^\bON\b\s*$/i.test(tok)) return true
   return false
 }
 
@@ -195,6 +199,14 @@ function coerceExplanations(content: string): ChangeExplanation[] {
   }
 }
 
+function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): string {
+  const raw = (sql || "").replace(/\r/g, "")
+  if (raw.length <= budget) return raw
+  const head = raw.slice(0, Math.floor(budget * 0.6))
+  const tail = raw.slice(-Math.floor(budget * 0.35))
+  return `${head}\n/* ...clipped for model... */\n${tail}`
+}
+
 function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
   const enriched = changes.map((c, i) => {
     const span = spanFromDescription(c.description)
@@ -225,8 +237,9 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
       "Preserve the provided 'index' exactly."
     ],
     dialect: "Oracle SQL",
-    oldQuery,
-    newQuery,
+    // send clipped SQL to the model to play nicer with corp proxies/WAF
+    oldQuery: clipSqlForModel(oldQuery),
+    newQuery: clipSqlForModel(newQuery),
     changes: enriched,
     output_schema: {
       explanations: [{
@@ -254,6 +267,7 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
   if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY in environment.")
 
+  // xAI: avoid response_format/json_schema — instruct JSON via prompt instead
   const resp = await withRetry(() =>
     fetchJSONWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
       method: "POST",
@@ -261,57 +275,16 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
       body: JSON.stringify({
         model: XAI_MODEL,
         temperature: 0.1,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "change_explanations",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                explanations: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      index: { type: "number" },
-                      text: { type: "string" },
-                      clauses: {
-                        type: "array",
-                        items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
-                        uniqueItems: true
-                      },
-                      change_kind: { type: "string" },
-                      syntax: { type: "string", enum: ["good", "bad"] },
-                      performance: { type: "string", enum: ["good", "bad"] },
-                      syntax_explanation: { type: "string" },
-                      performance_explanation: { type: "string" },
-                      business_impact: { type: "string", enum: ["clear","weak","none"] },
-                      risk: { type: "string", enum: ["low","medium","high"] },
-                      suggestions: {
-                        type: "array",
-                        items: { type: "string" },
-                        maxItems: 2
-                      }
-                    },
-                    required: ["index","text","syntax","performance","business_impact","risk"],
-                    additionalProperties: false
-                  }
-                }
-              },
-              required: ["explanations"],
-              additionalProperties: false
-            }
-          }
-        },
         messages: [
           {
             role: "system",
             content: [
               "You are a senior Oracle SQL reviewer for a junior developer audience.",
-              "Write length according to each change's 'verbosity'.",
-              "Return JSON only, matching the schema—no extra keys or prose.",
-              "If syntax='bad', include 'syntax_explanation' (1 sentence). If performance='bad', include 'performance_explanation' (1 sentence)."
+              "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
+              "For each item include: index, text, clauses (subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
+              "change_kind, syntax ('good'|'bad'), performance ('good'|'bad'),",
+              "syntax_explanation if syntax='bad', performance_explanation if performance='bad',",
+              "business_impact ('clear'|'weak'|'none'), risk ('low'|'medium'|'high'), suggestions (0–2)."
             ].join(" ")
           },
           { role: "user", content: JSON.stringify(userPayload) },
@@ -337,6 +310,7 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
 
   const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
 
+  // Azure supports response_format json_schema; keep it for stronger structure
   let res = await withRetry(() =>
     fetchJSONWithTimeout(url, {
       method: "POST",
@@ -403,6 +377,7 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
   )
 
   if (!res.ok) {
+    // Fallback prompt (no schema) if some tenants reject response_format
     res = await withRetry(() =>
       fetchJSONWithTimeout(url, {
         method: "POST",
@@ -414,12 +389,11 @@ async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> 
               role: "system",
               content: [
                 "You are a senior Oracle SQL reviewer for a junior developer audience.",
-                "Write length according to each change's 'verbosity' (short/medium/long).",
-                "Return a JSON object with key 'explanations': array of items with keys:",
-                "index:number, text:string, clauses:string[], change_kind:string, syntax:'good'|'bad', performance:'good'|'bad',",
-                "syntax_explanation?:string (only if syntax='bad'), performance_explanation?:string (only if performance='bad'),",
-                "business_impact:'clear'|'weak'|'none', risk:'low'|'medium'|'high', suggestions?:string[] (max 2).",
-                "No prose outside JSON."
+                "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
+                "For each item include: index, text, clauses (subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
+                "change_kind, syntax ('good'|'bad'), performance ('good'|'bad'),",
+                "syntax_explanation if syntax='bad', performance_explanation if performance='bad',",
+                "business_impact ('clear'|'weak'|'none'), risk ('low'|'medium'|'high'), suggestions (0–2)."
               ].join(" ")
             },
             { role: "user", content: JSON.stringify(userPayload) },
@@ -480,7 +454,7 @@ type SqlStructure = {
   boundaries: Set<number>
   labels: Map<number, string>
   blocks: SqlBlock[]
-  byLine: Map<number, number> 
+  byLine: Map<number, number> // line → block index
 }
 
 function buildSqlStructure(sql: string): SqlStructure {
@@ -533,6 +507,7 @@ function buildSqlStructure(sql: string): SqlStructure {
     for (let ln = start; ln <= end; ln++) if (!byLine.has(ln)) byLine.set(ln, idx)
   }
 
+  // WITH .. AS ( ... )
   const withRE = /^\s*WITH\b/i
   const asOpenRE = /\bAS\s*\(\s*$/i
   let inWith = false
@@ -562,7 +537,6 @@ function buildSqlStructure(sql: string): SqlStructure {
     const n = i + 1
     const line = lines[i]
 
-    // parenthesis scan
     for (const ch of line) {
       if (ch === "(") stack.push({ openLine: n, isSubquery: false })
       else if (ch === ")") {
@@ -570,7 +544,6 @@ function buildSqlStructure(sql: string): SqlStructure {
         if (itm && itm.isSubquery) pushBlock(itm.openLine, n, "SUBQUERY", "SUBQUERY")
       }
     }
-    // mark top-of-stack as subquery if SELECT appears before close
     if (/\bSELECT\b/i.test(line) && stack.length > 0) {
       const top = stack[stack.length - 1]
       if (top && !top.isSubquery) top.isSubquery = true
@@ -589,7 +562,7 @@ function buildSqlStructure(sql: string): SqlStructure {
     }
   }
 
-  // Clause blocks (for nicer fallback grouping)
+  // Clause blocks (fallback grouping)
   labels.forEach((lab, ln) => {
     const next = [...labels.keys()].filter(k => k > ln).sort((a,b)=>a-b)[0] ?? lines.length + 1
     pushBlock(ln, next - 1, "CLAUSE", lab)
@@ -789,7 +762,7 @@ export async function POST(req: Request) {
           ]
         : head
 
-    // ======== AI enablement & provider selection (fixed) ========
+    // ======== AI enablement & provider selection (robust for corp laptops) ========
     const AI_DISABLED =
       parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
       parseBoolEnv(process.env.DISABLE_AI) ||
@@ -797,10 +770,10 @@ export async function POST(req: Request) {
 
     let modelExplanations: ChangeExplanation[] = []
     let modelError: string | null = null
+    const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
 
     if (!AI_DISABLED) {
       const payload = buildUserPayload(canonOld, canonNew, explainTargets)
-      const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
       try {
         modelExplanations = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
       } catch (e: any) {
@@ -880,7 +853,7 @@ export async function POST(req: Request) {
       ...(process.env.NODE_ENV !== "production" && {
         _debug: {
           aiDisabled: AI_DISABLED,
-          provider: process.env.LLM_PROVIDER || "xai",
+          provider: provider,
           usedExplanations: modelExplanations.length,
           modelError,
         },
