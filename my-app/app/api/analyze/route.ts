@@ -21,7 +21,7 @@ type ChangeExplanation = {
   explanation: string
   syntax?: GoodBad
   performance?: GoodBad
-  // optional diagnostics (not required by UI)
+  // optional diagnostics for UI enrichment (not required by UI)
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   _syntax_explanation?: string
@@ -45,7 +45,13 @@ type ChangeExplanation = {
   _suggestions?: string[]
 }
 
+/* Provider config (mirrors summarize.ts) */
+type Provider = "xai" | "azure"
+
 const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
+const DEFAULT_AZURE_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview"
+const PROVIDER: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
+
 const MAX_QUERY_CHARS = 120_000
 
 // —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
@@ -54,9 +60,9 @@ const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ??
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30))
 
 // —— Networking knobs ——
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-const FETCH_TIMEOUT_MS = Math.max(8_000, Number(process.env.FETCH_TIMEOUT_MS ?? 12_000))
-const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1))
+// A single per-request timeout (mirrors summarize.ts style)
+const REQUEST_TIMEOUT_MS = Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 30000)
+const RETRIES = Math.min(3, Number(process.env.LLM_RETRIES ?? 2))
 
 // —— Model budget knobs ——
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -102,25 +108,27 @@ function safeErrMessage(e: any, fallback = "Unexpected error") {
 
 /* -------------------------- Fetch timeout & retry --------------------------- */
 
-async function fetchJSONWithTimeout(url: string, init: RequestInit, timeoutMs = FETCH_TIMEOUT_MS) {
-  const ac = new AbortController()
-  const t = setTimeout(() => ac.abort(), timeoutMs)
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController()
+  const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, { ...init, signal: ac.signal })
-    return res
+    return await fetch(input, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(t)
   }
 }
 
-async function withRetry<T>(fn: () => Promise<T>, retries = RETRIES): Promise<T> {
+async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 400): Promise<T> {
   let lastErr: any
-  for (let i = 0; i <= retries; i++) {
+  for (let i = 0; i < max; i++) {
     try {
       return await fn()
-    } catch (e) {
+    } catch (e: any) {
       lastErr = e
-      await new Promise((r) => setTimeout(r, 300 * (i + 1)))
+      const msg = String(e?.message || "")
+      // Only retry on 429/5xx/timeouts/aborts
+      if (!/429|5\d\d|timeout|aborted|AbortError/i.test(msg)) break
+      await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)))
     }
   }
   throw lastErr
@@ -251,46 +259,66 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
   }
 }
 
-/* ------------------------------ LLM provider (xAI only) ------------------------------ */
+/* ============================== Providers (match summarize.ts) ============================== */
 
-async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
+async function callXAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
   const XAI_API_KEY = process.env.XAI_API_KEY
-  const XAI_MODEL = process.env.XAI_MODEL || DEFAULT_XAI_MODEL
   const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
-  if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY in environment.")
+  if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY")
 
-  const resp = await withRetry(() =>
-    fetchJSONWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
+  const body = {
+    model: DEFAULT_XAI_MODEL,
+    temperature: 0.1,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+  }
+
+  const r = await withRetries(() =>
+    fetchWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
-      body: JSON.stringify({
-        model: XAI_MODEL,
-        temperature: 0.1,
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You are a senior Oracle SQL reviewer for a junior developer audience.",
-              "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-              "For each item include: index, text, clauses (subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
-              "change_kind, syntax ('good'|'bad'), performance ('good'|'bad'),",
-              "syntax_explanation if syntax='bad', performance_explanation if performance='bad',",
-              "business_impact ('clear'|'weak'|'none'), risk ('low'|'medium'|'high'), suggestions (0–2)."
-            ].join(" ")
-          },
-          { role: "user", content: JSON.stringify(userPayload) },
-        ],
-      }),
-    })
+      body: JSON.stringify(body),
+    }, REQUEST_TIMEOUT_MS)
   )
-
-  if (!resp.ok) throw new Error(`xAI API error (${resp.status})`)
-  const data = await resp.json()
-  const content = data?.choices?.[0]?.message?.content ?? ""
-  return coerceExplanations(content)
+  if (!r.ok) throw new Error(await r.text())
+  const j = await r.json()
+  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
+  return { text, model: DEFAULT_XAI_MODEL }
 }
 
-/* --------------------------- Diff → atomic changes -------------------------- */
+async function callAzure(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT
+  const apiKey = process.env.AZURE_OPENAI_API_KEY
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
+  const apiVersion = DEFAULT_AZURE_API_VERSION
+  if (!endpoint || !apiKey || !deployment) throw new Error("Missing Azure OpenAI env vars")
+
+  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
+  const body: any = {
+    temperature: 0.1,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+  }
+
+  const r = await withRetries(() =>
+    fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "api-key": apiKey },
+      body: JSON.stringify(body),
+    }, REQUEST_TIMEOUT_MS)
+  )
+  if (!r.ok) throw new Error(await r.text())
+  const j = await r.json()
+  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
+  return { text, model: deployment }
+}
+
+/* ============================ Diff → atomic changes ============================ */
 
 function buildChanges(diff: ComparisonResult): ChangeItem[] {
   const out: ChangeItem[] = []
@@ -592,6 +620,7 @@ export async function POST(req: Request) {
     } catch (e: any) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { "Cache-Control": "no-store" } })
     }
+
     const { oldQuery, newQuery, noAI } = body as { oldQuery: string; newQuery: string; noAI?: boolean }
 
     const canonOld = canonicalizeSQL(oldQuery)
@@ -643,23 +672,66 @@ export async function POST(req: Request) {
           ]
         : head
 
-    // ======== xAI only (no Azure fallback) ========
+    /* ============================== LLM call (like summarize.ts) ============================== */
+
     const AI_ENABLED = noAI !== true
-    let modelExplanations: ChangeExplanation[] = []
-    let modelError: string | null = null
+
+    let explanationsText = ""
+    let modelUsed = ""
+    let lastError: string | undefined
+    let metaProvider: Provider = PROVIDER
 
     if (AI_ENABLED) {
-      const payload = buildUserPayload(canonOld, canonNew, explainTargets)
-      try {
-        modelExplanations = await explainWithXAI(payload)
-      } catch (e: any) {
-        modelError = safeErrMessage(e)
-        modelExplanations = []
+      // Provider availability
+      const hasXAI = !!process.env.XAI_API_KEY
+      const hasAzure = !!process.env.AZURE_OPENAI_ENDPOINT && !!process.env.AZURE_OPENAI_API_KEY && !!process.env.AZURE_OPENAI_DEPLOYMENT
+
+      // Build prompts/payload
+      const systemPrompt = [
+        "You are a senior Oracle SQL reviewer for a junior developer audience.",
+        "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
+        "Each item: index, text, clauses(subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
+        "change_kind, syntax('good'|'bad'), performance('good'|'bad'),",
+        "syntax_explanation if syntax='bad', performance_explanation if performance='bad',",
+        "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
+      ].join(" ")
+
+      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, explainTargets))
+
+      const tryOrder: Provider[] =
+        PROVIDER === "azure" ? ["azure", "xai"] : ["xai", "azure"]
+      const candidates = tryOrder.filter(p => (p === "xai" ? hasXAI : hasAzure))
+
+      if (candidates.length === 0) {
+        lastError = "No LLM provider configured on this environment."
+      } else {
+        for (const p of candidates) {
+          try {
+            const r = p === "azure"
+              ? await callAzure(systemPrompt, userPayload)
+              : await callXAI(systemPrompt, userPayload)
+            explanationsText = r.text
+            modelUsed = r.model
+            metaProvider = p
+            lastError = undefined
+            break
+          } catch (e: any) {
+            lastError = String(e?.message || e)
+            // continue to next candidate
+          }
+        }
       }
     }
 
+    const parsed = (() => {
+      if (!explanationsText) return []
+      // Allow fenced or plain JSON
+      const defenced = explanationsText.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
+      try { return coerceExplanations(defenced) } catch { return [] }
+    })()
+
     const expMap = new Map<number, ChangeExplanation>()
-    modelExplanations.forEach((e) => {
+    parsed.forEach((e) => {
       if (typeof e.index === "number" && (e.explanation && e.explanation.length > 0)) expMap.set(e.index, e)
     })
 
@@ -671,8 +743,13 @@ export async function POST(req: Request) {
         explanation = m.explanation.trim()
       } else if (!AI_ENABLED) {
         explanation = "AI analysis is disabled for this run (noAI=true)."
-      } else if (modelError) {
-        explanation = `AI analysis temporarily unavailable: ${modelError}`
+      } else if (lastError) {
+        // Friendlier network timeout note
+        const friendly =
+          /AbortError|aborted|timeout/i.test(lastError)
+            ? "Network/egress timeout reaching LLM provider. Increase ANALYZE_REQUEST_TIMEOUT_MS or adjust network/proxy."
+            : lastError
+        explanation = `AI analysis temporarily unavailable: ${friendly}`
       } else {
         explanation = "No AI explanation was produced."
       }
@@ -723,9 +800,10 @@ export async function POST(req: Request) {
       },
       ...(process.env.NODE_ENV !== "production" && {
         _debug: {
-          provider: "xai",
-          usedExplanations: modelExplanations.length,
-          modelError,
+          providerPreferred: PROVIDER,
+          providerUsed: AI_ENABLED ? metaProvider : "none",
+          usedExplanations: parsed.length,
+          error: AI_ENABLED ? (explanationsText ? undefined : lastError) : "AI disabled by request body (noAI=true)",
         },
       }),
     }
@@ -733,6 +811,7 @@ export async function POST(req: Request) {
     cache.set(cacheKey, responsePayload)
     return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } })
   } catch (err: any) {
-    return NextResponse.json({ error: safeErrMessage(err) }, { status: 500, headers: { "Cache-Control": "no-store" } })
+    const msg = String(err?.name || "") + ": " + safeErrMessage(err)
+    return NextResponse.json({ error: msg }, { status: 500, headers: { "Cache-Control": "no-store" } })
   }
 }
