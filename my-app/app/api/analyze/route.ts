@@ -46,7 +46,6 @@ type ChangeExplanation = {
 }
 
 const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
-const DEFAULT_AZURE_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview"
 const MAX_QUERY_CHARS = 120_000
 
 // —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
@@ -99,12 +98,6 @@ function safeErrMessage(e: any, fallback = "Unexpected error") {
     .replace(/(Bearer\s+)[\w\.\-]+/gi, "$1[REDACTED]")
     .replace(/(api-key\s*:\s*)\w+/gi, "$1[REDACTED]")
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]")
-}
-
-function parseBoolEnv(v?: string | null) {
-  if (!v) return false
-  const t = v.trim().toLowerCase()
-  return ["1", "true", "yes", "on"].includes(t)
 }
 
 /* -------------------------- Fetch timeout & retry --------------------------- */
@@ -237,7 +230,6 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
       "Preserve the provided 'index' exactly."
     ],
     dialect: "Oracle SQL",
-    // send clipped SQL to the model to play nicer with corp proxies/WAF
     oldQuery: clipSqlForModel(oldQuery),
     newQuery: clipSqlForModel(newQuery),
     changes: enriched,
@@ -259,7 +251,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
   }
 }
 
-/* ------------------------------ LLM providers ------------------------------ */
+/* ------------------------------ LLM provider (xAI only) ------------------------------ */
 
 async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   const XAI_API_KEY = process.env.XAI_API_KEY
@@ -267,7 +259,6 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
   if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY in environment.")
 
-  // xAI: avoid response_format/json_schema — instruct JSON via prompt instead
   const resp = await withRetry(() =>
     fetchJSONWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
       method: "POST",
@@ -296,116 +287,6 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   if (!resp.ok) throw new Error(`xAI API error (${resp.status})`)
   const data = await resp.json()
   const content = data?.choices?.[0]?.message?.content ?? ""
-  return coerceExplanations(content)
-}
-
-async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> {
-  const endpoint = process.env.AZURE_OPENAI_ENDPOINT
-  const apiKey = process.env.AZURE_OPENAI_API_KEY
-  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
-  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || DEFAULT_AZURE_API_VERSION
-  if (!endpoint || !apiKey || !deployment) {
-    throw new Error("Missing Azure OpenAI env vars: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT.")
-  }
-
-  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
-
-  // Azure supports response_format json_schema; keep it for stronger structure
-  let res = await withRetry(() =>
-    fetchJSONWithTimeout(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api-key": apiKey },
-      body: JSON.stringify({
-        temperature: 0.1,
-        response_format: {
-          type: "json_schema",
-          json_schema: {
-            name: "change_explanations",
-            strict: true,
-            schema: {
-              type: "object",
-              properties: {
-                explanations: {
-                  type: "array",
-                  items: {
-                    type: "object",
-                    properties: {
-                      index: { type: "number" },
-                      text: { type: "string" },
-                      clauses: {
-                        type: "array",
-                        items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
-                        uniqueItems: true
-                      },
-                      change_kind: { type: "string" },
-                      syntax: { type: "string", enum: ["good", "bad"] },
-                      performance: { type: "string", enum: ["good", "bad"] },
-                      syntax_explanation: { type: "string" },
-                      performance_explanation: { type: "string" },
-                      business_impact: { type: "string", enum: ["clear","weak","none"] },
-                      risk: { type: "string", enum: ["low","medium","high"] },
-                      suggestions: {
-                        type: "array",
-                        items: { type: "string" },
-                        maxItems: 2
-                      }
-                    },
-                    required: ["index","text","syntax","performance","business_impact","risk"],
-                    additionalProperties: false
-                  }
-                }
-              },
-              required: ["explanations"],
-              additionalProperties: false
-            }
-          }
-        },
-        messages: [
-          {
-            role: "system",
-            content: [
-              "You are a senior Oracle SQL reviewer for a junior developer audience.",
-              "Write length according to each change's 'verbosity'.",
-              "Return JSON only with key 'explanations'.",
-              "If syntax='bad', include 'syntax_explanation'; if performance='bad', include 'performance_explanation'."
-            ].join(" ")
-          },
-          { role: "user", content: JSON.stringify(userPayload) },
-        ],
-      }),
-    })
-  )
-
-  if (!res.ok) {
-    // Fallback prompt (no schema) if some tenants reject response_format
-    res = await withRetry(() =>
-      fetchJSONWithTimeout(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "api-key": apiKey },
-        body: JSON.stringify({
-          temperature: 0.1,
-          messages: [
-            {
-              role: "system",
-              content: [
-                "You are a senior Oracle SQL reviewer for a junior developer audience.",
-                "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-                "For each item include: index, text, clauses (subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
-                "change_kind, syntax ('good'|'bad'), performance ('good'|'bad'),",
-                "syntax_explanation if syntax='bad', performance_explanation if performance='bad',",
-                "business_impact ('clear'|'weak'|'none'), risk ('low'|'medium'|'high'), suggestions (0–2)."
-              ].join(" ")
-            },
-            { role: "user", content: JSON.stringify(userPayload) },
-          ],
-        }),
-      })
-    )
-    if (!res.ok) throw new Error(`Azure OpenAI error (${res.status})`)
-  }
-
-  const json = await res.json()
-  const content = json?.choices?.[0]?.message?.content ?? ""
   return coerceExplanations(content)
 }
 
@@ -762,28 +643,18 @@ export async function POST(req: Request) {
           ]
         : head
 
-    // ======== AI enablement & provider selection (robust for corp laptops) ========
-    const AI_DISABLED =
-      parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
-      parseBoolEnv(process.env.DISABLE_AI) ||
-      noAI === false
-
+    // ======== xAI only (no Azure fallback) ========
+    const AI_ENABLED = noAI !== true
     let modelExplanations: ChangeExplanation[] = []
     let modelError: string | null = null
-    const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
 
-    if (!AI_DISABLED) {
+    if (AI_ENABLED) {
       const payload = buildUserPayload(canonOld, canonNew, explainTargets)
       try {
-        modelExplanations = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
+        modelExplanations = await explainWithXAI(payload)
       } catch (e: any) {
-        modelError = `Primary provider failed: ${safeErrMessage(e)}`
-        try {
-          modelExplanations = provider === "azure" ? await explainWithXAI(payload) : await explainWithAzure(payload)
-        } catch (e2: any) {
-          modelError += ` | Fallback failed: ${safeErrMessage(e2)}`
-          modelExplanations = []
-        }
+        modelError = safeErrMessage(e)
+        modelExplanations = []
       }
     }
 
@@ -798,8 +669,8 @@ export async function POST(req: Request) {
 
       if (m?.explanation?.trim()) {
         explanation = m.explanation.trim()
-      } else if (AI_DISABLED) {
-        explanation = "AI analysis is disabled for this run."
+      } else if (!AI_ENABLED) {
+        explanation = "AI analysis is disabled for this run (noAI=true)."
       } else if (modelError) {
         explanation = `AI analysis temporarily unavailable: ${modelError}`
       } else {
@@ -852,8 +723,7 @@ export async function POST(req: Request) {
       },
       ...(process.env.NODE_ENV !== "production" && {
         _debug: {
-          aiDisabled: AI_DISABLED,
-          provider: provider,
+          provider: "xai",
           usedExplanations: modelExplanations.length,
           modelError,
         },
