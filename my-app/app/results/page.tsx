@@ -686,7 +686,7 @@ const headerBgClass = isLight
                         ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
                         : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
                     }`}
-                    title="Generate a summary for the selected audience">
+                    title="Generate a summary for selected audience">
                     {summarizing ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
