@@ -629,9 +629,9 @@ const headerBgClass = isLight
               )}
                {/* Diff + MiniMap */}
                 <section className="mt-1">
-                  <div className="flex items-stretch gap-3 h-[86vh] min-h-0">
-                    {/* Query Comparison */}
-                    <div className="flex-1 min-w-0 h-full rounded-xl">
+                <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">                  
+                {/* Query Comparison */}
+                    <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
                       <QueryComparison
                         ref={cmpRef}
                         oldQuery={oldQuery}
@@ -671,13 +671,13 @@ const headerBgClass = isLight
                       />
                     </div>
                   </div>
-                <div className={`flex items-center justify-center text-xs mt-1 ${isLight ? "text-gray-500" : "text-white/60"}`}>
-                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+                  <div className={`relative z-20 flex items-center justify-center text-xs mt-3 ${isLight ? "text-gray-500" : "text-white/60"}`}>            
+                 <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
                 </div>
 
-                  <div className="mt-4 mb-2 md:mb-0 flex items-center justify-center">
-                  <button
+                  <div className="relative z-20 mt-4 mb-2 md:mb-0 flex items-center justify-center">              
+                    <button
                     type="button"
                     onClick={handleGenerateSummary}
                     disabled={summarizing}
