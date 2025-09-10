@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
-/* ============================== Runtime & caching ============================== */
-
-export const runtime = "nodejs"
-export const dynamic = "force-dynamic"
-
 /* ============================== Types & Config ============================== */
 
 type ChangeType = "addition" | "modification" | "deletion"
@@ -51,20 +46,18 @@ type ChangeExplanation = {
 }
 
 const DEFAULT_XAI_MODEL = "grok-4"
+const DEFAULT_AZURE_API_VERSION = "2024-02-15-preview"
 const MAX_QUERY_CHARS = 120_000
 
 // —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
-// Keep env-tunable but with sane floors.
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30))
 
 // —— Networking knobs ——
-// Roomier defaults to reduce aborts on Vercel Node.
-const FETCH_TIMEOUT_MS = Math.max(12_000, Number(process.env.FETCH_TIMEOUT_MS ?? 25_000))
-const RETRIES = Math.min(3, Number(process.env.LLM_RETRIES ?? 2))
+const FETCH_TIMEOUT_MS = Math.max(8_000, Number(process.env.FETCH_TIMEOUT_MS ?? 12_000))
+const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1))
 
 // —— Model budget knobs ——
-// Cap what we send to the model for deterministic cost/latency.
 const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80))
 
 /* ============================== Small Utilities ============================= */
@@ -150,8 +143,8 @@ function shouldSuppressServer(desc: string): boolean {
   if (/^[(),;]+$/.test(tok)) return true
   if (/^\)$/.test(tok) || /^\($/.test(tok) || /^\)\s*,?$/.test(tok)) return true
   if (/\bAS\s*\($/i.test(tok)) return true
-  if (/^"(?:\w+)"$/.test(tok)) return true
-  if (/^\bON\b\s*$/i.test(tok)) return true
+  if (/^"(?:\w+)"$/.test(tok)) return true 
+  if (/^\bON\b\s*$/i.test(tok)) return true 
   return false
 }
 
@@ -253,11 +246,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
   }
 }
 
-/* ------------------------------ XAI provider ------------------------------ */
-
-function hasXAIEnv() {
-  return !!process.env.XAI_API_KEY
-}
+/* ------------------------------ LLM providers ------------------------------ */
 
 async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   const XAI_API_KEY = process.env.XAI_API_KEY
@@ -337,6 +326,115 @@ async function explainWithXAI(userPayload: any): Promise<ChangeExplanation[]> {
   return coerceExplanations(content)
 }
 
+async function explainWithAzure(userPayload: any): Promise<ChangeExplanation[]> {
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT
+  const apiKey = process.env.AZURE_OPENAI_API_KEY
+  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
+  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || DEFAULT_AZURE_API_VERSION
+  if (!endpoint || !apiKey || !deployment) {
+    throw new Error("Missing Azure OpenAI env vars: AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT.")
+  }
+
+  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
+
+  let res = await withRetry(() =>
+    fetchJSONWithTimeout(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "api-key": apiKey },
+      body: JSON.stringify({
+        temperature: 0.1,
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "change_explanations",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                explanations: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      index: { type: "number" },
+                      text: { type: "string" },
+                      clauses: {
+                        type: "array",
+                        items: { type: "string", enum: ["SELECT","FROM","JOIN","WHERE","GROUP BY","HAVING","ORDER BY","LIMIT/OFFSET","WINDOW"] },
+                        uniqueItems: true
+                      },
+                      change_kind: { type: "string" },
+                      syntax: { type: "string", enum: ["good", "bad"] },
+                      performance: { type: "string", enum: ["good", "bad"] },
+                      syntax_explanation: { type: "string" },
+                      performance_explanation: { type: "string" },
+                      business_impact: { type: "string", enum: ["clear","weak","none"] },
+                      risk: { type: "string", enum: ["low","medium","high"] },
+                      suggestions: {
+                        type: "array",
+                        items: { type: "string" },
+                        maxItems: 2
+                      }
+                    },
+                    required: ["index","text","syntax","performance","business_impact","risk"],
+                    additionalProperties: false
+                  }
+                }
+              },
+              required: ["explanations"],
+              additionalProperties: false
+            }
+          }
+        },
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are a senior Oracle SQL reviewer for a junior developer audience.",
+              "Write length according to each change's 'verbosity'.",
+              "Return JSON only with key 'explanations'.",
+              "If syntax='bad', include 'syntax_explanation'; if performance='bad', include 'performance_explanation'."
+            ].join(" ")
+          },
+          { role: "user", content: JSON.stringify(userPayload) },
+        ],
+      }),
+    })
+  )
+
+  if (!res.ok) {
+    res = await withRetry(() =>
+      fetchJSONWithTimeout(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "api-key": apiKey },
+        body: JSON.stringify({
+          temperature: 0.1,
+          messages: [
+            {
+              role: "system",
+              content: [
+                "You are a senior Oracle SQL reviewer for a junior developer audience.",
+                "Write length according to each change's 'verbosity' (short/medium/long).",
+                "Return a JSON object with key 'explanations': array of items with keys:",
+                "index:number, text:string, clauses:string[], change_kind:string, syntax:'good'|'bad', performance:'good'|'bad',",
+                "syntax_explanation?:string (only if syntax='bad'), performance_explanation?:string (only if performance='bad'),",
+                "business_impact:'clear'|'weak'|'none', risk:'low'|'medium'|'high', suggestions?:string[] (max 2).",
+                "No prose outside JSON."
+              ].join(" ")
+            },
+            { role: "user", content: JSON.stringify(userPayload) },
+          ],
+        }),
+      })
+    )
+    if (!res.ok) throw new Error(`Azure OpenAI error (${res.status})`)
+  }
+
+  const json = await res.json()
+  const content = json?.choices?.[0]?.message?.content ?? ""
+  return coerceExplanations(content)
+}
+
 /* --------------------------- Diff → atomic changes -------------------------- */
 
 function buildChanges(diff: ComparisonResult): ChangeItem[] {
@@ -382,7 +480,7 @@ type SqlStructure = {
   boundaries: Set<number>
   labels: Map<number, string>
   blocks: SqlBlock[]
-  byLine: Map<number, number>
+  byLine: Map<number, number> 
 }
 
 function buildSqlStructure(sql: string): SqlStructure {
@@ -691,20 +789,27 @@ export async function POST(req: Request) {
           ]
         : head
 
-    // ======== AI enablement & XAI-only path ========
-    const AI_DISABLED = parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) || noAI === true
+    // ======== AI enablement & provider selection (fixed) ========
+    const AI_DISABLED =
+      parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
+      parseBoolEnv(process.env.DISABLE_AI) ||
+      noAI === true
+
     let modelExplanations: ChangeExplanation[] = []
     let modelError: string | null = null
 
     if (!AI_DISABLED) {
-      if (!hasXAIEnv()) {
-        modelError = "XAI not configured (XAI_API_KEY missing)."
-      } else {
-        const payload = buildUserPayload(canonOld, canonNew, explainTargets)
+      const payload = buildUserPayload(canonOld, canonNew, explainTargets)
+      const provider = (process.env.LLM_PROVIDER || "xai").toLowerCase()
+      try {
+        modelExplanations = provider === "azure" ? await explainWithAzure(payload) : await explainWithXAI(payload)
+      } catch (e: any) {
+        modelError = `Primary provider failed: ${safeErrMessage(e)}`
         try {
-          modelExplanations = await explainWithXAI(payload)
-        } catch (e: any) {
-          modelError = `XAI call failed: ${safeErrMessage(e)}`
+          modelExplanations = provider === "azure" ? await explainWithXAI(payload) : await explainWithAzure(payload)
+        } catch (e2: any) {
+          modelError += ` | Fallback failed: ${safeErrMessage(e2)}`
+          modelExplanations = []
         }
       }
     }
@@ -775,7 +880,7 @@ export async function POST(req: Request) {
       ...(process.env.NODE_ENV !== "production" && {
         _debug: {
           aiDisabled: AI_DISABLED,
-          provider: "xai",
+          provider: process.env.LLM_PROVIDER || "xai",
           usedExplanations: modelExplanations.length,
           modelError,
         },
