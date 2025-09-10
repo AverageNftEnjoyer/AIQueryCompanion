@@ -766,7 +766,7 @@ export async function POST(req: Request) {
     const AI_DISABLED =
       parseBoolEnv(process.env.DISABLE_AI_ANALYSIS) ||
       parseBoolEnv(process.env.DISABLE_AI) ||
-      noAI === true
+      noAI === false
 
     let modelExplanations: ChangeExplanation[] = []
     let modelError: string | null = null
