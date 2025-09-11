@@ -205,6 +205,11 @@ const totalNewLines = useMemo(
   [newQuery]
 )
 
+const [fastMode, setFastMode] = useState<boolean>(() => {
+   if (typeof window === "undefined") return false
+   return localStorage.getItem("qa:fastMode") === "1"
+  })
+
 const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis])
 
 const miniOld = useMemo(
@@ -323,11 +328,15 @@ const miniNew = useMemo(
       body: JSON.stringify({
         oldQuery: canonicalizeSQL(parsed!.oldQuery),
         newQuery: canonicalizeSQL(parsed!.newQuery),
+        noAI: fastMode,
       }),
     })
 
-    const data = await res.json()
-    if (!res.ok) throw new Error(data?.error || "Analysis failed")
+const data = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const msg = (data as any)?.error || `Analysis failed (${res.status})`
+         throw new Error(msg)
+       }
 
     const a = data?.analysis
     const summary = a?.summary || ""
@@ -564,6 +573,19 @@ const headerBgClass = isLight
 
             {/* Right Controls */}
             <div className="flex items-center justify-end gap-2">
+               <button
+                type="button"
+             onClick={() => {
+                const next = !fastMode
+                setFastMode(next)
+               if (typeof window !== "undefined") localStorage.setItem("qa:fastMode", next ? "1" : "0")
+             }}
+             title={fastMode ? "Fast mode ON (heuristics only)" : "Fast mode OFF (use AI)"}              
+              className={`relative px-2 h-10 rounded-lg border text-xs ${
+               isLight ? "hover:bg-black/10 border-black/10 text-gray-700" : "hover:bg-white/10 border-white/10 text-white"
+             }`}>
+               {fastMode ? "Fast mode: ON" : "Fast mode: OFF"}
+             </button>
               <button
                 type="button"
                 onClick={handleToggleSync}

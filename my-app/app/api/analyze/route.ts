@@ -1,4 +1,3 @@
-/* --- Vercel execution settings (prevents ~30s Edge cutoffs) --- */
 export const runtime = "nodejs";        // ensure Node.js Serverless Functions (not Edge)
 export const dynamic = "force-dynamic"; // never cache; route is dynamic
 export const maxDuration = 60;          // seconds (raise if your plan allows)
@@ -49,12 +48,11 @@ const FETCH_TIMEOUT_MS = Math.min(
 )
 const RETRIES = Math.max(0, Math.min(2, Number(process.env.LLM_RETRIES ?? 1)))
 
-// Model/token budgets
 const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 10_000))
-const MAX_ITEMS_TO_EXPLAIN = Math.max(200, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 300)) // cap across whole diff
-const BATCH_SIZE = Math.max(6, Math.min(32, Number(process.env.ANALYZE_BATCH_SIZE ?? 20)))
-
-// Grouping knobs (can be overridden via headers if you want)
+const MAX_ITEMS_TO_EXPLAIN = Math.max(80, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 120))
+const BATCH_SIZE = Math.max(4, Math.min(16, Number(process.env.ANALYZE_BATCH_SIZE ?? 8)))
+const ANALYZE_MAX_BATCHES = Math.max(1, Number(process.env.ANALYZE_MAX_BATCHES ?? 4)) // stop after N batches
+const MAX_AI_BUDGET_MS = Math.max(5000, Number(process.env.MAX_AI_BUDGET_MS ?? 20_000)) // dedicate ~20s to AI
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 3)) // min contiguous lines to group
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 120))
 const GAP_JOIN = Math.max(0, Number(process.env.CHANGE_GAP_JOIN ?? 1)) // join runs separated by <= GAP_JOIN
@@ -575,8 +573,8 @@ function hashPair(a: string, b: string) {
 
 export async function POST(req: Request) {
   const started = Date.now()
-  const deadline = started + SAFE_BUDGET_MS
-
+const deadline = started + SAFE_BUDGET_MS
+const aiDeadline = started + Math.min(MAX_AI_BUDGET_MS, SAFE_BUDGET_MS - 1500)
   try {
     const body = await req.json().catch(() => null)
     try { validateInput(body) } catch (e: any) {
@@ -636,15 +634,20 @@ export async function POST(req: Request) {
         "Top-level object with key 'explanations' (array). No preface or commentary."
 
       for (let b = 0; b < batches.length; b++) {
-        // Respect time budget
-        const timeLeft = deadline - Date.now()
-        if (timeLeft < 2500) { lastModelError = "Time budget nearly exhausted; finishing with heuristics."; break }
+      if (b >= ANALYZE_MAX_BATCHES) { lastModelError = `Stopped after ${ANALYZE_MAX_BATCHES} batches by config.`; break }
+        const now = Date.now()
+        const timeLeft = deadline - now
+        const aiLeft = aiDeadline - now
+       if (timeLeft < 2500 || aiLeft < 1500) { lastModelError = "AI budget exhausted; finishing with heuristics."; break }
 
         const batch = batches[b]
         const userPayload = buildUserPayload(canonOld, canonNew, batch)
 
         try {
-          const txt = await callXAIForBatch(systemPrompt, userPayload, Math.min(FETCH_TIMEOUT_MS, Math.max(2000, timeLeft - 1000)))
+            const txt = await callXAIForBatch(
+            systemPrompt,
+            userPayload,
+           Math.min(FETCH_TIMEOUT_MS, Math.max(2000, Math.min(timeLeft, aiLeft) - 800)))         
           const parsed = safeParseLLMJson(txt)
           const arr: any[] = Array.isArray(parsed?.explanations) ? parsed.explanations : []
 
