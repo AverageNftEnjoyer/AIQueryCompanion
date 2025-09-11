@@ -335,7 +335,7 @@ export default function ResultsPage() {
       setLoading(true)
       setProgress({ processed: 0, total: 0, currentLine: null }) // reset progress
 
-      const LIMIT = 12 // smaller = more responsive progress; server pages already
+      const LIMIT = 6 // smaller = more responsive progress; server pages already
       let cursor = 0
       let total: number | null = null
 

@@ -84,7 +84,7 @@ const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MO
 
 // —— Paging defaults (client may override via ?cursor&?limit) ——
 // Keep pages modest so each call is fast and avoids timeouts
-const DEFAULT_LIMIT = Math.max(6, Math.min(20, Number(process.env.ANALYZE_PAGE_LIMIT ?? 12)))
+const DEFAULT_LIMIT = Math.max(6, Math.min(20, Number(process.env.ANALYZE_PAGE_LIMIT ?? 6)))
 const MAX_LIMIT = 30
 
 /* ============================== Small Utilities ============================= */
