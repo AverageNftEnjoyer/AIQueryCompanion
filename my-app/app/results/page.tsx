@@ -306,24 +306,62 @@ const miniNew = useMemo(
     setNewQuery(parsed.newQuery)
 
     ;(async () => {
-      try {
-        const res = await fetch("/api/analyze", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            oldQuery: canonicalizeSQL(parsed.oldQuery),
-            newQuery: canonicalizeSQL(parsed.newQuery),
-          }),
-        })
-        const data = await res.json()
-        if (!res.ok) throw new Error(data?.error || "Analysis failed")
-        setAnalysis(data.analysis as AnalysisResult)
-      } catch (e: any) {
-        setError(e?.message || "Unexpected error")
-      } finally {
-        setLoading(false)
+  setLoading(true)
+
+  const LIMIT = 12 
+  let cursor = 0
+  let total: number | null = null
+
+  let allChanges: AnalysisResult["changes"] = []
+  let summary = ""
+  let recommendations: AnalysisResult["recommendations"] = []
+  let riskAssessment: AnalysisResult["riskAssessment"] = "Low"
+  let performanceImpact: AnalysisResult["performanceImpact"] = "Neutral"
+
+  try {
+    while (true) {
+      const res = await fetch(`/api/analyze?cursor=${cursor}&limit=${LIMIT}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          oldQuery: canonicalizeSQL(parsed!.oldQuery),
+          newQuery: canonicalizeSQL(parsed!.newQuery),
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || "Analysis failed")
+
+      if (total === null) {
+        total = data?.page?.total ?? null
+        summary = data?.analysis?.summary || ""
+        recommendations = data?.analysis?.recommendations ?? []
+        riskAssessment = data?.analysis?.riskAssessment ?? "Low"
+        performanceImpact = data?.analysis?.performanceImpact ?? "Neutral"
       }
-    })()
+
+      const pageChanges = (data?.analysis?.changes ?? []) as AnalysisResult["changes"]
+      allChanges = allChanges.concat(pageChanges)
+
+      setAnalysis({
+        summary: summary || `Detected ${total ?? allChanges.length} substantive changes.`,
+        changes: allChanges,
+        recommendations,
+        riskAssessment,
+        performanceImpact,
+      })
+
+      const next = data?.page?.nextCursor
+      if (next == null) break
+      cursor = next
+    }
+  } catch (e: any) {
+    setError(e?.message || "Unexpected error")
+  } finally {
+    setLoading(false)
+  }
+})()
+
   }, [router])
 
   useEffect(() => {
