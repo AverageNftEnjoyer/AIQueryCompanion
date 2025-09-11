@@ -53,7 +53,7 @@ type ChangeExplanation = {
   _suggestions?: string[]
 }
 
-/* Provider config (mirrors summarize.ts) */
+/* Provider config */
 type Provider = "xai" | "azure"
 
 const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
@@ -62,7 +62,7 @@ const PROVIDER: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as
 
 const MAX_QUERY_CHARS = 120_000
 
-// —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
+// —— Grouping knobs ——
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80))
@@ -278,16 +278,18 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
   }
 }
 
-/* ============================== Providers (match summarize.ts) ============================== */
+/* ============================== Providers ============================== */
 
 async function callXAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
   const XAI_API_KEY = process.env.XAI_API_KEY
   const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
   if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY")
 
+  // Force JSON from xAI (OpenAI-compatible)
   const body = {
     model: DEFAULT_XAI_MODEL,
     temperature: 0.1,
+    response_format: { type: "json_object" },
     messages: [
       { role: "system", content: systemPrompt },
       { role: "user", content: userContent },
@@ -392,7 +394,6 @@ function buildSqlStructure(sql: string): SqlStructure {
   const blocks: SqlBlock[] = []
   const byLine = new Map<number, number>()
 
-  // Clause boundaries
   const clauseRules: Array<[RegExp, string]> = [
     [/^\s*(CREATE(\s+OR\s+REPLACE)?\s+)?(PROCEDURE|FUNCTION|TRIGGER|PACKAGE|VIEW|TABLE)\b/i, "CREATE"],
     [/^\s*WITH\b/i, "WITH"],
@@ -636,6 +637,7 @@ export async function POST(req: Request) {
     const url = new URL(req.url)
     const cursor = clamp(Number(url.searchParams.get("cursor") ?? 0), 0, 100_000)
     const limitParam = Number(url.searchParams.get("limit") ?? DEFAULT_LIMIT)
+    // Hard cap the page size so every call stays quick
     const limit = clamp(isFinite(limitParam) ? limitParam : DEFAULT_LIMIT, 1, MAX_LIMIT)
 
     const body = await req.json().catch(() => null)
@@ -766,11 +768,14 @@ export async function POST(req: Request) {
       }
     }
 
+    // JSON-safe parsing, tolerate code fences / any leading text
     const parsed = (() => {
       if (!explanationsText) return []
-      // Allow fenced or plain JSON
       const defenced = explanationsText.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
-      try { return coerceExplanations(defenced) } catch { return [] }
+      try { return coerceExplanations(defenced) } catch {}
+      const m = defenced.match(/\{[\s\S]*\}$/m)
+      if (m) { try { return coerceExplanations(m[0]) } catch {} }
+      return []
     })()
 
     const expMap = new Map<number, ChangeExplanation>()
@@ -831,7 +836,7 @@ export async function POST(req: Request) {
     const responsePayload = {
       analysis: {
         summary,
-        changes: pageChanges, // THIS PAGE ONLY
+        changes: pageChanges, // THIS PAGE ONLY (keeps request fast)
         recommendations: [],
         riskAssessment: "Low",
         performanceImpact: "Neutral",
@@ -853,6 +858,7 @@ export async function POST(req: Request) {
       }),
     }
 
+    // 200 is fine; if you want you can use 206 Partial Content
     return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } })
   } catch (err: any) {
     const msg = String(err?.name || "") + ": " + safeErrMessage(err)
