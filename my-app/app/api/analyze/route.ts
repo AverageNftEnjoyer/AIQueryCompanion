@@ -1,3 +1,9 @@
+/* --- Vercel execution settings (prevents ~30s Edge cutoffs) --- */
+export const runtime = "nodejs";        // ensure Node.js Serverless Functions (not Edge)
+export const dynamic = "force-dynamic"; // never cache; route is dynamic
+export const maxDuration = 60;          // seconds (raise if your plan allows)
+// export const preferredRegion = ["iad1","sfo1"]; // optional
+
 import { NextResponse } from "next/server"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
@@ -60,14 +66,25 @@ const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ??
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80))
 
 // —— Networking knobs ——
-// A single per-request timeout (mirrors summarize.ts style)
-const REQUEST_TIMEOUT_MS = Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 60000)
-const RETRIES = Math.min(3, Number(process.env.LLM_RETRIES ?? 2))
+// Auto-fit request timeout under the function budget with a small safety margin.
+const FUNCTION_MAX_MS = (typeof maxDuration === "number" ? maxDuration : 60) * 1000
+const SAFE_BUDGET_MS = Math.max(5000, FUNCTION_MAX_MS - 2000) // 2s buffer so Vercel doesn't kill first
+const REQUEST_TIMEOUT_MS = Math.min(
+  Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 55_000),
+  SAFE_BUDGET_MS
+)
+// Keep retries modest so backoff doesn't exceed function time
+const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1))
 
 // —— Model budget knobs ——
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+// This caps the total *potential* items; paging slices a subset per request.
 const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80))
 const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 12_000))
+
+// —— Paging knobs ——
+// Default page size; UI can override with ?limit=
+const DEFAULT_PAGE_LIMIT = Math.max(10, Number(process.env.ANALYZE_PAGE_LIMIT ?? 30))
+const MAX_PAGE_LIMIT = 100
 
 /* ============================== Small Utilities ============================= */
 
@@ -213,7 +230,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
     const span = spanFromDescription(c.description)
     const verbosity = verbosityForSpan(span)
     return {
-      index: i,
+      index: i, // NOTE: page-relative index (0..page.length-1)
       type: c.type,
       side: c.side,
       lineNumber: c.lineNumber,
@@ -621,13 +638,21 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { "Cache-Control": "no-store" } })
     }
 
+    // Paging params from URL
+    const url = new URL(req.url)
+    const cursorParam = Number(url.searchParams.get("cursor") ?? 0)
+    const limitParam = Number(url.searchParams.get("limit") ?? DEFAULT_PAGE_LIMIT)
+    const cursor = Math.max(0, isFinite(cursorParam) ? cursorParam : 0)
+    const limit = clamp(isFinite(limitParam) ? limitParam : DEFAULT_PAGE_LIMIT, 10, MAX_PAGE_LIMIT)
+
     const { oldQuery, newQuery, noAI } = body as { oldQuery: string; newQuery: string; noAI?: boolean }
 
     const canonOld = canonicalizeSQL(oldQuery)
     const canonNew = canonicalizeSQL(newQuery)
 
-    // cache hit?
-    const cacheKey = hashPair(canonOld, canonNew)
+    // cache hit? include cursor+limit in the key so pages don't collide
+    const baseKey = hashPair(canonOld, canonNew)
+    const cacheKey = `${baseKey}:${cursor}:${limit}`
     if (cache.has(cacheKey)) {
       return NextResponse.json(cache.get(cacheKey), { headers: { "Cache-Control": "no-store" } })
     }
@@ -650,12 +675,13 @@ export async function POST(req: Request) {
           riskAssessment: "Low",
           performanceImpact: "Neutral",
         },
+        page: { cursor: 0, limit, nextCursor: null, total: 0 },
       }
       cache.set(cacheKey, payload)
       return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } })
     }
 
-    // Cap model payload deterministically
+    // Cap model payload deterministically across the *whole* diff
     const sorted = [...grouped].sort((a, b) => a.lineNumber - b.lineNumber)
     const head = sorted.slice(0, MAX_ITEMS_TO_EXPLAIN)
     const tailCount = Math.max(0, sorted.length - head.length)
@@ -672,6 +698,10 @@ export async function POST(req: Request) {
           ]
         : head
 
+    // ===== Paging slice for this request =====
+    const pageItems = explainTargets.slice(cursor, cursor + limit)
+    const nextCursor = cursor + pageItems.length < explainTargets.length ? cursor + pageItems.length : null
+
     /* ============================== LLM call (like summarize.ts) ============================== */
 
     const AI_ENABLED = noAI !== true
@@ -681,12 +711,12 @@ export async function POST(req: Request) {
     let lastError: string | undefined
     let metaProvider: Provider = PROVIDER
 
-    if (AI_ENABLED) {
+    if (AI_ENABLED && pageItems.length > 0) {
       // Provider availability
       const hasXAI = !!process.env.XAI_API_KEY
       const hasAzure = !!process.env.AZURE_OPENAI_ENDPOINT && !!process.env.AZURE_OPENAI_API_KEY && !!process.env.AZURE_OPENAI_DEPLOYMENT
 
-      // Build prompts/payload
+      // Build prompts/payload (NOTE: we pass only the current page)
       const systemPrompt = [
         "You are a senior Oracle SQL reviewer for a junior developer audience.",
         "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
@@ -696,7 +726,7 @@ export async function POST(req: Request) {
         "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
       ].join(" ")
 
-      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, explainTargets))
+      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems))
 
       const tryOrder: Provider[] =
         PROVIDER === "azure" ? ["azure", "xai"] : ["xai", "azure"]
@@ -730,13 +760,15 @@ export async function POST(req: Request) {
       try { return coerceExplanations(defenced) } catch { return [] }
     })()
 
-    const expMap = new Map<number, ChangeExplanation>()
+    // Map model explanations (page-local indices) → global indices
+    const expMapPage = new Map<number, ChangeExplanation>()
     parsed.forEach((e) => {
-      if (typeof e.index === "number" && (e.explanation && e.explanation.length > 0)) expMap.set(e.index, e)
+      if (typeof e.index === "number" && (e.explanation && e.explanation.length > 0)) expMapPage.set(e.index, e)
     })
 
-    const finalChanges = explainTargets.map((c, idx) => {
-      const m = expMap.get(idx)
+    const finalChanges = pageItems.map((c, idxOnPage) => {
+      const globalIdx = cursor + idxOnPage
+      const m = expMapPage.get(idxOnPage)
       let explanation: string
 
       if (m?.explanation?.trim()) {
@@ -744,7 +776,6 @@ export async function POST(req: Request) {
       } else if (!AI_ENABLED) {
         explanation = "AI analysis is disabled for this run (noAI=true)."
       } else if (lastError) {
-        // Friendlier network timeout note
         const friendly =
           /AbortError|aborted|timeout/i.test(lastError)
             ? "Network/egress timeout reaching LLM provider. Increase ANALYZE_REQUEST_TIMEOUT_MS or adjust network/proxy."
@@ -762,6 +793,8 @@ export async function POST(req: Request) {
 
       return {
         ...c,
+        // include where this item sits in the whole analysis (optional but handy for stitching client-side)
+        index: globalIdx,
         explanation,
         syntax: (m?.syntax === "bad" ? "bad" : "good") as GoodBad,
         performance: (m?.performance === "bad" ? "bad" : "good") as GoodBad,
@@ -782,13 +815,14 @@ export async function POST(req: Request) {
 
     const counts = finalChanges.reduce(
       (acc, c) => {
-        acc[c.type]++
+        acc[c.type as keyof typeof acc]++
         return acc
       },
-      { addition: 0, deletion: 0, modification: 0 } as Record<"addition" | "deletion" | "modification", number>
+      { addition: 0, deletion: 0, modification: 0 }
     )
 
-    const summary = `Detected ${finalChanges.length} substantive changes — ${counts.addition} additions, ${counts.modification} modifications, ${counts.deletion} deletions.`
+    const summary = `Page ${cursor}-${cursor + finalChanges.length - 1} of ${explainTargets.length}: ` +
+      `${finalChanges.length} changes — ${counts.addition} additions, ${counts.modification} modifications, ${counts.deletion} deletions.`
 
     const responsePayload = {
       analysis: {
@@ -798,12 +832,15 @@ export async function POST(req: Request) {
         riskAssessment: "Low",
         performanceImpact: "Neutral",
       },
+      page: { cursor, limit, nextCursor, total: explainTargets.length },
       ...(process.env.NODE_ENV !== "production" && {
         _debug: {
           providerPreferred: PROVIDER,
-          providerUsed: AI_ENABLED ? metaProvider : "none",
+          providerUsed: (AI_ENABLED && pageItems.length > 0) ? metaProvider : "none",
           usedExplanations: parsed.length,
-          error: AI_ENABLED ? (explanationsText ? undefined : lastError) : "AI disabled by request body (noAI=true)",
+          error: (AI_ENABLED && pageItems.length > 0) ? (explanationsText ? undefined : lastError) : "AI disabled or empty page",
+          timeoutMs: REQUEST_TIMEOUT_MS,
+          retries: RETRIES,
         },
       }),
     }
