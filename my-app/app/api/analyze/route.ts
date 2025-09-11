@@ -57,11 +57,11 @@ const MAX_QUERY_CHARS = 120_000
 // —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
-const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 30))
+const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80))
 
 // —— Networking knobs ——
 // A single per-request timeout (mirrors summarize.ts style)
-const REQUEST_TIMEOUT_MS = Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 30000)
+const REQUEST_TIMEOUT_MS = Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 60000)
 const RETRIES = Math.min(3, Number(process.env.LLM_RETRIES ?? 2))
 
 // —— Model budget knobs ——
