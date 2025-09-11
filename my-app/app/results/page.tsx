@@ -39,6 +39,14 @@ interface AnalysisResult {
     syntax: GoodBad
     performance: GoodBad
     span?: number
+    index?: number
+    meta?: {
+      clauses?: string[]
+      change_kind?: string
+      business_impact?: "clear" | "weak" | "none"
+      risk?: "low" | "medium" | "high"
+      suggestions?: string[]
+    }
   }>
   recommendations: Array<{
     type: "optimization" | "best_practice" | "warning" | "analysis"
@@ -48,6 +56,7 @@ interface AnalysisResult {
   riskAssessment?: "Low" | "Medium" | "High"
   performanceImpact?: "Positive" | "Negative" | "Neutral"
 }
+
 
 const MAX_QUERY_CHARS = 120_000
 
@@ -75,19 +84,12 @@ function toMiniChanges(analysis: AnalysisResult | null) {
     type: c.type,
     side: c.side,
     lineNumber: c.lineNumber,
-    span: c.span ?? 1,
+    span: c.span ?? 1,           
     label: c.description,
   }))
 }
 
-/** ENHANCED loader: shows progress bar and "Analyzing change X/Y — line N" */
-function FancyLoader({
-  isLight,
-  progress,
-}: {
-  isLight: boolean
-  progress?: { processed: number; total: number; currentLine: number | null }
-}) {
+function FancyLoader({ isLight }: { isLight: boolean }) {
   const messages = [
     "Generating semantic diff, risk notes, and explanations…",
     "Analyzing SQL syntax and detecting anomalies…",
@@ -98,7 +100,7 @@ function FancyLoader({
     "Checking index usage and key distribution…",
     "Reviewing SELECT, WHERE, and JOIN clauses for efficiency…",
     "Validating grouping, ordering, and aggregation logic…",
-    "Combining results from the current page…",
+    "Cross-referencing schema metadata and column types…",
     "Compiling final report with recommendations and risk score…",
   ]
 
@@ -123,16 +125,16 @@ function FancyLoader({
     }
   }, [])
 
-  const pct =
-    progress && progress.total > 0
-      ? Math.min(100, Math.round((progress.processed / progress.total) * 100))
-      : 0
-
-  const barBase = "rounded-sm animate-bounce"
+  const barBase =
+    "rounded-sm animate-bounce"
   const barShade1 = isLight ? "bg-gray-800" : "bg-white/90"
   const barShade2 = isLight ? "bg-gray-700" : "bg-white/80"
   const barShade3 = isLight ? "bg-gray-600" : "bg-white/70"
-  const cardBg = isLight ? "bg-black/5 border-black/10" : "bg-white/5 border-white/10"
+
+  const cardBg = isLight
+    ? "bg-black/5 border-black/10"
+    : "bg-white/5 border-white/10"
+
   const pulseBg = isLight ? "bg-black/10" : "bg-white/10"
   const textColor = isLight ? "text-gray-700" : "text-white/70"
 
@@ -147,37 +149,12 @@ function FancyLoader({
       </div>
 
       <div className={`w-full max-w-3xl rounded-xl border ${cardBg} backdrop-blur p-6`}>
-        {/* skeleton text */}
         <div className={`h-4 w-40 ${pulseBg} rounded mb-4 animate-pulse`} />
         <div className="space-y-2">
           <div className={`h-3 w-full ${pulseBg} rounded animate-pulse`} />
           <div className={`h-3 w-[92%] ${pulseBg} rounded animate-pulse`} />
           <div className={`h-3 w-[84%] ${pulseBg} rounded animate-pulse`} />
         </div>
-
-        {/* determinate progress */}
-        <div className="mt-5">
-          <div className={`w-full h-2 rounded overflow-hidden ${isLight ? "bg-black/10" : "bg-white/10"}`}>
-            <div
-              className={`h-full ${isLight ? "bg-gray-800" : "bg-white"} transition-[width] duration-500`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
-          <div className={`mt-2 text-xs ${textColor}`}>
-            {progress?.total ? (
-              <>
-                <span>
-                  Analyzing change {Math.min(progress.processed, progress.total)} / {progress.total}
-                </span>
-                {typeof progress.currentLine === "number" ? <span>{` — line ${progress.currentLine}`}</span> : null}
-              </>
-            ) : (
-              <span>Starting…</span>
-            )}
-          </div>
-        </div>
-
-        {/* rotating message */}
         <div className={`mt-6 flex items-center gap-2 ${textColor}`} aria-live="polite">
           <Zap className="w-4 h-4 animate-pulse" />
           <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
@@ -198,13 +175,6 @@ export default function ResultsPage() {
   const [loading, setLoading] = useState(true)
   const startedRef = useRef(false)
 
-  // NEW: progress state for loader
-  const [progress, setProgress] = useState<{ processed: number; total: number; currentLine: number | null }>({
-    processed: 0,
-    total: 0,
-    currentLine: null,
-  })
-
   const doneAudioRef = useRef<HTMLAudioElement | null>(null)
   const switchAudioRef = useRef<HTMLAudioElement | null>(null)
   const miniClickAudioRef = useRef<HTMLAudioElement | null>(null)
@@ -224,15 +194,28 @@ export default function ResultsPage() {
   const [audience, setAudience] = useState<Audience>("stakeholder")
   const [summaryStakeholder, setSummaryStakeholder] = useState<string>("")
   const [summaryDeveloper, setSummaryDeveloper] = useState<string>("")
-  const [summarizing, setSummarizing] = useState<boolean>(false)
-  const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null)
-  const totalOldLines = useMemo(() => (oldQuery ? oldQuery.split("\n").length : 0), [oldQuery])
-  const totalNewLines = useMemo(() => (newQuery ? newQuery.split("\n").length : 0), [newQuery])
+  const [summarizing, setSummarizing] = useState<boolean>(false) 
+  const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null) 
+  const totalOldLines = useMemo(
+  () => (oldQuery ? oldQuery.split("\n").length : 0),
+  [oldQuery]
+)
+const totalNewLines = useMemo(
+  () => (newQuery ? newQuery.split("\n").length : 0),
+  [newQuery]
+)
 
-  const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis])
+const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis])
 
-  const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old"), [allMiniChanges])
-  const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side !== "old"), [allMiniChanges])
+const miniOld = useMemo(
+  () => allMiniChanges.filter((c) => c.side === "old"),
+  [allMiniChanges]
+)
+
+const miniNew = useMemo(
+  () => allMiniChanges.filter((c) => c.side !== "old"),
+  [allMiniChanges]
+)
 
   const summaryRef = useRef<HTMLDivElement | null>(null)
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null)
@@ -240,10 +223,10 @@ export default function ResultsPage() {
 
   const [soundOn, setSoundOn] = useState(true)
   const [lightUI, setLightUI] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    const saved = localStorage.getItem("qa:lightUI")
-    return saved === "1"
-  })
+  if (typeof window === "undefined") return false
+  const saved = localStorage.getItem("qa:lightUI")
+  return saved === "1"
+})
   const analysisDoneSoundPlayedRef = useRef(false)
   const resumeHandlerRef = useRef<((e?: any) => void) | null>(null)
   const clearResumeHandler = () => {
@@ -332,70 +315,42 @@ export default function ResultsPage() {
     setNewQuery(parsed.newQuery)
 
     ;(async () => {
-      setLoading(true)
-      setProgress({ processed: 0, total: 0, currentLine: null }) // reset progress
+  setLoading(true)
+  try {
+    const res = await fetch(`/api/analyze`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        oldQuery: canonicalizeSQL(parsed!.oldQuery),
+        newQuery: canonicalizeSQL(parsed!.newQuery),
+      }),
+    })
 
-      const LIMIT = 6 // smaller = more responsive progress; server pages already
-      let cursor = 0
-      let total: number | null = null
+    const data = await res.json()
+    if (!res.ok) throw new Error(data?.error || "Analysis failed")
 
-      let allChanges: AnalysisResult["changes"] = []
-      let summary = ""
-      let recommendations: AnalysisResult["recommendations"] = []
-      let riskAssessment: AnalysisResult["riskAssessment"] = "Low"
-      let performanceImpact: AnalysisResult["performanceImpact"] = "Neutral"
+    const a = data?.analysis
+    const summary = a?.summary || ""
+    const changes = (a?.changes ?? []) as AnalysisResult["changes"]
+    const recommendations = (a?.recommendations ?? []) as AnalysisResult["recommendations"]
+    const riskAssessment = (a?.riskAssessment ?? "Low") as AnalysisResult["riskAssessment"]
+    const performanceImpact = (a?.performanceImpact ?? "Neutral") as AnalysisResult["performanceImpact"]
 
-      try {
-        while (true) {
-          const res = await fetch(`/api/analyze?cursor=${cursor}&limit=${LIMIT}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              oldQuery: canonicalizeSQL(parsed!.oldQuery),
-              newQuery: canonicalizeSQL(parsed!.newQuery),
-            }),
-          })
+    setAnalysis({
+      summary: summary || `Detected ${changes.length} substantive changes.`,
+      changes,
+      recommendations,
+      riskAssessment,
+      performanceImpact,
+    })
+  } catch (e: any) {
+    setError(e?.message || "Unexpected error")
+  } finally {
+    setLoading(false)
+  }
+})()
 
-          const data = await res.json()
-          if (!res.ok) throw new Error(data?.error || "Analysis failed")
 
-          if (total === null) {
-            total = data?.page?.total ?? 0
-            summary = data?.analysis?.summary || ""
-            recommendations = data?.analysis?.recommendations ?? []
-            riskAssessment = data?.analysis?.riskAssessment ?? "Low"
-            performanceImpact = data?.analysis?.performanceImpact ?? "Neutral"
-          }
-
-          const pageChanges = (data?.analysis?.changes ?? []) as AnalysisResult["changes"]
-          allChanges = allChanges.concat(pageChanges)
-
-          // update progress before painting analysis
-          const lastLine = pageChanges.length ? pageChanges[pageChanges.length - 1].lineNumber : null
-          setProgress((prev) => ({
-            processed: allChanges.length,
-            total: total || allChanges.length,
-            currentLine: lastLine ?? prev.currentLine,
-          }))
-
-          setAnalysis({
-            summary: summary || `Detected ${total ?? allChanges.length} substantive changes.`,
-            changes: allChanges,
-            recommendations,
-            riskAssessment,
-            performanceImpact,
-          })
-
-          const next = data?.page?.nextCursor
-          if (next == null) break
-          cursor = next
-        }
-      } catch (e: any) {
-        setError(e?.message || "Unexpected error")
-      } finally {
-        setLoading(false)
-      }
-    })()
   }, [router])
 
   useEffect(() => {
@@ -403,10 +358,7 @@ export default function ResultsPage() {
     audios.forEach((a) => (a.muted = !soundOn))
     if (!soundOn) {
       audios.forEach((a) => {
-        try {
-          a.pause()
-          a.currentTime = 0
-        } catch {}
+        try { a.pause(); a.currentTime = 0 } catch {}
       })
       clearResumeHandler()
     }
@@ -439,7 +391,9 @@ export default function ResultsPage() {
   const displayChanges = useMemo(() => {
     const items = deriveDisplayChanges(analysis)
     return items.filter(
-      (chg) => (typeFilter === "all" || chg.type === typeFilter) && (sideFilter === "all" || chg.side === sideFilter)
+      (chg) =>
+        (typeFilter === "all" || chg.type === typeFilter) &&
+        (sideFilter === "all" || chg.side === sideFilter)
     )
   }, [analysis, typeFilter, sideFilter])
 
@@ -466,7 +420,7 @@ export default function ResultsPage() {
         body: JSON.stringify({
           newQuery: canonicalNew,
           analysis,
-          audience: forAudience,
+          audience: forAudience, 
         }),
         signal: summarizeAbortRef.current.signal,
       })
@@ -565,13 +519,7 @@ export default function ResultsPage() {
       } else {
         clearResumeHandler()
         ;[doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].forEach((a) => {
-          try {
-            if (a) {
-              a.muted = true
-              a.pause()
-              a.currentTime = 0
-            }
-          } catch {}
+          try { if (a) { a.muted = true; a.pause(); a.currentTime = 0 } } catch {}
         })
       }
       return next
@@ -580,9 +528,9 @@ export default function ResultsPage() {
 
   const isLight = lightUI
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white"
-  const headerBgClass = isLight
-    ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-    : "bg-black/30 border-white/10 text-white"
+const headerBgClass = isLight
+  ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+  : "bg-black/30 border-white/10 text-white"
   const chipText = isLight ? "text-slate-700" : "text-white/80"
 
   return (
@@ -624,7 +572,9 @@ export default function ResultsPage() {
               >
                 <Link2
                   className={`h-5 w-5 transition ${
-                    isLight ? (syncEnabled ? "text-gray-700" : "text-gray-400") : syncEnabled ? "text-white" : "text-white/60"
+                    isLight
+                      ? syncEnabled ? "text-gray-700" : "text-gray-400"
+                      : syncEnabled ? "text-white" : "text-white/60"
                   }`}
                 />
               </button>
@@ -664,8 +614,8 @@ export default function ResultsPage() {
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
 
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-24 md:pb-10">
-          {loading && !error && <FancyLoader isLight={isLight} progress={progress} />}
+            <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-24 md:pb-10">
+            {loading && !error && <FancyLoader isLight={isLight} />}
 
           {!loading && error && (
             <Alert className={`${isLight ? "bg-white border-red-500/40" : "bg-black/40"} backdrop-blur text-inherit`}>
@@ -676,9 +626,7 @@ export default function ResultsPage() {
               <Button
                 asChild
                 variant="outline"
-                className={`${
-                  isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"
-                }`}
+                className={`${isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"}`}
               >
                 <Link href="/">Go Home</Link>
               </Button>
@@ -706,55 +654,66 @@ export default function ResultsPage() {
                   </div>
                 </section>
               )}
-              {/* Diff + MiniMap */}
-              <section className="mt-1">
-                <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
-                  {/* Query Comparison */}
-                  <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-                    <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} syncScrollEnabled={syncEnabled} />
-                  </div>
-                  {/* Dual minimaps */}
-                  <div className="hidden lg:flex h-full items-stretch gap-2">
-                    {/* OLD minimap */}
-                    <MiniMap
-                      totalLines={totalOldLines}
-                      changes={miniOld}
-                      forceSide="old"
-                      onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
-                      className={`w-6 h-full rounded-md ${
-                        isLight ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40" : "bg-white/5 border border-white/10 hover:border-white/20"
-                      }`}
-                      soundEnabled={soundOn}
-                    />
+               {/* Diff + MiniMap */}
+                <section className="mt-1">
+                <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">                  
+                {/* Query Comparison */}
+                    <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
+                      <QueryComparison
+                        ref={cmpRef}
+                        oldQuery={oldQuery}
+                        newQuery={newQuery}
+                        showTitle={false}
+                        syncScrollEnabled={syncEnabled}
+                      />
+                    </div>
+                    {/* Dual minimaps */}
+                    <div className="hidden lg:flex h-full items-stretch gap-2">
+                      {/* OLD minimap */}
+                      <MiniMap
+                        totalLines={totalOldLines}
+                        changes={miniOld}
+                        forceSide="old"
+                        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
+                        className={`w-6 h-full rounded-md
+                          ${isLight
+                            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                            : "bg-white/5 border border-white/10 hover:border-white/20"
+                          }`}
+                        soundEnabled={soundOn}
+                      />
 
-                    {/* NEW minimap */}
-                    <MiniMap
-                      totalLines={totalNewLines}
-                      changes={miniNew}
-                      forceSide="new"
-                      onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
-                      className={`w-6 h-full rounded-md ${
-                        isLight ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40" : "bg-white/5 border border-white/10 hover:border-white/20"
-                      }`}
-                      soundEnabled={soundOn}
-                    />
+                      {/* NEW minimap */}
+                      <MiniMap
+                        totalLines={totalNewLines}
+                        changes={miniNew}
+                        forceSide="new"
+                        onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
+                        className={`w-6 h-full rounded-md
+                          ${isLight
+                            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                            : "bg-white/5 border border-white/10 hover:border-white/20"
+                          }`}
+                        soundEnabled={soundOn}
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className={`relative z-20 flex items-center justify-center text-xs mt-3 ${isLight ? "text-gray-500" : "text-white/60"}`}>
-                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+                  <div className={`relative z-20 flex items-center justify-center text-xs mt-3 ${isLight ? "text-gray-500" : "text-white/60"}`}>            
+                 <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
                 </div>
 
-                <div className="relative z-20 mt-4 mb-2 md:mb-0 flex items-center justify-center">
-                  <button
+                  <div className="relative z-20 mt-4 mb-2 md:mb-0 flex items-center justify-center">              
+                    <button
                     type="button"
                     onClick={handleGenerateSummary}
                     disabled={summarizing}
                     className={`inline-flex items-center gap-2 px-4 h-9 rounded-full border transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed ${
-                      isLight ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700" : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
+                      isLight
+                        ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
+                        : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
                     }`}
-                    title="Generate a summary for selected audience"
-                  >
+                    title="Generate a summary for selected audience">
                     {summarizing ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -768,9 +727,9 @@ export default function ResultsPage() {
               </section>
 
               {/* Lower panels */}
-              <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+                <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
                 {/* LEFT COLUMN */}
-                <div className="space-y-5 sm:space-y-6 md:space-y-8">
+                  <div className="space-y-5 sm:space-y-6 md:space-y-8">
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5">
                       <div className="flex items-center justify-between mb-4">
@@ -779,19 +738,14 @@ export default function ResultsPage() {
                           {(typeFilter !== "all" || sideFilter !== "all") && (
                             <button
                               type="button"
-                              onClick={() => {
-                                setTypeFilter("all")
-                                setSideFilter("all")
-                              }}
+                              onClick={() => { setTypeFilter("all"); setSideFilter("all") }}
                               className="h-8 px-3 text-sm rounded border border-gray-300 bg-white text-black"
                               title="Clear filters"
                             >
                               Clear
                             </button>
                           )}
-                          <label className="sr-only" htmlFor="typeFilter">
-                            Filter by type
-                          </label>
+                          <label className="sr-only" htmlFor="typeFilter">Filter by type</label>
                           <select
                             id="typeFilter"
                             className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
@@ -805,9 +759,7 @@ export default function ResultsPage() {
                             <option value="deletion">Deletions</option>
                           </select>
 
-                          <label className="sr-only" htmlFor="sideFilter">
-                            Filter by side
-                          </label>
+                          <label className="sr-only" htmlFor="sideFilter">Filter by side</label>
                           <select
                             id="sideFilter"
                             className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
@@ -822,67 +774,74 @@ export default function ResultsPage() {
                         </div>
                       </div>
 
-                      <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
-                        {displayChanges.length > 0 ? (
-                          <div className="space-y-3">
-                            {displayChanges.map((chg, index) => {
-                              const jumpSide: "old" | "new" | "both" = chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
-                              return (
-                                <button
-                                  key={index}
-                                  className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                                  onClick={(e) => {
+                     <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
+                      {displayChanges.length > 0 ? (
+                        <div className="space-y-3">
+                          {displayChanges.map((chg, index) => {
+                            const jumpSide: "old" | "new" | "both" =
+                              chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new"
+                            return (
+                              <button
+                                key={index}
+                                className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                                onClick={(e) => {
+                                  e.preventDefault()
+                                  playMiniClick()
+                                  cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
+                                  window.scrollTo({ top: 0, behavior: "smooth" })
+                                  ;(e.currentTarget as HTMLButtonElement).blur()
+                                }}
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter" || e.key === " ") {
                                     e.preventDefault()
                                     playMiniClick()
                                     cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-                                    window.scrollTo({ top: 0, behavior: "smooth" })
                                     ;(e.currentTarget as HTMLButtonElement).blur()
-                                  }}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" || e.key === " ") {
-                                      e.preventDefault()
-                                      playMiniClick()
-                                      cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber })
-                                      ;(e.currentTarget as HTMLButtonElement).blur()
-                                    }
-                                  }}
-                                >
-                                  <div className="flex items-center gap-2 mb-2">
-                                    <span
-                                      className={`px-2 py-1 rounded text-xs font-medium transition ${
-                                        chg.type === "addition"
-                                          ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                          : chg.type === "deletion"
-                                          ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                                          : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                                      }`}
-                                    >
-                                      {chg.type}
-                                    </span>
-                                    <span className="text-xs text-gray-500">
-                                      {chg.side} · line {chg.lineNumber}
-                                    </span>
-                                  </div>
-                                  <p className="text-gray-800 text-sm">{chg.description}</p>
-                                </button>
-                              )
-                            })}
-                          </div>
-                        ) : (
-                          <div className="flex items-center justify-center h-full text-gray-500">
-                            <p>No changes detected.</p>
-                          </div>
-                        )}
-                      </div>
+                                  }
+                                }}
+                              >
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span
+                                    className={`px-2 py-1 rounded text-xs font-medium transition ${
+                                      chg.type === "addition"
+                                        ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
+                                        : chg.type === "deletion"
+                                        ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                                        : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
+                                    }`}
+                                  >
+                                    {chg.type}
+                                  </span>
+                                  <span className="text-xs text-gray-500">
+                                    {chg.side} · line {chg.lineNumber}
+                                  </span>
+                                </div>
+                                <p className="text-gray-800 text-sm">{chg.description}</p>
+                              </button>
+                            )
+                          })}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-gray-500">
+                          <p>No changes detected.</p>
+                        </div>
+                      )}
+                    </div>
                     </CardContent>
                   </Card>
 
                   {/* ===== Summary Card ===== */}
                   {(summarizing || summaryStakeholder || summaryDeveloper) && (
-                    <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
+                    <Card
+                      ref={summaryRef}
+                      className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">                      
                       <CardContent className="p-5">
                         <div className="flex items-center justify-between mb-4">
-                          <h3 ref={summaryHeaderRef} tabIndex={-1} className="text-slate-900 font-semibold focus:outline-none">
+                          <h3
+                            ref={summaryHeaderRef}
+                            tabIndex={-1}
+                            className="text-slate-900 font-semibold focus:outline-none"
+                          >
                             Summary
                           </h3>
 
@@ -892,9 +851,11 @@ export default function ResultsPage() {
                               type="button"
                               onClick={() => handleSwitchAudience("stakeholder")}
                               disabled={loadingAudience === "stakeholder"}
-                              className={`px-3 h-8 rounded-full text-sm transition ${
-                                audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                              }`}
+                              className={`px-3 h-8 rounded-full text-sm transition
+                                ${audience === "stakeholder"
+                                  ? "bg-white text-gray-900 shadow"
+                                  : "text-gray-600 hover:text-gray-900"}
+                              `}
                               title="Stakeholder-friendly summary"
                             >
                               {loadingAudience === "stakeholder" ? (
@@ -909,9 +870,11 @@ export default function ResultsPage() {
                               type="button"
                               onClick={() => handleSwitchAudience("developer")}
                               disabled={loadingAudience === "developer"}
-                              className={`px-3 h-8 rounded-full text-sm transition ${
-                                audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                              }`}
+                              className={`px-3 h-8 rounded-full text-sm transition
+                                ${audience === "developer"
+                                  ? "bg-white text-gray-900 shadow"
+                                  : "text-gray-600 hover:text-gray-900"}
+                              `}
                               title="Developer-focused summary"
                             >
                               {loadingAudience === "developer" ? (
@@ -926,6 +889,7 @@ export default function ResultsPage() {
                         </div>
 
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
+                          {/* Placeholder skeleton while nothing fetched yet */}
                           {!currentSummary && (summarizing || loadingAudience) ? (
                             <div className="space-y-4">
                               <div className="inline-flex items-center gap-2 text-gray-700">
@@ -952,21 +916,29 @@ export default function ResultsPage() {
                   )}
                 </div>
 
-                {/* RIGHT COLUMN */}
+               {/* RIGHT COLUMN */}
                 <div className="space-y-5 sm:space-y-6 md:space-y-8">
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5 mt-2">
+
+                      {/* Title + chips inline (chips on the right) */}
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-slate-900 font-semibold">AI Analysis</h3>
 
                         {(typeFilter !== "all" || sideFilter !== "all") && (
                           <div className="flex items-center gap-2 text-xs">
-                            <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">Filtered view</span>
+                            <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
+                              Filtered view
+                            </span>
                             {typeFilter !== "all" && (
-                              <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">Type: {typeFilter}</span>
+                              <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
+                                Type: {typeFilter}
+                              </span>
                             )}
                             {sideFilter !== "all" && (
-                              <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">Side: {sideFilter}</span>
+                              <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">
+                                Side: {sideFilter}
+                              </span>
                             )}
                             <span className="px-2 py-1 rounded bg-emerald-100 border border-emerald-200 text-emerald-800">
                               {displayChanges.length} match{displayChanges.length === 1 ? "" : "es"}
@@ -975,71 +947,70 @@ export default function ResultsPage() {
                         )}
                       </div>
 
-                      <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
-                        <div className="space-y-4">
-                          {displayChanges.length > 0 ? (
-                            displayChanges.map((chg, index) => (
-                              <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                                <div className="flex items-start gap-4">
-                                  <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                                    <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                                      Line {chg.lineNumber}
-                                    </span>
-                                    <span
-                                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                                        chg.type === "addition"
-                                          ? "bg-emerald-100 text-emerald-700"
-                                          : chg.type === "deletion"
-                                          ? "bg-rose-100 text-rose-700"
-                                          : "bg-amber-100 text-amber-700"
-                                      }`}
-                                    >
-                                      {chg.type}
-                                    </span>
-                                    <div className="flex flex-col gap-1 pt-1">
-                                      <span
-                                        className={
-                                          "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                          (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-                                        }
-                                      >
-                                        Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
-                                      </span>
-                                      <span
-                                        className={
-                                          "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                          (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-                                        }
-                                      >
-                                        Performance: {chg.performance === "good" ? "Good" : "Bad"}
-                                      </span>
-                                    </div>
-                                  </div>
-                                  <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
-                                </div>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
-                              {typeFilter !== "all" || sideFilter !== "all" ? (
-                                <p>
-                                  No matching changes for the current filter
-                                  {typeFilter !== "all" ? ` (type: ${typeFilter})` : ""}
-                                  {sideFilter !== "all" ? ` (side: ${sideFilter})` : ""}. Try clearing or adjusting the
-                                  filters.
-                                </p>
-                              ) : (
-                                <p className="leading-relaxed">{analysis.summary}</p>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+      <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
+        <div className="space-y-4">
+          {displayChanges.length > 0 ? (
+            displayChanges.map((chg, index) => (
+              <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                <div className="flex items-start gap-4">
+                  <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
+                    <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
+                      Line {chg.lineNumber}
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded text-[10px] font-medium ${
+                        chg.type === "addition"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : chg.type === "deletion"
+                          ? "bg-rose-100 text-rose-700"
+                          : "bg-amber-100 text-amber-700"
+                      }`}
+                    >
+                      {chg.type}
+                    </span>
+                    <div className="flex flex-col gap-1 pt-1">
+                      <span
+                        className={
+                          "px-2 py-0.5 rounded text-[10px] font-medium " +
+                          (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
+                        }
+                      >
+                        Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
+                      </span>
+                      <span
+                        className={
+                          "px-2 py-0.5 rounded text-[10px] font-medium " +
+                          (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
+                        }
+                      >
+                        Performance: {chg.performance === "good" ? "Good" : "Bad"}
+                      </span>
+                    </div>
+                  </div>
+                  <p className="flex-1 text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
                 </div>
-              </section>
-            </div>
+              </div>
+            ))
+          ) : (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
+              {typeFilter !== "all" || sideFilter !== "all" ? (
+                <p>
+                  No matching changes for the current filter
+                  {typeFilter !== "all" ? ` (type: ${typeFilter})` : ""}
+                  {sideFilter !== "all" ? ` (side: ${sideFilter})` : ""}. Try clearing or adjusting the filters.
+                </p>
+              ) : (
+                <p className="leading-relaxed">{analysis.summary}</p>
+              )}
+               </div>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+           </section>
+           </div>
           )}
         </div>
       </main>

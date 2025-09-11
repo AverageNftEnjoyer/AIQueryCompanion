@@ -1,15 +1,14 @@
+/* --- Vercel execution settings (prevents ~30s Edge cutoffs) --- */
+export const runtime = "nodejs";        // ensure Node.js Serverless Functions (not Edge)
+export const dynamic = "force-dynamic"; // never cache; route is dynamic
+export const maxDuration = 60;          // seconds (raise if your plan allows)
+
 import { NextResponse } from "next/server"
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ"
 
-/* ----------------------------- Vercel runtime ----------------------------- */
-// Run on Node.js (NOT edge) so we can take a longer time window.
-export const runtime = "nodejs"
-// Ask for a longer exec window (plan-dependent). Keep fetch timeouts < this.
-export const maxDuration = 60
-// Optional but can help egress; pick a stable region for your account.
-export const preferredRegion = "iad1"
-
-/* ============================== Types & Config ============================== */
+/* ============================================================================
+   Types & Env
+============================================================================ */
 
 type ChangeType = "addition" | "modification" | "deletion"
 type Side = "old" | "new" | "both"
@@ -21,73 +20,50 @@ type ChangeItem = {
   lineNumber: number
   side: Side
   span?: number
-  jumpLine?: number
+  range?: [number, number] // inclusive
 }
 
 type ChangeExplanation = {
   index: number
   explanation: string
-  syntax?: GoodBad
-  performance?: GoodBad
-  // optional diagnostics for UI enrichment (not required by UI)
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _syntax_explanation?: string
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _performance_explanation?: string
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _clauses?: string[]
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _change_kind?: string
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _business_impact?: "clear" | "weak" | "none"
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _risk?: "low" | "medium" | "high"
-  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-  // @ts-ignore
-  _suggestions?: string[]
+  syntax: GoodBad
+  performance: GoodBad
+  meta?: {
+    clauses: string[]
+    change_kind?: string
+    business_impact?: "clear" | "weak" | "none"
+    risk?: "low" | "medium" | "high"
+    suggestions?: string[]
+  }
 }
 
-/* Provider config */
-type Provider = "xai" | "azure"
+const XAI_API_KEY = process.env.XAI_API_KEY
+const XAI_MODEL = process.env.XAI_MODEL || "grok-4"
 
-const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
-const DEFAULT_AZURE_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview"
-const PROVIDER: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
+// Networking/time budgets
+const FUNCTION_MAX_MS = (typeof maxDuration === "number" ? maxDuration : 60) * 1000
+const SAFE_BUDGET_MS = Math.max(5000, FUNCTION_MAX_MS - 2000) // 2s buffer so Vercel doesn’t kill first
+const FETCH_TIMEOUT_MS = Math.min(
+  Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 55_000),
+  SAFE_BUDGET_MS
+)
+const RETRIES = Math.max(0, Math.min(2, Number(process.env.LLM_RETRIES ?? 1)))
+
+// Model/token budgets
+const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 10_000))
+const MAX_ITEMS_TO_EXPLAIN = Math.max(200, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 300)) // cap across whole diff
+const BATCH_SIZE = Math.max(6, Math.min(32, Number(process.env.ANALYZE_BATCH_SIZE ?? 20)))
+
+// Grouping knobs (can be overridden via headers if you want)
+const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 3)) // min contiguous lines to group
+const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 120))
+const GAP_JOIN = Math.max(0, Number(process.env.CHANGE_GAP_JOIN ?? 1)) // join runs separated by <= GAP_JOIN
 
 const MAX_QUERY_CHARS = 120_000
 
-// —— Grouping knobs ——
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2))
-const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80))
-
-// —— Networking knobs ——
-// Keep single upstream call under ~55s so we finish within maxDuration=60
-const REQUEST_TIMEOUT_MS = Number(
-  process.env.ANALYZE_REQUEST_TIMEOUT_MS ||
-    process.env.FETCH_TIMEOUT_MS ||
-    55_000
-)
-// Cap retries to be gentle on upstream; we also back off a bit more
-const RETRIES = Math.min(3, Number(process.env.LLM_RETRIES ?? 3))
-
-// —— Model budget knobs ——
-// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80))
-const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 12_000))
-
-// —— Paging defaults (client may override via ?cursor&?limit) ——
-// Keep pages modest so each call is fast and avoids timeouts
-const DEFAULT_LIMIT = Math.max(6, Math.min(20, Number(process.env.ANALYZE_PAGE_LIMIT ?? 6)))
-const MAX_LIMIT = 30
-
-/* ============================== Small Utilities ============================= */
+/* ============================================================================
+   Small utils
+============================================================================ */
 
 function isNonEmptyString(x: any): x is string {
   return typeof x === "string" && x.trim().length > 0
@@ -106,14 +82,12 @@ function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n))
 }
 
-function groupingFromHeaders(req: Request) {
-  const h = new Headers(req.headers)
-  const thr = Number(h.get("x-group-threshold") ?? GROUP_THRESHOLD)
-  const max = Number(h.get("x-group-max-lines") ?? MAX_GROUP_LINES)
-  return {
-    threshold: clamp(isFinite(thr) ? thr : GROUP_THRESHOLD, 2, 50),
-    maxLines: clamp(isFinite(max) ? max : MAX_GROUP_LINES, 20, 200),
-  }
+function clip(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): string {
+  const raw = (sql || "").replace(/\r/g, "")
+  if (raw.length <= budget) return raw
+  const head = raw.slice(0, Math.floor(budget * 0.6))
+  const tail = raw.slice(-Math.floor(budget * 0.35))
+  return `${head}\n/* ...clipped for model... */\n${tail}`
 }
 
 function safeErrMessage(e: any, fallback = "Unexpected error") {
@@ -124,9 +98,11 @@ function safeErrMessage(e: any, fallback = "Unexpected error") {
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]")
 }
 
-/* -------------------------- Fetch timeout & retry --------------------------- */
+/* ============================================================================
+   HTTP helpers (timeout + retries)
+============================================================================ */
 
-async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = FETCH_TIMEOUT_MS) {
   const controller = new AbortController()
   const t = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -136,212 +112,42 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, time
   }
 }
 
-async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 400): Promise<T> {
+async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 350): Promise<T> {
   let lastErr: any
-  for (let i = 0; i < max; i++) {
+  for (let i = 0; i <= max; i++) {
     try {
       return await fn()
     } catch (e: any) {
       lastErr = e
       const msg = String(e?.message || "")
-      // Only retry on 429/5xx/timeouts/aborts
       if (!/429|5\d\d|timeout|aborted|AbortError/i.test(msg)) break
-      // Slightly longer backoff than before to ride out brief spikes
-      await new Promise((res) => setTimeout(res, (baseDelay + 250) * Math.pow(2, i)))
+      await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)))
     }
   }
   throw lastErr
 }
 
-/* --------------------------------- Helpers -------------------------------- */
+/* ============================================================================
+   Diff → atomic changes
+============================================================================ */
+
+function normalizeTokenPreview(s: string) {
+  const t = s.trim()
+  if (!t) return ""
+  // Drop lone punctuation and noisy tokens
+  if (/^[(),;]+$/.test(t)) return ""
+  if (/^\)$/.test(t) || /^\($/.test(t) || /^\)\s*,?$/.test(t)) return ""
+  if (/^"(?:\w+)"$/.test(t)) return ""
+  return t.slice(0, 120)
+}
 
 function tokenFromDescription(desc: string): string {
   const m =
     desc.match(/:\s(?:added|removed|changed.*to)\s"([^"]*)"/i) ?? desc.match(/"([^"]*)"$/)
-  return (m?.[1] ?? "").trim()
+  return normalizeTokenPreview(m?.[1] ?? "")
 }
 
-function shouldSuppressServer(desc: string): boolean {
-  const tok = tokenFromDescription(desc)
-  if (!tok) return true
-  if (/^[(),;]+$/.test(tok)) return true
-  if (/^\)$/.test(tok) || /^\($/.test(tok) || /^\)\s*,?$/.test(tok)) return true
-  if (/\bAS\s*\($/i.test(tok)) return true
-  if (/^"(?:\w+)"$/.test(tok)) return true
-  if (/^\bON\b\s*$/i.test(tok)) return true
-  return false
-}
-
-function asGoodBad(v: any): GoodBad | undefined {
-  if (typeof v !== "string") return undefined
-  const t = v.trim().toLowerCase()
-  if (t === "good" || t === "bad") return t
-  return undefined
-}
-
-function spanFromDescription(desc: string): number {
-  const m = desc.match(/\b(added|removed|modified)\s+(\d+)\s+lines?\b/i)
-  if (m) return Math.max(1, Number(m[2]))
-  return 1
-}
-
-function verbosityForSpan(span: number): "short" | "medium" | "long" {
-  if (span <= 2) return "short"
-  if (span <= 10) return "medium"
-  return "long"
-}
-
-function coerceExplanations(content: string): ChangeExplanation[] {
-  try {
-    const parsed = JSON.parse(content)
-    const out = (parsed?.explanations || []) as any[]
-    return out
-      .filter((x) => typeof x?.index === "number" && (typeof x?.text === "string" || typeof x?.explanation === "string"))
-      .map((x) => {
-        const explanation = String((x.text ?? x.explanation) || "").trim()
-        const item: ChangeExplanation = {
-          index: x.index,
-          explanation,
-          syntax: asGoodBad(x.syntax),
-          performance: asGoodBad(x.performance),
-        }
-        if (typeof x.syntax_explanation === "string") (item as any)._syntax_explanation = x.syntax_explanation.trim()
-        if (typeof x.performance_explanation === "string") (item as any)._performance_explanation = x.performance_explanation.trim()
-        if (Array.isArray(x.clauses)) (item as any)._clauses = x.clauses
-        if (typeof x.change_kind === "string") (item as any)._change_kind = x.change_kind
-        if (typeof x.business_impact === "string") (item as any)._business_impact = x.business_impact
-        if (typeof x.risk === "string") (item as any)._risk = x.risk
-        if (Array.isArray(x.suggestions)) (item as any)._suggestions = x.suggestions
-        return item
-      })
-  } catch {
-    return []
-  }
-}
-
-function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): string {
-  const raw = (sql || "").replace(/\r/g, "")
-  if (raw.length <= budget) return raw
-  const head = raw.slice(0, Math.floor(budget * 0.6))
-  const tail = raw.slice(-Math.floor(budget * 0.35))
-  return `${head}\n/* ...clipped for model... */\n${tail}`
-}
-
-function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
-  const enriched = changes.map((c, i) => {
-    const span = spanFromDescription(c.description)
-    const verbosity = verbosityForSpan(span)
-    return {
-      index: i, // IMPORTANT: index is local to the slice
-      type: c.type,
-      side: c.side,
-      lineNumber: c.lineNumber,
-      description: c.description,
-      span,
-      verbosity, // short | medium | long
-    }
-  })
-
-  return {
-    task: "Explain each change so a junior developer understands what changed and why it matters.",
-    guidance: [
-      "Write length according to 'verbosity' per change: short=1–2 sentences, medium=3–5, long=5–8.",
-      "Short changes are quick fixes; large grouped blocks (CTEs/subqueries/procedures) deserve more depth.",
-      "Audience is junior-level: use plain language; define jargon briefly (e.g., 'sargable' = index-friendly).",
-      "Do not speculate beyond names.",
-      "Describe effects on touched clauses: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
-      "Identify change_kind (filter_narrowed, join_added, aggregation_changed, etc.).",
-      "Provide 'syntax' and 'performance' ratings as 'good' or 'bad'. If 'bad', include one-sentence *_explanation.",
-      "Add brief business impact if implied by names; else mark as 'weak' or 'none'.",
-      "Return JSON only matching the schema. No prose outside JSON.",
-      "Preserve the provided 'index' exactly (0..sliceLen-1)."
-    ],
-    dialect: "Oracle SQL",
-    oldQuery: clipSqlForModel(oldQuery),
-    newQuery: clipSqlForModel(newQuery),
-    changes: enriched,
-    output_schema: {
-      explanations: [{
-        index: "number (echo input index in this slice)",
-        text: "string (1–8 sentences based on 'verbosity')",
-        clauses: "array of enums subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
-        change_kind: "string enum describing type",
-        syntax: "enum: ['good','bad']",
-        performance: "enum: ['good','bad']",
-        syntax_explanation: "string (present only if syntax='bad', 1 sentence)",
-        performance_explanation: "string (present only if performance='bad', 1 sentence)",
-        business_impact: "enum: ['clear','weak','none']",
-        risk: "enum: ['low','medium','high']",
-        suggestions: "array of strings (0–2 items)"
-      }]
-    }
-  }
-}
-
-/* ============================== Providers ============================== */
-
-async function callXAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
-  const XAI_API_KEY = process.env.XAI_API_KEY
-  const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
-  if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY")
-
-  // Force JSON from xAI (OpenAI-compatible)
-  const body = {
-    model: DEFAULT_XAI_MODEL,
-    temperature: 0.1,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ],
-  }
-
-  const r = await withRetries(() =>
-    fetchWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
-      body: JSON.stringify(body),
-    }, REQUEST_TIMEOUT_MS)
-  )
-  if (!r.ok) throw new Error(await r.text())
-  const j = await r.json()
-  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
-  return { text, model: DEFAULT_XAI_MODEL }
-}
-
-async function callAzure(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
-  const endpoint = process.env.AZURE_OPENAI_ENDPOINT
-  const apiKey = process.env.AZURE_OPENAI_API_KEY
-  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
-  const apiVersion = DEFAULT_AZURE_API_VERSION
-  if (!endpoint || !apiKey || !deployment) throw new Error("Missing Azure OpenAI env vars")
-
-  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
-  const body: any = {
-    temperature: 0.1,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ],
-  }
-
-  const r = await withRetries(() =>
-    fetchWithTimeout(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api-key": apiKey },
-      body: JSON.stringify(body),
-    }, REQUEST_TIMEOUT_MS)
-  )
-  if (!r.ok) throw new Error(await r.text())
-  const j = await r.json()
-  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
-  return { text, model: deployment }
-}
-
-/* ============================ Diff → atomic changes ============================ */
-
-function buildChanges(diff: ComparisonResult): ChangeItem[] {
+function buildRawChanges(diff: ComparisonResult): ChangeItem[] {
   const out: ChangeItem[] = []
   for (let i = 0; i < diff.diffs.length; i++) {
     const d = diff.diffs[i]
@@ -350,62 +156,56 @@ function buildChanges(diff: ComparisonResult): ChangeItem[] {
       const next = diff.diffs[i + 1]
       if (next && next.type === "addition" && next.newLineNumber) {
         const desc = `Line ${next.newLineNumber}: changed from "${d.content.trim()}" to "${next.content.trim()}"`
-        if (!shouldSuppressServer(desc)) {
-          out.push({ type: "modification", description: desc, lineNumber: next.newLineNumber, side: "both" })
-        }
+        const tok = tokenFromDescription(desc)
+        if (tok) out.push({ type: "modification", description: desc, lineNumber: next.newLineNumber, side: "both" })
         i++
       } else {
         const desc = `Line ${d.oldLineNumber}: removed "${d.content.trim()}"`
-        if (!shouldSuppressServer(desc)) {
-          out.push({ type: "deletion", description: desc, lineNumber: d.oldLineNumber, side: "old" })
-        }
+        const tok = tokenFromDescription(desc)
+        if (tok) out.push({ type: "deletion", description: desc, lineNumber: d.oldLineNumber, side: "old" })
       }
     } else if (d.type === "addition" && d.newLineNumber) {
       const prev = diff.diffs[i - 1]
       if (!(prev && prev.type === "deletion")) {
         const desc = `Line ${d.newLineNumber}: added "${d.content.trim()}"`
-        if (!shouldSuppressServer(desc)) {
-          out.push({ type: "addition", description: desc, lineNumber: d.newLineNumber, side: "new" })
-        }
+        const tok = tokenFromDescription(desc)
+        if (tok) out.push({ type: "addition", description: desc, lineNumber: d.newLineNumber, side: "new" })
       }
     }
   }
-
-  out.sort((a, b) => a.lineNumber - b.lineNumber)
-  return out
+  return out.sort((a, b) => a.lineNumber - b.lineNumber)
 }
 
-/* --------------------- Subquery/CTE-aware structural analysis --------------------- */
+/* ============================================================================
+   Structure-aware grouping (CTE / subquery / clause)
+============================================================================ */
 
-type SqlBlockKind = "CTE" | "SUBQUERY" | "BEGIN_END" | "CLAUSE"
+type SqlBlockKind = "CTE" | "SUBQUERY" | "PLSQL" | "CLAUSE"
 type SqlBlock = { kind: SqlBlockKind; start: number; end: number; label: string }
 
 type SqlStructure = {
-  boundaries: Set<number>
-  labels: Map<number, string>
+  boundaries: Set<number> // lines that start a logical boundary
+  labelByLine: Map<number, string>
   blocks: SqlBlock[]
-  byLine: Map<number, number> // line → block index
+  blockIndexByLine: Map<number, number>
 }
 
 function buildSqlStructure(sql: string): SqlStructure {
   const lines = sql.split("\n")
   const boundaries = new Set<number>()
-  const labels = new Map<number, string>()
+  const labelByLine = new Map<number, string>()
   const blocks: SqlBlock[] = []
-  const byLine = new Map<number, number>()
+  const blockIndexByLine = new Map<number, number>()
 
+  // Clause starts (fast regexes, 1 pass)
   const clauseRules: Array<[RegExp, string]> = [
-    [/^\s*(CREATE(\s+OR\s+REPLACE)?\s+)?(PROCEDURE|FUNCTION|TRIGGER|PACKAGE|VIEW|TABLE)\b/i, "CREATE"],
     [/^\s*WITH\b/i, "WITH"],
     [/^\s*SELECT\b/i, "SELECT"],
     [/^\s*FROM\b/i, "FROM"],
     [/^\s*(INNER|LEFT|RIGHT|FULL)?\s*JOIN\b/i, "JOIN"],
     [/^\s*WHERE\b/i, "WHERE"],
-    [/^\s*CONNECT\s+BY\b/i, "CONNECT BY"],
-    [/^\s*START\s+WITH\b/i, "START WITH"],
     [/^\s*GROUP BY\b/i, "GROUP BY"],
     [/^\s*HAVING\b/i, "HAVING"],
-    [/^\s*MODEL\b/i, "MODEL"],
     [/^\s*ORDER BY\b/i, "ORDER BY"],
     [/^\s*UNION(\s+ALL)?\b/i, "UNION"],
     [/^\s*INSERT\b/i, "INSERT"],
@@ -413,19 +213,15 @@ function buildSqlStructure(sql: string): SqlStructure {
     [/^\s*DELETE\b/i, "DELETE"],
     [/^\s*MERGE\b/i, "MERGE"],
     [/^\s*BEGIN\b/i, "BEGIN"],
-    [/^\s*EXCEPTION\b/i, "EXCEPTION"],
     [/^\s*END\b/i, "END"],
-    [/^\s*CURSOR\b/i, "CURSOR"],
-    [/^\s*(FOR|WHILE)\b.*\bLOOP\b/i, "LOOP"],
-    [/^\s*IF\b/i, "IF"],
   ]
 
-  for (let idx = 0; idx < lines.length; idx++) {
-    const n = idx + 1
-    const t = lines[idx].trim()
+  for (let i = 0; i < lines.length; i++) {
+    const n = i + 1
+    const t = lines[i].trim()
     if (!t) { boundaries.add(n); continue }
     for (const [re, label] of clauseRules) {
-      if (re.test(t)) { boundaries.add(n); if (!labels.has(n)) labels.set(n, label); break }
+      if (re.test(t)) { boundaries.add(n); if (!labelByLine.has(n)) labelByLine.set(n, label); break }
     }
   }
 
@@ -433,10 +229,10 @@ function buildSqlStructure(sql: string): SqlStructure {
     if (end < start) return
     const b: SqlBlock = { kind, start, end, label }
     const idx = blocks.push(b) - 1
-    for (let ln = start; ln <= end; ln++) if (!byLine.has(ln)) byLine.set(ln, idx)
+    for (let ln = start; ln <= end; ln++) if (!blockIndexByLine.has(ln)) blockIndexByLine.set(ln, idx)
   }
 
-  // WITH .. AS ( ... )
+  // WITH (CTE bodies)
   const withRE = /^\s*WITH\b/i
   const asOpenRE = /\bAS\s*\(\s*$/i
   let inWith = false
@@ -459,13 +255,12 @@ function buildSqlStructure(sql: string): SqlStructure {
     if (inWith && /^\s*SELECT\b/i.test(t)) inWith = false
   }
 
-  // Subqueries: '(' ... SELECT ... ')'
+  // Subqueries: track parentheses that include SELECT
   type StackItem = { openLine: number; isSubquery: boolean }
   const stack: StackItem[] = []
   for (let i = 0; i < lines.length; i++) {
     const n = i + 1
     const line = lines[i]
-
     for (const ch of line) {
       if (ch === "(") stack.push({ openLine: n, isSubquery: false })
       else if (ch === ")") {
@@ -477,8 +272,7 @@ function buildSqlStructure(sql: string): SqlStructure {
       const top = stack[stack.length - 1]
       if (top && !top.isSubquery) top.isSubquery = true
     }
-
-    // BEGIN..END (PL/SQL)
+    // PL/SQL BEGIN…END
     if (/^\s*BEGIN\b/i.test(line)) {
       let j = i + 1, opens = 1
       while (j < lines.length && opens > 0) {
@@ -487,41 +281,31 @@ function buildSqlStructure(sql: string): SqlStructure {
         j++
       }
       const endLine = Math.max(n, j)
-      pushBlock(n, endLine, "BEGIN_END", "BEGIN…END")
+      pushBlock(n, endLine, "PLSQL", "BEGIN…END")
     }
   }
 
-  // Clause blocks (fallback grouping)
-  labels.forEach((lab, ln) => {
-    const next = [...labels.keys()].filter(k => k > ln).sort((a,b)=>a-b)[0] ?? lines.length + 1
+  // Clause blocks as a fallback (covers plain SELECTs)
+  labelByLine.forEach((lab, ln) => {
+    const next = [...labelByLine.keys()].filter(k => k > ln).sort((a,b)=>a-b)[0] ?? lines.length + 1
     pushBlock(ln, next - 1, "CLAUSE", lab)
   })
 
-  return { boundaries, labels, blocks, byLine }
+  return { boundaries, labelByLine, blocks, blockIndexByLine }
 }
 
-function blockContaining(struct: SqlStructure, line: number): SqlBlock | undefined {
-  const idx = struct.byLine.get(line)
+function blockOf(struct: SqlStructure, line: number): SqlBlock | undefined {
+  const idx = struct.blockIndexByLine.get(line)
   return typeof idx === "number" ? struct.blocks[idx] : undefined
 }
 
-function findLabelInRange(struct: SqlStructure, start: number, end: number): string | undefined {
-  const b = blockContaining(struct, start)
-  if (b && start >= b.start && end <= b.end) return b.label
-  for (let n = start; n <= end; n++) {
-    const l = struct.labels.get(n)
-    if (l) return l
-  }
-  return undefined
-}
-
-/** Grouping that understands subqueries/CTEs/blocks. */
-function groupChangesSmart(
+function smartGroup(
   items: ChangeItem[],
   structNew: SqlStructure,
   structOld: SqlStructure,
-  threshold = GROUP_THRESHOLD,
-  maxBlock = MAX_GROUP_LINES
+  minRun = GROUP_THRESHOLD,
+  maxBlock = MAX_GROUP_LINES,
+  gapJoin = GAP_JOIN
 ): ChangeItem[] {
   if (items.length === 0) return items
 
@@ -529,89 +313,90 @@ function groupChangesSmart(
   let i = 0
 
   while (i < items.length) {
+    // Grow a run of same-side, contiguous (allowing tiny gaps) changes
     const base = items[i]
     let end = i
-
     while (
       end + 1 < items.length &&
       items[end + 1].type === base.type &&
       items[end + 1].side === base.side &&
-      items[end + 1].lineNumber === items[end].lineNumber + 1
+      items[end + 1].lineNumber <= items[end].lineNumber + 1 + gapJoin
     ) end++
 
     const runStart = items[i].lineNumber
     const runEnd = items[end].lineNumber
     const runLen = end - i + 1
-
     const struct = base.side === "old" ? structOld : structNew
 
-    const majorityBlock = (() => {
+    // If long enough, try to align to a dominant block (CTE/subquery/PLSQL/CLAUSE)
+    if (runLen >= minRun) {
+      // Find the block that covers ≥60% of this run
       const counts = new Map<number, number>()
       for (let k = i; k <= end; k++) {
-        const b = blockContaining(struct, items[k].lineNumber)
+        const b = blockOf(struct, items[k].lineNumber)
         if (!b) continue
         const idx = struct.blocks.indexOf(b)
         counts.set(idx, (counts.get(idx) ?? 0) + 1)
       }
       let bestIdx = -1, best = 0
       counts.forEach((v, key) => { if (v > best) { best = v; bestIdx = key } })
-      return bestIdx >= 0 && best >= Math.ceil(runLen * 0.6) ? struct.blocks[bestIdx] : undefined
-    })()
 
-    const pushBlock = (aLine: number, bLine: number, labelHint?: string) => {
-      const spanLen = bLine - aLine + 1
-      const preview = tokenFromDescription(items[i].description)
-      const label = labelHint ?? findLabelInRange(struct, aLine, bLine)
-      const rangeText = aLine === bLine ? `Line ${aLine}` : `Lines ${aLine}-${bLine}`
-      const scope = label ? ` (${label} block)` : ""
-      const desc =
-        base.type === "addition"
-          ? `${rangeText}${scope}: added ${spanLen} lines. Preview "${preview}"`
-          : base.type === "deletion"
-          ? `${rangeText}${scope}: removed ${spanLen} lines. Preview "${preview}"`
-          : `${rangeText}${scope}: modified ${spanLen} lines. Preview "${preview}"`
+      const dominant = bestIdx >= 0 && best >= Math.ceil(runLen * 0.6) ? struct.blocks[bestIdx] : undefined
 
-      grouped.push({ type: base.type, description: desc, lineNumber: aLine, side: base.side, span: spanLen })
-    }
-
-    if (majorityBlock && runLen >= threshold) {
-      let a = majorityBlock.start
-      let b = Math.min(majorityBlock.end, a + maxBlock - 1)
-      while (a <= majorityBlock.end) {
-        pushBlock(a, b, majorityBlock.label)
-        a = b + 1
-        b = Math.min(majorityBlock.end, a + maxBlock - 1)
+      const pushSpan = (a: number, b: number, labelHint?: string) => {
+        const spanLen = Math.max(1, b - a + 1)
+        const label = labelHint ?? (blockOf(struct, a)?.label || "")
+        const where = label ? ` (${label} block)` : ""
+        const preview = tokenFromDescription(items[i].description)
+        const desc =
+          base.type === "addition"
+            ? `Lines ${a}-${b}${where}: added ${spanLen} lines. Preview "${preview}"`
+            : base.type === "deletion"
+            ? `Lines ${a}-${b}${where}: removed ${spanLen} lines. Preview "${preview}"`
+            : `Lines ${a}-${b}${where}: modified ${spanLen} lines. Preview "${preview}"`
+        grouped.push({ type: base.type, description: desc, lineNumber: a, side: base.side, span: spanLen, range: [a,b] })
       }
-      i = end + 1
-      continue
-    }
 
-    if (runLen >= threshold) {
+      if (dominant) {
+        // Emit chunks of the dominant block up to maxBlock lines each
+        let a = dominant.start
+        let b = Math.min(dominant.end, a + maxBlock - 1)
+        while (a <= dominant.end) {
+          pushSpan(a, b, dominant.label)
+          a = b + 1
+          b = Math.min(dominant.end, a + maxBlock - 1)
+        }
+        i = end + 1
+        continue
+      }
+
+      // Otherwise align to clause boundaries inside the run
       let segStart = runStart
       for (let n = runStart + 1; n <= runEnd; n++) {
         if (struct.boundaries.has(n)) {
           const segEnd = n - 1
           if (segEnd >= segStart) {
-            if (segEnd - segStart + 1 >= threshold) pushBlock(segStart, segEnd)
+            if (segEnd - segStart + 1 >= minRun) pushSpan(segStart, segEnd)
             else {
-              const off0 = segStart - runStart
-              for (let k = 0; k < (segEnd - segStart + 1); k++) grouped.push(items[i + off0 + k])
+              for (let k = segStart; k <= segEnd; k++) grouped.push(items[i + (k - runStart)])
             }
             segStart = n
           }
         }
       }
       if (segStart <= runEnd) {
-        if (runEnd - segStart + 1 >= threshold) pushBlock(segStart, runEnd)
-        else {
-          const off0 = segStart - runStart
-          for (let k = 0; k < (runEnd - segStart + 1); k++) grouped.push(items[i + off0 + k])
+        if (runEnd - segStart + 1 >= minRun) {
+          pushSpan(segStart, runEnd)
+        } else {
+          for (let k = segStart; k <= runEnd; k++) grouped.push(items[i + (k - runStart)])
         }
       }
+
       i = end + 1
       continue
     }
 
+    // Short run → keep atomics
     for (let k = i; k <= end; k++) grouped.push(items[k])
     i = end + 1
   }
@@ -619,31 +404,182 @@ function groupChangesSmart(
   return grouped
 }
 
-/* =============================== In-memory cache =============================== */
+/* ============================================================================
+   LLM call (XAI only) + JSON guards
+============================================================================ */
+
+function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
+  const enriched = changes.map((c, i) => ({
+    index: i, // batch-local index
+    type: c.type,
+    side: c.side,
+    lineNumber: c.lineNumber,
+    description: c.description,
+    span: Math.max(1, c.span ?? (c.range ? (c.range[1] - c.range[0] + 1) : 1)),
+  }))
+
+  return {
+    task: "Explain each SQL change for a junior developer. Be precise and concise.",
+    guidance: [
+      "Return ONLY JSON with key 'explanations' (array). No prose outside JSON.",
+      "For each item: include the exact 'index' you were given.",
+      "Write 1–2 sentences if span<=2, 3–5 if span<=10, 5–8 otherwise.",
+      "Note the affected clauses (subset of SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW).",
+      "Set change_kind (filter_narrowed, join_added, aggregation_changed, projection_added, order_changed, limit_added, window_changed, plsql_logic_changed, etc.).",
+      "Rate syntax and performance as 'good' or 'bad'. If 'bad', add a one-sentence reason.",
+      "business_impact: 'clear' if data semantics obviously change; 'weak' if unsure; else 'none'.",
+      "risk: low/medium/high.",
+      "0–2 short suggestions."
+    ],
+    dialect: "Oracle SQL",
+    oldQuery: clip(oldQuery),
+    newQuery: clip(newQuery),
+    changes: enriched,
+    output_schema: {
+      explanations: [{
+        index: "number",
+        text: "string",
+        clauses: "array of enums",
+        change_kind: "string",
+        syntax: "good|bad",
+        performance: "good|bad",
+        syntax_explanation: "string if syntax='bad'",
+        performance_explanation: "string if performance='bad'",
+        business_impact: "clear|weak|none",
+        risk: "low|medium|high",
+        suggestions: "array (0–2)"
+      }]
+    }
+  }
+}
+
+// Very defensive JSON parse to avoid "Unexpected token 'A'..." failures
+function safeParseLLMJson(raw: string): any | null {
+  if (!raw) return null
+  let txt = raw.trim()
+
+  // Strip code fences
+  txt = txt.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1").trim()
+
+  // Try direct parse
+  try { return JSON.parse(txt) } catch {}
+
+  // Extract largest {...} span
+  const first = txt.indexOf("{")
+  const last = txt.lastIndexOf("}")
+  if (first >= 0 && last > first) {
+    let core = txt.slice(first, last + 1)
+
+    // Remove trailing commas like ",}"
+    core = core.replace(/,\s*([}\]])/g, "$1")
+
+    // Ensure property names are quoted (best-effort)
+    core = core.replace(/([{,]\s*)([A-Za-z_][A-Za-z0-9_\-]*)(\s*:)/g, '$1"$2"$3')
+
+    try { return JSON.parse(core) } catch {}
+  }
+  return null
+}
+
+async function callXAIForBatch(systemPrompt: string, userPayload: any, timeoutMs: number) {
+  if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY")
+  const base = process.env.XAI_BASE_URL || "https://api.x.ai"
+
+  const body = {
+    model: XAI_MODEL,
+    temperature: 0.1,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: JSON.stringify(userPayload) },
+    ],
+  }
+
+  const resp = await withRetries(
+    () => fetchWithTimeout(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
+      body: JSON.stringify(body),
+    }, timeoutMs),
+    RETRIES
+  )
+
+  if (!resp.ok) throw new Error(await resp.text())
+  const j = await resp.json()
+  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
+  return text
+}
+
+/* ============================================================================
+   Heuristic fallback (when LLM can’t answer in time)
+============================================================================ */
+
+function guessClauses(desc: string): string[] {
+  const s = desc.toUpperCase()
+  const out = new Set<string>()
+  if (/\bSELECT\b/.test(s) || /preview/i.test(s)) out.add("SELECT")
+  if (/\bFROM\b/.test(s) || /\bJOIN\b/.test(s)) { out.add("FROM"); if (/\bJOIN\b/.test(s)) out.add("JOIN") }
+  if (/\bWHERE\b/.test(s)) out.add("WHERE")
+  if (/\bGROUP BY\b/.test(s)) out.add("GROUP BY")
+  if (/\bHAVING\b/.test(s)) out.add("HAVING")
+  if (/\bORDER BY\b/.test(s)) out.add("ORDER BY")
+  return Array.from(out)
+}
+
+function heuristicExplain(c: ChangeItem): ChangeExplanation {
+  const clauses = guessClauses(c.description)
+  const span = Math.max(1, c.span ?? (c.range ? c.range[1] - c.range[0] + 1 : 1))
+  const where = clauses.length ? ` (${clauses.join(", ")})` : ""
+  const basic =
+    c.type === "addition" ? "added" :
+    c.type === "deletion" ? "removed" : "changed"
+
+  const explanation =
+    span <= 2
+      ? `This ${basic} line likely adjusts logic${where}. Check for column/alias correctness and side effects.`
+      : `This ${basic} block (${span} lines) refactors query logic${where}. Validate join/filter semantics, aggregates, and expected row counts.`
+
+  return {
+    index: -1, // filled later
+    explanation,
+    syntax: "good",
+    performance: clauses.includes("WHERE") || clauses.includes("JOIN") ? "good" : "good",
+    meta: {
+      clauses,
+      change_kind:
+        clauses.includes("JOIN") ? "join_changed" :
+        clauses.includes("WHERE") ? "filter_changed" :
+        clauses.includes("GROUP BY") ? "aggregation_changed" :
+        "logic_changed",
+      business_impact: clauses.length ? "weak" : "none",
+      risk: span > 20 ? "medium" : "low",
+      suggestions: span > 10 ? ["Add a focused unit test around this block."] : [],
+    }
+  }
+}
+
+/* ============================================================================
+   Caching (per unique pair)
+============================================================================ */
 
 const cache = new Map<string, any>()
 function hashPair(a: string, b: string) {
-  // tiny FNV-ish hash (demo-grade)
   let h = 2166136261
   const s = a + "\u0000" + b
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619)
   return (h >>> 0).toString(16)
 }
 
-/* ----------------------------------- Route ---------------------------------- */
+/* ============================================================================
+   Route
+============================================================================ */
 
 export async function POST(req: Request) {
-  try {
-    const url = new URL(req.url)
-    const cursor = clamp(Number(url.searchParams.get("cursor") ?? 0), 0, 100_000)
-    const limitParam = Number(url.searchParams.get("limit") ?? DEFAULT_LIMIT)
-    // Hard cap the page size so every call stays quick
-    const limit = clamp(isFinite(limitParam) ? limitParam : DEFAULT_LIMIT, 1, MAX_LIMIT)
+  const started = Date.now()
+  const deadline = started + SAFE_BUDGET_MS
 
+  try {
     const body = await req.json().catch(() => null)
-    try {
-      validateInput(body)
-    } catch (e: any) {
+    try { validateInput(body) } catch (e: any) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { "Cache-Control": "no-store" } })
     }
 
@@ -652,34 +588,20 @@ export async function POST(req: Request) {
     const canonOld = canonicalizeSQL(oldQuery)
     const canonNew = canonicalizeSQL(newQuery)
 
-    // cache key for the full pair (we cache grouping so paging is cheap)
-    const cacheKey = hashPair(canonOld, canonNew)
-
-    // Precompute diff/grouping once per pair and cache it
-    let grouped: ChangeItem[] | undefined = cache.get(cacheKey)?.grouped
-    let stats: { addition: number; deletion: number; modification: number } | undefined = cache.get(cacheKey)?.stats
-
-    if (!grouped) {
-      const diff = generateQueryDiff(canonOld, canonNew)
-      const rawChanges = buildChanges(diff)
-
-      const structNew = buildSqlStructure(canonNew)
-      const structOld = buildSqlStructure(canonOld)
-
-      const { threshold, maxLines } = groupingFromHeaders(req)
-      grouped = groupChangesSmart(rawChanges, structNew, structOld, threshold, maxLines)
-
-      const counts = rawChanges.reduce(
-        (acc, c) => { acc[c.type]++; return acc },
-        { addition: 0, deletion: 0, modification: 0 } as Record<"addition" | "deletion" | "modification", number>
-      )
-
-      cache.set(cacheKey, { grouped, stats: counts })
-      stats = counts
+    // cache key
+    const key = hashPair(canonOld, canonNew)
+    if (cache.has(key)) {
+      return NextResponse.json(cache.get(key), { headers: { "Cache-Control": "no-store" } })
     }
 
-    // No substantive changes
-    if (!grouped || grouped.length === 0) {
+    // Diff → raw changes → structure-aware grouping
+    const diff = generateQueryDiff(canonOld, canonNew)
+    const raw = buildRawChanges(diff)
+    const structNew = buildSqlStructure(canonNew)
+    const structOld = buildSqlStructure(canonOld)
+    const grouped = smartGroup(raw, structNew, structOld)
+
+    if (grouped.length === 0) {
       const payload = {
         analysis: {
           summary: "No substantive changes detected.",
@@ -688,178 +610,143 @@ export async function POST(req: Request) {
           riskAssessment: "Low",
           performanceImpact: "Neutral",
         },
-        page: { total: 0, cursor, limit, nextCursor: null as number | null },
+        page: { cursor: 0, limit: 0, nextCursor: null, total: 0 },
       }
+      cache.set(key, payload)
       return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } })
     }
 
-    // Cap the number of items we’ll ever explain overall (server safety)
-    const sorted = [...grouped].sort((a, b) => a.lineNumber - b.lineNumber).slice(0, MAX_ITEMS_TO_EXPLAIN)
+    // Trim to global cap to protect token usage; remaining are still analyzed by heuristic
+    const explainTargets = grouped.slice(0, MAX_ITEMS_TO_EXPLAIN)
+    const overflowCount = grouped.length - explainTargets.length
 
-    // Paging window
-    const start = clamp(cursor, 0, sorted.length)
-    const end = clamp(cursor + limit, 0, sorted.length)
-    const slice = sorted.slice(start, end)
-    const nextCursor = end < sorted.length ? end : null
-
-    // If client asks beyond tail, return empty page quickly
-    if (slice.length === 0) {
-      const payload = {
-        analysis: {
-          summary: `Detected ${sorted.length} substantive changes.`,
-          changes: [],
-          recommendations: [],
-          riskAssessment: "Low",
-          performanceImpact: "Neutral",
-        },
-        page: { total: sorted.length, cursor: start, limit, nextCursor },
-      }
-      return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } })
+    // Prepare batches
+    const batches: ChangeItem[][] = []
+    for (let i = 0; i < explainTargets.length; i += BATCH_SIZE) {
+      batches.push(explainTargets.slice(i, i + BATCH_SIZE))
     }
 
-    /* ============================== LLM call (paged) ============================== */
+    const results: ChangeExplanation[] = new Array(grouped.length).fill(null as any)
+    let usedModel = false
+    let lastModelError: string | undefined
 
-    const AI_ENABLED = noAI !== true
+    if (!noAI && XAI_API_KEY && batches.length > 0) {
+      const systemPrompt =
+        "You are a senior Oracle SQL reviewer. Respond with STRICT JSON ONLY. " +
+        "Top-level object with key 'explanations' (array). No preface or commentary."
 
-    let explanationsText = ""
-    let modelUsed = ""
-    let lastError: string | undefined
-    let metaProvider: Provider = PROVIDER
+      for (let b = 0; b < batches.length; b++) {
+        // Respect time budget
+        const timeLeft = deadline - Date.now()
+        if (timeLeft < 2500) { lastModelError = "Time budget nearly exhausted; finishing with heuristics."; break }
 
-    if (AI_ENABLED) {
-      // Provider availability
-      const hasXAI = !!process.env.XAI_API_KEY
-      const hasAzure = !!process.env.AZURE_OPENAI_ENDPOINT && !!process.env.AZURE_OPENAI_API_KEY && !!process.env.AZURE_OPENAI_DEPLOYMENT
+        const batch = batches[b]
+        const userPayload = buildUserPayload(canonOld, canonNew, batch)
 
-      // Build prompts/payload
-      const systemPrompt = [
-        "You are a senior Oracle SQL reviewer for a junior developer audience.",
-        "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-        "Each item: index, text, clauses(subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
-        "change_kind, syntax('good'|'bad'), performance('good'|'bad'),",
-        "syntax_explanation if syntax='bad', performance_explanation if performance='bad',",
-        "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
-      ].join(" ")
+        try {
+          const txt = await callXAIForBatch(systemPrompt, userPayload, Math.min(FETCH_TIMEOUT_MS, Math.max(2000, timeLeft - 1000)))
+          const parsed = safeParseLLMJson(txt)
+          const arr: any[] = Array.isArray(parsed?.explanations) ? parsed.explanations : []
 
-      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, slice))
+          // Map batch-local indices → global indices
+          for (const item of arr) {
+            if (typeof item?.index !== "number") continue
+            const local = clamp(item.index, 0, batch.length - 1)
+            const globalIdx = (b * BATCH_SIZE) + local
 
-      const tryOrder: Provider[] =
-        PROVIDER === "azure" ? ["azure", "xai"] : ["xai", "azure"]
-      const candidates = tryOrder.filter(p => (p === "xai" ? hasXAI : hasAzure))
+            const text = String(item?.text ?? "").trim()
+            const syntax = /^(good|bad)$/i.test(item?.syntax) ? (item.syntax.toLowerCase() as GoodBad) : "good"
+            const perf = /^(good|bad)$/i.test(item?.performance) ? (item.performance.toLowerCase() as GoodBad) : "good"
+            const clauses = Array.isArray(item?.clauses) ? item.clauses.filter(Boolean).slice(0, 8) : []
 
-      if (candidates.length === 0) {
-        lastError = "No LLM provider configured on this environment."
-      } else {
-        for (const p of candidates) {
-          try {
-            const r = p === "azure"
-              ? await callAzure(systemPrompt, userPayload)
-              : await callXAI(systemPrompt, userPayload)
-            explanationsText = r.text
-            modelUsed = r.model
-            metaProvider = p
-            lastError = undefined
-            break
-          } catch (e: any) {
-            lastError = String(e?.message || e)
-            // try the next provider, if any
+            results[globalIdx] = {
+              index: globalIdx,
+              explanation: text || "Model returned an empty explanation.",
+              syntax,
+              performance: perf,
+              meta: {
+                clauses,
+                change_kind: typeof item?.change_kind === "string" ? item.change_kind : undefined,
+                business_impact:
+                  item?.business_impact === "clear" || item?.business_impact === "weak" ? item.business_impact : "none",
+                risk: item?.risk === "medium" || item?.risk === "high" ? item.risk : "low",
+                suggestions: Array.isArray(item?.suggestions) ? item.suggestions.slice(0, 2) : [],
+              }
+            }
           }
+          usedModel = true
+        } catch (e: any) {
+          lastModelError = safeErrMessage(e)
+          // Continue; remaining items will get heuristic explanations
+          break
         }
       }
+    } else if (!XAI_API_KEY && !noAI) {
+      lastModelError = "No XAI_API_KEY configured."
     }
 
-    // JSON-safe parsing, tolerate code fences / any leading text
-    const parsed = (() => {
-      if (!explanationsText) return []
-      const defenced = explanationsText.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
-      try { return coerceExplanations(defenced) } catch {}
-      const m = defenced.match(/\{[\s\S]*\}$/m)
-      if (m) { try { return coerceExplanations(m[0]) } catch {} }
-      return []
-    })()
-
-    const expMap = new Map<number, ChangeExplanation>()
-    parsed.forEach((e) => {
-      if (typeof e.index === "number" && (e.explanation && e.explanation.length > 0)) expMap.set(e.index, e)
-    })
-
-    // Build final change rows for THIS PAGE ONLY
-    const pageChanges = slice.map((c, localIdx) => {
-      const m = expMap.get(localIdx)
-      let explanation: string
-
-      if (m?.explanation?.trim()) {
-        explanation = m.explanation.trim()
-      } else if (!AI_ENABLED) {
-        explanation = "AI analysis is disabled for this run (noAI=true)."
-      } else if (lastError) {
-        const friendly =
-          /AbortError|aborted|timeout/i.test(lastError)
-            ? "Network/egress timeout reaching LLM provider. Increase ANALYZE_REQUEST_TIMEOUT_MS or adjust network/proxy."
-            : lastError
-        explanation = `AI analysis temporarily unavailable: ${friendly}`
-      } else {
-        explanation = "No AI explanation was produced."
+    // Fill in any missing (including overflow) with heuristic explanations
+    const allItems: ChangeItem[] = [...grouped]
+    for (let i = 0; i < allItems.length; i++) {
+      if (!results[i]) {
+        const he = heuristicExplain(allItems[i])
+        results[i] = { ...he, index: i }
       }
+    }
 
-      const extras: string[] = []
-      if (m?.syntax === "bad" && (m as any)._syntax_explanation) extras.push(`Syntax: ${(m as any)._syntax_explanation}`)
-      if (m?.performance === "bad" && (m as any)._performance_explanation)
-        extras.push(`Performance: ${(m as any)._performance_explanation}`)
-      if (extras.length) explanation += ` ${extras.join(" ")}`
-
+    // Build final change objects in UI-friendly form
+    const finalChanges = allItems.map((c, i) => {
+      const r = results[i]
       return {
         ...c,
-        explanation,
-        syntax: (m?.syntax === "bad" ? "bad" : "good") as GoodBad,
-        performance: (m?.performance === "bad" ? "bad" : "good") as GoodBad,
-        meta: m
-          ? {
-              clauses: Array.isArray((m as any)._clauses) ? (m as any)._clauses : [],
-              change_kind: typeof (m as any)._change_kind === "string" ? (m as any)._change_kind : undefined,
-              business_impact:
-                (m as any)._business_impact === "clear" || (m as any)._business_impact === "weak"
-                  ? (m as any)._business_impact
-                  : "none",
-              risk: (m as any)._risk === "medium" || (m as any)._risk === "high" ? (m as any)._risk : "low",
-              suggestions: Array.isArray((m as any)._suggestions) ? (m as any)._suggestions.slice(0, 2) : [],
-            }
-          : undefined,
+        index: i,
+        explanation: r.explanation,
+        syntax: r.syntax,
+        performance: r.performance,
+        meta: r.meta,
       }
     })
 
-    const counts = stats ?? { addition: 0, deletion: 0, modification: 0 }
-    const summary =
-      `Detected ${sorted.length} substantive changes — ` +
-      `${counts.addition} additions, ${counts.modification} modifications, ${counts.deletion} deletions.`
+    const counts = finalChanges.reduce(
+      (acc, c) => { acc[c.type]++; return acc },
+      { addition: 0, deletion: 0, modification: 0 }
+    )
 
-    const responsePayload = {
+    const summaryParts = [
+      `${finalChanges.length} changes`,
+      `${counts.addition} additions`,
+      `${counts.modification} modifications`,
+      `${counts.deletion} deletions`,
+      usedModel ? "with AI explanations" : "heuristic only",
+      overflowCount > 0 ? `(+${overflowCount} grouped beyond cap)` : undefined,
+    ].filter(Boolean)
+
+    const payload = {
       analysis: {
-        summary,
-        changes: pageChanges, // THIS PAGE ONLY (keeps request fast)
+        summary: summaryParts.join(" — "),
+        changes: finalChanges,
         recommendations: [],
         riskAssessment: "Low",
         performanceImpact: "Neutral",
       },
-      page: {
-        total: sorted.length,
-        cursor: start,
-        limit,
-        nextCursor, // number or null
+      // keep paging shape for compatibility (not used here)
+      page: { cursor: 0, limit: finalChanges.length, nextCursor: null, total: finalChanges.length },
+      _debug: {
+        usedModel,
+        batchesTried: Math.ceil(explainTargets.length / BATCH_SIZE),
+        batchSize: BATCH_SIZE,
+        timeMs: Date.now() - started,
+        timeoutMs: FETCH_TIMEOUT_MS,
+        retries: RETRIES,
+        model: usedModel ? XAI_MODEL : "none",
+        error: lastModelError,
+        groupedCount: grouped.length,
+        rawCount: raw.length,
       },
-      ...(process.env.NODE_ENV !== "production" && {
-        _debug: {
-          providerPreferred: PROVIDER,
-          providerUsed: (noAI === true) ? "none" : metaProvider,
-          usedExplanations: parsed.length,
-          error: (noAI === true) ? "AI disabled by request body (noAI=true)" : (explanationsText ? undefined : lastError),
-          requestTimeoutMs: REQUEST_TIMEOUT_MS,
-        },
-      }),
     }
 
-    // 200 is fine; if you want you can use 206 Partial Content
-    return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } })
+    cache.set(key, payload)
+    return NextResponse.json(payload, { headers: { "Cache-Control": "no-store" } })
   } catch (err: any) {
     const msg = String(err?.name || "") + ": " + safeErrMessage(err)
     return NextResponse.json({ error: msg }, { status: 500, headers: { "Cache-Control": "no-store" } })
