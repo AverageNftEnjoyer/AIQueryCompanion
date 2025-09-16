@@ -2,7 +2,7 @@ import { NextResponse } from "next/server"
 
 /* ============================== Types ============================== */
 
-type Provider = "xai" | "azure"
+type Provider = "openai"
 type StmtType = "select" | "dml" | "plsql"
 
 interface Payload { newQuery: string; analysis?: unknown; audience?: "stakeholder" | "developer" }
@@ -30,12 +30,11 @@ type ContextHints = {
 
 /* ============================== Config ============================== */
 
-const DEFAULT_XAI_MODEL = process.env.XAI_MODEL || "grok-4"
-const DEFAULT_AZURE_API_VERSION = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview"
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-nano"
 
 const MODEL_CLIP_BYTES = 12_000
-const REQUEST_TIMEOUT_MS = Number(process.env.SUMMARY_REQUEST_TIMEOUT_MS || 30000)
-const PROVIDER: Provider = ((process.env.LLM_PROVIDER || "xai").toLowerCase() as Provider) || "xai"
+const REQUEST_TIMEOUT_MS = Number(process.env.SUMMARY_REQUEST_TIMEOUT_MS || 65000)
+const PROVIDER: Provider = "openai"
 
 /* ============================== Route ============================== */
 
@@ -68,24 +67,11 @@ export async function POST(req: Request) {
     let lastError: string | undefined
 
     try {
-      const r1 = PROVIDER === "azure"
-        ? await callAzure(systemPrompt1, userPayload1)
-        : await callXAI(systemPrompt1, userPayload1)
+      const r1 = await callOpenAI(systemPrompt1, userPayload1)
       text = r1.text
       modelUsed = r1.model
     } catch (e: any) {
-      // Soft-fallback to the other provider (if env present), else continue to strict pass or heuristic
       lastError = String(e?.message || e)
-      try {
-        metaProvider = PROVIDER === "azure" ? "xai" : "azure"
-        const r1b = metaProvider === "azure"
-          ? await callAzure(systemPrompt1, userPayload1)
-          : await callXAI(systemPrompt1, userPayload1)
-        text = r1b.text
-        modelUsed = r1b.model
-      } catch (e2: any) {
-        lastError = `${lastError} | fallback: ${String(e2?.message || e2)}`
-      }
     }
 
     let parsed = tryParseLastJson(text)
@@ -102,9 +88,7 @@ export async function POST(req: Request) {
       const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
       metaPass = "model-p2"
       try {
-        const r2 = metaProvider === "azure"
-          ? await callAzure(systemPrompt2, userPayload2)
-          : await callXAI(systemPrompt2, userPayload2)
+        const r2 = await callOpenAI(systemPrompt2, userPayload2)
         text = r2.text
         modelUsed = r2.model
       } catch (e3: any) {
@@ -133,7 +117,7 @@ export async function POST(req: Request) {
       structured: parsed,
       meta: {
         provider: metaProvider,
-        model: modelUsed || (metaProvider === "azure" ? (process.env.AZURE_OPENAI_DEPLOYMENT || "azure-deployment") : DEFAULT_XAI_MODEL),
+        model: modelUsed || DEFAULT_OPENAI_MODEL,
         latencyMs: Date.now() - t0,
         pass: metaPass,
         largeInput: newQuery.length > MODEL_CLIP_BYTES,
@@ -145,7 +129,15 @@ export async function POST(req: Request) {
 
     return NextResponse.json(res)
   } catch (e: any) {
-    return NextResponse.json({ error: e?.message || "Unexpected error" }, { status: 500 })
+    const msg = String(e?.message || "Unexpected error")
+    const status =
+      /Missing OPENAI_API_KEY/.test(msg) ? 500 :
+      /429/.test(msg) ? 429 :
+      /timeout|aborted|ETIMEDOUT/i.test(msg) ? 504 :
+      /OpenAI 4\d\d/.test(msg) ? 400 :
+      500
+
+    return NextResponse.json({ error: msg }, { status })
   }
 }
 
@@ -532,10 +524,8 @@ function buildFlow(sig: ReturnType<typeof extractSignals>): string {
 function ensureVerbPhrase(s: string): string {
   const t = (s || "").trim()
   if (!t) return "does the intended work"
-  // If looks verbal already, keep it
   if (/^(select|update|insert|delete|merge|allocate|reconcile|export|process|calculate|post|log|orchestrate|compute|generate)\b/i.test(t)) return t
   if (/\b\w+ing\b/i.test(t)) return t
-  // Noun phrases → convert to a verb phrase
   if (/^(allocation|reconciliation|calculation|export|processing|update|insertion|deletion)\b/i.test(t)) return `performs ${t}`
   if (/\b\w+(ion|tion|ment|ance|ing)\b/i.test(t)) return `performs ${t}`
   return `performs ${t}`
@@ -716,11 +706,10 @@ function softDeTech(input: string): string {
   return s.replace(/\s{2,}/g, " ").trim()
 }
 
-// NEW: normalize noisy identifiers for developer view, too
 function normalizeEntityName(x: string): string {
   let s = String(x || "").trim()
-  s = s.replace(/\b[A-Z][A-Z0-9_]*\./gi, "") // drop schema
-  s = s.replace(/\.PKB\b/i, "")              // drop package body suffix
+  s = s.replace(/\b[A-Z][A-Z0-9_]*\./gi, "")
+  s = s.replace(/\.PKB\b/i, "")
   s = s.replace(/[_]{2,}/g, "_")
   s = s.replace(/[^A-Z0-9_]/gi, "_")
   s = s.replace(/^_+|_+$/g, "")
@@ -766,72 +755,84 @@ function stripComments(sql: string): string {
   return sql.replace(/\/\*[\s\S]*?\*\/|--.*$/gm, "")
 }
 
-/* ============================== Providers (retries + timeout) ============================== */
+/* ============================== OpenAI provider (retries + timeout) ============================== */
 
-async function callXAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
-  const XAI_API_KEY = process.env.XAI_API_KEY
-  const XAI_BASE_URL = process.env.XAI_BASE_URL || "https://api.x.ai"
-  if (!XAI_API_KEY) throw new Error("Missing XAI_API_KEY")
-
-  const body = { model: DEFAULT_XAI_MODEL, temperature: 0.15, messages: [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userContent },
-  ]}
-
-  const r = await withRetries(() =>
-    fetchWithTimeout(`${XAI_BASE_URL}/v1/chat/completions`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${XAI_API_KEY}` },
-      body: JSON.stringify(body),
-    }, REQUEST_TIMEOUT_MS)
-  )
-  if (!r.ok) throw new Error(await r.text())
-  const j = await r.json()
-  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
-  return { text, model: DEFAULT_XAI_MODEL }
-}
-
-async function callAzure(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
-  const endpoint = process.env.AZURE_OPENAI_ENDPOINT
-  const apiKey = process.env.AZURE_OPENAI_API_KEY
-  const deployment = process.env.AZURE_OPENAI_DEPLOYMENT
-  const apiVersion = DEFAULT_AZURE_API_VERSION
-  if (!endpoint || !apiKey || !deployment) throw new Error("Missing Azure OpenAI env vars")
-
-  const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`
-  const body: any = {
-    temperature: 0.15,
-    response_format: { type: "json_object" },
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ],
-  }
-
-  const r = await withRetries(() =>
-    fetchWithTimeout(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "api-key": apiKey },
-      body: JSON.stringify(body),
-    }, REQUEST_TIMEOUT_MS)
-  )
-  if (!r.ok) throw new Error(await r.text())
-  const j = await r.json()
-  const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
-  return { text, model: deployment }
+function isRetryableStatus(status: number) {
+  return status === 429 || (status >= 500 && status <= 599)
 }
 
 async function withRetries<T>(fn: () => Promise<T>, max = 3, baseDelay = 400): Promise<T> {
   let lastErr: any
   for (let i = 0; i < max; i++) {
-    try { return await fn() } catch (e: any) {
+    try {
+      return await fn()
+    } catch (e: any) {
       lastErr = e
       const msg = String(e?.message || "")
-      if (!/429|5\d\d|timeout|exceeded|aborted/i.test(msg)) break
-      await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)))
+      const retryable =
+        e?.__retryable === true ||
+        /(?:ETIMEDOUT|ECONNRESET|ENETUNREACH|EAI_AGAIN|timeout|aborted)/i.test(msg)
+      if (!retryable || i === max - 1) break
+      await new Promise(res => setTimeout(res, baseDelay * Math.pow(2, i)))
     }
   }
   throw lastErr
+}
+
+async function callOpenAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY
+  const OPENAI_MODEL = DEFAULT_OPENAI_MODEL
+  if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY")
+
+  const makeBody = (useJsonMode: boolean) => ({
+    model: OPENAI_MODEL,
+    ...(useJsonMode ? { response_format: { type: "json_object" as const } } : {}),
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent },
+    ],
+  })
+
+  const attempt = async (useJsonMode: boolean) => withRetries(async () => {
+    const r = await fetchWithTimeout(
+      "https://api.openai.com/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify(makeBody(useJsonMode)),
+      },
+      REQUEST_TIMEOUT_MS
+    )
+
+    if (isRetryableStatus(r.status)) {
+      const errText = await r.text().catch(() => "")
+      const e = new Error(`Upstream ${r.status}: ${errText || "retryable error"}`) as any
+      e.__retryable = true
+      throw e
+    }
+
+    if (!r.ok) {
+      const errText = await r.text().catch(() => "")
+      throw new Error(`OpenAI ${r.status}: ${errText}`)
+    }
+
+    const j = await r.json()
+    const text = j?.choices?.[0]?.message?.content?.trim() ?? ""
+    return { text, model: OPENAI_MODEL }
+  })
+
+  try {
+    return await attempt(true)
+  } catch (e: any) {
+    const msg = String(e?.message || "")
+    if (/response_format|json_object/i.test(msg) || /unsupported/i.test(msg) || /bad request/i.test(msg)) {
+      return await attempt(false)
+    }
+    throw e
+  }
 }
 
 async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 15000) {

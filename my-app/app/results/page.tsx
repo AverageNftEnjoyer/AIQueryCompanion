@@ -5,6 +5,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { flushSync } from "react-dom";
+import { useTransition } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -21,6 +23,7 @@ import {
   Link2,
   Sun,
   Moon,
+  Send,
 } from "lucide-react";
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ";
@@ -135,6 +138,7 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
   const pulseBg = isLight ? "bg-black/10" : "bg-white/10";
   const textColor = isLight ? "text-gray-700" : "text-white/70";
 
+
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
       <div className="flex items-end gap-1.5 mb-6">
@@ -204,7 +208,6 @@ export default function ResultsPage() {
   const totalNewLines = useMemo(() => (newQuery ? newQuery.split("\n").length : 0), [newQuery]);
 
   const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis]);
-
   const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old"), [allMiniChanges]);
   const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side !== "old"), [allMiniChanges]);
 
@@ -227,6 +230,25 @@ export default function ResultsPage() {
       resumeHandlerRef.current = null;
     }
   };
+
+  type ChatMsg = { role: "user" | "assistant"; content: string };
+  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([
+    {
+      role: "assistant",
+      content:
+        "Hello! I'm your Query Companion, are you ready to explore the changes together?",
+    },
+  ]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const scrollChatToBottom = () => {
+    queueMicrotask(() => {
+      chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
+    });
+  };
+  useEffect(scrollChatToBottom, [chatMessages.length, chatLoading]);
 
   const playSfx = (ref: React.RefObject<HTMLAudioElement>) => {
     if (!soundOn) return;
@@ -305,17 +327,59 @@ export default function ResultsPage() {
     setOldQuery(parsed.oldQuery);
     setNewQuery(parsed.newQuery);
 
-    // Immediately render UI, then prep placeholders and stream items one-by-one.
+    // Kick UI visible, then run both: streaming analysis + auto-summary in parallel.
     (async () => {
       setLoading(false);
       setStreaming(true);
+
+      const canonOld = canonicalizeSQL(parsed!.oldQuery);
+      const canonNew = canonicalizeSQL(parsed!.newQuery);
+
+      // === Auto-Summary immediately on load ===
+      const autoFetchSummary = async (forAudience: Audience) => {
+        try {
+          const res = await fetch(`/api/summarize?audience=${forAudience}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              newQuery: canonNew,
+              analysis: null,
+              audience: forAudience,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const t = String(data?.tldr || "");
+            if (forAudience === "stakeholder") setSummaryStakeholder(t);
+            else setSummaryDeveloper(t);
+          } else {
+            const fallback =
+              "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.";
+            if (forAudience === "stakeholder") setSummaryStakeholder(fallback);
+            else setSummaryDeveloper(fallback);
+          }
+        } catch {
+          const fallback =
+            "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.";
+          if (forAudience === "stakeholder") setSummaryStakeholder(fallback);
+          else setSummaryDeveloper(fallback);
+        }
+      };
+
+      setSummarizing(true);
+      setLoadingAudience(audience);
+      autoFetchSummary(audience).finally(() => {
+        setSummarizing(false);
+        setLoadingAudience(null);
+        setTimeout(() => {
+          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+          summaryHeaderRef.current?.focus();
+        }, 120);
+      });
+
       try {
-        const canonOld = canonicalizeSQL(parsed!.oldQuery);
-        const canonNew = canonicalizeSQL(parsed!.newQuery);
-
+        // === Streaming item-by-item analysis ===
         const PAGE_SIZE = 24;
-
-        // Get first prep page
         const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -326,7 +390,7 @@ export default function ResultsPage() {
 
         const total = prepData?.page?.total ?? 0;
 
-        // Collect placeholders for ALL pages using prepOnly=1 to avoid LLM
+        // Gather placeholders for all pages
         let placeholders = (prepData?.analysis?.changes ?? []) as AnalysisResult["changes"];
         let nextCursor: number | null = prepData?.page?.nextCursor ?? null;
         while (nextCursor !== null) {
@@ -341,7 +405,6 @@ export default function ResultsPage() {
           nextCursor = j?.page?.nextCursor ?? null;
         }
 
-        // Index-merge placeholders
         const byIndex = new Map<number, AnalysisResult["changes"][number]>();
         for (const c of placeholders) if (typeof c.index === "number") byIndex.set(c.index, c);
         const mergedPlaceholders = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
@@ -352,7 +415,6 @@ export default function ResultsPage() {
           changes: mergedPlaceholders,
         }));
 
-        // Now process each item one-by-one so timeouts don't cancel the whole page
         for (let i = 0; i < total; i++) {
           const r = await fetch(`/api/analyze?mode=item&index=${i}`, {
             method: "POST",
@@ -360,10 +422,8 @@ export default function ResultsPage() {
             body: JSON.stringify({ oldQuery: canonOld, newQuery: canonNew }),
           });
           const j = await r.json().catch(() => ({}));
-          if (!r.ok) {
-            // If a single item fails, keep going
-            continue;
-          }
+          if (!r.ok) continue;
+
           const [incoming] = (j?.analysis?.changes ?? []);
           if (!incoming || typeof incoming.index !== "number") continue;
 
@@ -376,7 +436,6 @@ export default function ResultsPage() {
             return { ...prev, summary: `Streaming ${total} changes… ${done} explained.`, changes: merged };
           });
 
-          // Yield to the browser so cards visibly update one-by-one
           await new Promise((res) => setTimeout(res, 0));
         }
 
@@ -387,8 +446,9 @@ export default function ResultsPage() {
         setError(e?.message || "Unexpected error");
       }
     })();
-  }, [router]);
+  }, [router]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Sound toggles & persistence
   useEffect(() => {
     const audios = [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].filter(Boolean) as HTMLAudioElement[];
     audios.forEach((a) => (a.muted = !soundOn));
@@ -421,7 +481,7 @@ export default function ResultsPage() {
       analysisDoneSoundPlayedRef.current = true;
       playDoneSound();
     }
-  }, [loading, error, streaming, analysis]);
+  }, [loading, error, streaming, analysis]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience);
@@ -445,8 +505,8 @@ export default function ResultsPage() {
     );
   }, [analysis, typeFilter, sideFilter]);
 
+  // Summary fetcher for audience toggle
   async function fetchSummary(forAudience: Audience) {
-    if (!analysis) return;
     if (summarizeAbortRef.current) summarizeAbortRef.current.abort();
     summarizeAbortRef.current = new AbortController();
 
@@ -500,10 +560,6 @@ export default function ResultsPage() {
       setLoadingAudience(null);
     }
   }
-
-  const handleGenerateSummary = async () => {
-    await fetchSummary(audience);
-  };
 
   const handleSwitchAudience = async (nextAudience: Audience) => {
     setAudience(nextAudience);
@@ -578,6 +634,57 @@ export default function ResultsPage() {
     : "bg-black/30 border-white/10 text-white";
   const chipText = isLight ? "text-slate-700" : "text-white/80";
 
+  const suggestions = [
+    "Why is COMMIT inside the loop risky?",
+    "Which WHERE changes narrowed the rows?",
+    "Any window functions or set operations used?",
+    "How did GROUP BY affect totals?",
+    "What could hurt index usage here?",
+  ];
+  const modelHint = "GPT-5";
+
+  const sendChat = async () => {
+  const q = chatInput.trim();
+  if (!q) return;
+
+  flushSync(() => {
+    setChatInput("");
+    setChatMessages((m) => [...m, { role: "user", content: q }]);
+    setChatLoading(true);
+  });
+
+  try {
+    const res = await fetch("/api/chatbot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        question: q,
+        oldQuery: canonicalOld,
+        newQuery: canonicalNew,
+        context: { stats: stats ?? null, changeCount: analysis?.changes?.length ?? 0 },
+      }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    const answer = res.ok
+      ? String((data as any)?.answer ?? "").trim()
+      : `⚠️ ${(data as any)?.error || `Chat error (${res.status})`}`;
+
+    setChatMessages((m) => [...m, { role: "assistant", content: answer || "I didn’t get a reply." }]);
+  } catch {
+    setChatMessages((m) => [...m, { role: "assistant", content: "⚠️ Network error while contacting the assistant." }]);
+  } finally {
+    setChatLoading(false);
+    scrollChatToBottom();
+  }
+};
+  const onChatKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChat();
+    }
+  };
+
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
       {isLight ? gridBgLight : gridBg}
@@ -617,7 +724,7 @@ export default function ResultsPage() {
               >
                 <Link2
                   className={`h-5 w-5 transition ${
-                    isLight ? (syncEnabled ? "text-gray-700" : "text-gray-400") : (syncEnabled ? "text-white" : "text-white/60")
+                    isLight ? (syncEnabled ? "text-gray-700" : "text-gray-400") : syncEnabled ? "text-white" : "text-white/60"
                   }`}
                 />
               </button>
@@ -746,32 +853,9 @@ export default function ResultsPage() {
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   Scroll for Changes & AI Analysis
                 </div>
-
-                <div className="relative z-20 mt-4 mb-2 md:mb-0 flex items-center justify-center">
-                  <button
-                    type="button"
-                    onClick={handleGenerateSummary}
-                    disabled={summarizing}
-                    className={`inline-flex items-center gap-2 px-4 h-9 rounded-full border transition whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed ${
-                      isLight
-                        ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
-                        : "bg-white/5 hover:bg-white/10 border-white/15 text-white"
-                    }`}
-                    title="Generate a summary for selected audience"
-                  >
-                    {summarizing ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span className="text-sm">Generating…</span>
-                      </>
-                    ) : (
-                      <span className="text-sm">Generate Summary</span>
-                    )}
-                  </button>
-                </div>
               </section>
 
-              {/* Lower panels */}
+              {/* Lower panels: (Changes, Summary) | (AI Analysis, Query Companion) */}
               <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
                 {/* LEFT COLUMN */}
                 <div className="space-y-5 sm:space-y-6 md:space-y-8">
@@ -882,7 +966,7 @@ export default function ResultsPage() {
                     </CardContent>
                   </Card>
 
-                  {/* ===== Summary Card ===== */}
+                  {/* ===== Summary Card (auto-loaded) ===== */}
                   {(summarizing || summaryStakeholder || summaryDeveloper) && (
                     <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
                       <CardContent className="p-5">
@@ -931,7 +1015,6 @@ export default function ResultsPage() {
                         </div>
 
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          {/* Placeholder skeleton while nothing fetched yet */}
                           {!currentSummary && (summarizing || loadingAudience) ? (
                             <div className="space-y-4">
                               <div className="inline-flex items-center gap-2 text-gray-700">
@@ -948,9 +1031,7 @@ export default function ResultsPage() {
                           ) : currentSummary ? (
                             <p className="text-gray-800 text-sm leading-relaxed">{currentSummary}</p>
                           ) : (
-                            <div className="text-gray-600 text-sm">
-                              Click <strong>Generate Summary ({audience})</strong> above to create a {audience} summary.
-                            </div>
+                            <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
                           )}
                         </div>
                       </CardContent>
@@ -960,12 +1041,12 @@ export default function ResultsPage() {
 
                 {/* RIGHT COLUMN */}
                 <div className="space-y-5 sm:space-y-6 md:space-y-8">
+                  {/* AI Analysis */}
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-5 mt-2">
-                      {/* Title + chips inline (chips on the right) */}
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-slate-900 font-semibold">
-                          AI Analysis {streaming && <span className="text-xs text-gray-500 ml-2">• streaming…</span>}
+                          AI Analysis {streaming && <span className="text-xs text-gray-500 ml-2">• In Progress..</span>}
                         </h3>
 
                         {(typeFilter !== "all" || sideFilter !== "all") && (
@@ -1029,7 +1110,6 @@ export default function ResultsPage() {
                                     </div>
                                   </div>
 
-                                  {/* Explanation or per-card loading skeleton */}
                                   <div className="flex-1">
                                     {chg.explanation === "Pending…" ? (
                                       <div className="space-y-2" aria-busy="true" aria-live="polite">
@@ -1047,21 +1127,69 @@ export default function ResultsPage() {
                             ))
                           ) : (
                             <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
-                              {typeFilter !== "all" || sideFilter !== "all" ? (
-                                <p>
-                                  No matching changes for the current filter
-                                  {typeFilter !== "all" ? ` (type: ${typeFilter})` : ""}
-                                  {sideFilter !== "all" ? ` (side: ${sideFilter})` : ""}. Try clearing or adjusting the filters.
-                                </p>
-                              ) : (
-                                <p className="leading-relaxed">{analysis.summary}</p>
-                              )}
+                              <p className="leading-relaxed">{analysis.summary}</p>
                             </div>
                           )}
                         </div>
                       </div>
                     </CardContent>
                   </Card>
+                <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
+                  <CardContent className="p-5 h-[34rem] flex flex-col"> {/* fixed height + flex */}
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-slate-900 font-semibold">Query Companion</h3>
+                      <span className="text-xs text-gray-500">
+                        {chatLoading ? "Composing…" : ""}
+                      </span>
+                    </div>
+
+                    {/* Chat messages scroll inside this flex-1 container */}
+                    <div
+                      ref={chatScrollRef}
+                      className="flex-1 min-h-0 bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-y-auto scroll-overlay"
+                      aria-live="polite"
+                    >
+                      <div className="space-y-3">
+                        {chatMessages.map((m, i) => (
+                          <div
+                            key={i}
+                            className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
+                              m.role === "user"
+                                ? "ml-auto bg-emerald-100 text-emerald-900"
+                                : "mr-auto bg-white text-gray-900 border border-gray-200"
+                            }`}
+                          >
+                            {m.content}
+                          </div>
+                        ))}
+                        {chatLoading && (
+                          <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
+                            <span className="inline-flex items-center gap-2">
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Input bar pinned at bottom */}
+                    <div className="mt-3 flex gap-2">
+                      <input
+                        type="text"
+                        value={chatInput}
+                        onChange={(e) => setChatInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            sendChat();
+                          }
+                        }}
+                        placeholder="Ask me anything about the changes…"
+                        className="flex-1 h-10 rounded-md border border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
                 </div>
               </section>
             </div>
