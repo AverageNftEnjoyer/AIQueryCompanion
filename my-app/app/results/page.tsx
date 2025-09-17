@@ -183,6 +183,10 @@ export default function ResultsPage() {
   const doneAudioRef = useRef<HTMLAudioElement | null>(null);
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const miniClickAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // NEW: dedicated chatbot sound (chatbot.mp3)
+  const chatbotAudioRef = useRef<HTMLAudioElement | null>(null);
+
   const cmpRef = useRef<QueryComparisonHandle>(null);
   const [typeFilter, setTypeFilter] = useState<ChangeType | "all">(
     (typeof window !== "undefined" && (localStorage.getItem("qa:typeFilter") as any)) || "all"
@@ -222,16 +226,37 @@ export default function ResultsPage() {
     return saved === "1";
   });
   const analysisDoneSoundPlayedRef = useRef(false);
-  const resumeHandlerRef = useRef<((e?: any) => void) | null>(null);
-  const clearResumeHandler = () => {
-    if (resumeHandlerRef.current) {
-      window.removeEventListener("pointerdown", resumeHandlerRef.current);
-      window.removeEventListener("keydown", resumeHandlerRef.current);
-      resumeHandlerRef.current = null;
+
+  // ——— helpers (shared) ———
+  const clearResumeHandler = (() => {
+    let handler: ((e?: any) => void) | null = null;
+    return () => {
+      if (handler) {
+        window.removeEventListener("pointerdown", handler);
+        window.removeEventListener("keydown", handler);
+        handler = null;
+      }
+    };
+  })();
+
+  const primeAutoplay = async (el: HTMLAudioElement) => {
+    try {
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.5;
+      await el.play();
+    } catch {
+      const resume = () => {
+        el.play().finally(() => {
+          clearResumeHandler();
+        });
+      };
+      // @ts-ignore capture handler in closure above
+      (clearResumeHandler as any).handler = resume;
+      window.addEventListener("pointerdown", resume, { once: true });
+      window.addEventListener("keydown", resume, { once: true });
     }
   };
-
-  const scrollChatToBottom = () => {}; // no-op (chat is now isolated in ChatPanel)
 
   const playSfx = (ref: React.RefObject<HTMLAudioElement>) => {
     if (!soundOn) return;
@@ -262,22 +287,15 @@ export default function ResultsPage() {
     if (!soundOn) return;
     const el = doneAudioRef.current;
     if (!el) return;
-    try {
-      clearResumeHandler();
-      el.pause();
-      el.currentTime = 0;
-      el.volume = 0.5;
-      await el.play();
-    } catch {
-      const resume = () => {
-        el!.play().finally(() => {
-          clearResumeHandler();
-        });
-      };
-      resumeHandlerRef.current = resume;
-      window.addEventListener("pointerdown", resume, { once: true });
-      window.addEventListener("keydown", resume, { once: true });
-    }
+    await primeAutoplay(el);
+  };
+
+  // NEW: play chatbot sound on demand
+  const playChatbotSound = async () => {
+    if (!soundOn) return;
+    const el = chatbotAudioRef.current;
+    if (!el) return;
+    await primeAutoplay(el);
   };
 
   // ===== INITIAL LOAD: load queries and PREPARE CHANGES ONLY (no summaries, no explanations) =====
@@ -342,7 +360,6 @@ export default function ResultsPage() {
           nextCursor = j?.page?.nextCursor ?? null;
         }
 
-        // Keep explanations flagged as pending — UI will show placeholders until "Generate Analysis"
         const prepared = placeholders.map((c) => ({
           ...c,
           explanation: "Pending…",
@@ -365,7 +382,12 @@ export default function ResultsPage() {
 
   // Sound toggles & persistence
   useEffect(() => {
-    const audios = [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].filter(Boolean) as HTMLAudioElement[];
+    const audios = [
+      doneAudioRef.current,
+      switchAudioRef.current,
+      miniClickAudioRef.current,
+      chatbotAudioRef.current, // include chatbot sound
+    ].filter(Boolean) as HTMLAudioElement[];
     audios.forEach((a) => (a.muted = !soundOn));
     if (!soundOn) {
       audios.forEach((a) => {
@@ -389,8 +411,6 @@ export default function ResultsPage() {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter);
   }, [sideFilter]);
-
-  // NOTE: Removed the global "auto play when streaming ends" effect to avoid double chimes.
 
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience);
@@ -449,7 +469,6 @@ export default function ResultsPage() {
           summaryHeaderRef.current?.focus();
         }, 100);
       }
-      // (Removed playDoneSound for summaries)
     } catch (e: any) {
       if (e?.name !== "AbortError") {
         const fallback =
@@ -460,7 +479,6 @@ export default function ResultsPage() {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
           summaryHeaderRef.current?.focus();
         }, 100);
-        // (Removed playDoneSound for summaries)
       }
     } finally {
       setSummarizing(false);
@@ -514,8 +532,8 @@ export default function ResultsPage() {
           } catch {}
         }
       } else {
-        clearResumeHandler();
-        [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current].forEach((a) => {
+        // mute & reset all audio refs
+        [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach((a) => {
           try {
             if (a) {
               a.muted = true;
@@ -621,11 +639,53 @@ export default function ResultsPage() {
     }
   };
 
+  // NEW: global fetch wrapper to detect /api/chatbot replies and play chatbot.mp3 when meta.playSound === true
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const originalFetch = window.fetch;
+
+    const wrappedFetch: typeof window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const res = await originalFetch(input as any, init as any);
+
+      try {
+        // Only inspect JSON responses from our chatbot API
+        const url = typeof input === "string" ? input : (input as URL).toString();
+        const isChatbot = /\/api\/chatbot(?:\/|$|\?)/.test(url);
+        if (!isChatbot) return res;
+
+        // Clone once; reading body consumes it
+        const clone = res.clone();
+        const ctype = clone.headers.get("content-type") || "";
+        if (!clone.ok || !/application\/json/i.test(ctype)) return res;
+
+        const data = await clone.json().catch(() => null);
+        const play = !!data?.meta?.playSound;
+
+        // Honor global mute
+        if (play && soundOn) {
+          // play via shared audio element to avoid multiple Audio() instances and to satisfy autoplay policies
+          await playChatbotSound();
+        }
+      } catch {
+        // no-op; never break the fetch chain
+      }
+
+      return res;
+    };
+
+    // @ts-ignore
+    window.fetch = wrappedFetch;
+    return () => {
+      // @ts-ignore
+      window.fetch = originalFetch;
+    };
+  }, [soundOn]); // rebind if mute toggles
+
   return (
-    <div className={`min-h-screen relative ${pageBgClass}`}>
+    <div className={`min-h-screen relative ${isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white"}`}>
       {isLight ? gridBgLight : gridBg}
 
-      <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
+      <header className={`relative z-10 border ${isLight ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]" : "bg-black/30 border-white/10 text-white"} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
             {/* Left: Home */}
@@ -699,6 +759,8 @@ export default function ResultsPage() {
         <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
+        {/* NEW: shared chatbot sound element */}
+        <audio ref={chatbotAudioRef} src="/chatbot.mp3" preload="metadata" muted={!soundOn} />
 
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-24 md:pb-10">
           {loading && !error && <FancyLoader isLight={isLight} />}
@@ -748,7 +810,13 @@ export default function ResultsPage() {
                 <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
                   {/* Query Comparison */}
                   <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-                    <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} syncScrollEnabled={syncEnabled} />
+                    <QueryComparison
+                      ref={cmpRef}
+                      oldQuery={oldQuery}
+                      newQuery={newQuery}
+                      showTitle={false}
+                      syncScrollEnabled={syncEnabled}
+                    />
                   </div>
                   {/* Dual minimaps */}
                   <div className="hidden lg:flex h-full items-stretch gap-2">
@@ -757,7 +825,10 @@ export default function ResultsPage() {
                       totalLines={totalOldLines}
                       changes={miniOld}
                       forceSide="old"
-                      onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
+                      onJump={({ line }) => {
+                        playMiniClick();
+                        cmpRef.current?.scrollTo({ side: "old", line });
+                      }}
                       className={`w-6 h-full rounded-md
                           ${
                             isLight
@@ -772,7 +843,10 @@ export default function ResultsPage() {
                       totalLines={totalNewLines}
                       changes={miniNew}
                       forceSide="new"
-                      onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
+                      onJump={({ line }) => {
+                        playMiniClick();
+                        cmpRef.current?.scrollTo({ side: "new", line });
+                      }}
                       className={`w-6 h-full rounded-md
                           ${
                             isLight
@@ -1080,7 +1154,6 @@ export default function ResultsPage() {
                                   </div>
 
                                   <div className="flex-1">
-                                    {/* Before user runs analysis: show placeholder text per change */}
                                     {!analysisStarted ? (
                                       <p className="text-gray-700 text-sm">Generate Analysis for further details on this change.</p>
                                     ) : chg.explanation === "Pending…" ? (
@@ -1107,15 +1180,15 @@ export default function ResultsPage() {
                     </CardContent>
                   </Card>
 
-                  {/* Query Companion*/}
+                  {/* Query Companion */}
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                     <CardContent className="p-0">
                       <ChatPanel
-                          rawOld={oldQuery}
-                          rawNew={newQuery}
-                          changeCount={analysis?.changes?.length ?? 0}
-                          stats={stats ?? null}
-                        />
+                        rawOld={oldQuery}
+                        rawNew={newQuery}
+                        changeCount={analysis?.changes?.length ?? 0}
+                        stats={stats ?? null}
+                      />
                     </CardContent>
                   </Card>
                 </div>

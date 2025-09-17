@@ -155,43 +155,57 @@ function QueryComparisonInner(
     },
   }))
 
-  const renderSide = (
-    text: string,
-    tags: Map<number, OldTag | NewTag>,
-    ariaLabel: string,
-    side: "old" | "new"
-  ) => {
-    const lines = text.split("\n")
-    const refDiv = side === "old" ? leftRef : rightRef
-    return (
-      <div
-        ref={refDiv}
-        onScroll={() => onPaneScroll(side)}
-        className="rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
-        style={{ ...heightStyle, scrollbarGutter: "stable" }}
-        aria-label={ariaLabel}
-        tabIndex={0}
-      >
-        <div className="w-max p-3 font-mono text-[11px] leading-snug text-slate-800">
-          {lines.map((line, idx) => {
-            const n = idx + 1
-            const tag = tags.get(n)
-            const rowBg =
-              tag === "modified" ? theme.modified : tag === "removed" ? theme.removed : tag === "added" ? theme.added : ""
-            return (
-              <div key={n} data-side={side} data-line={n} className={`${theme.baseRow} ${rowBg}`}>
-                <span className={`w-10 shrink-0 mt-0.5 text-xs ${theme.num}`}>{n}</span>
-                <div className={`flex items-center gap-2 ${theme.code} shrink-0`}>
-                  <code className="whitespace-pre pr-4">{renderHighlightedSQL(line)}</code>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-    )
-  }
+ const renderSide = (
+  text: string,
+  tags: Map<number, OldTag | NewTag>,
+  ariaLabel: string,
+  side: "old" | "new"
+) => {
+  const lines = text.split("\n");
+  const refDiv = side === "old" ? leftRef : rightRef;
 
+  return (
+    <div
+      ref={refDiv}
+      onScroll={() => onPaneScroll(side)}
+      className="rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
+      style={{ ...heightStyle, scrollbarGutter: "stable" }}  // <- ONE scrollbar here
+      aria-label={ariaLabel}
+      tabIndex={0}
+    >
+      <div className="relative w-max p-3 font-mono text-[11px] leading-snug text-slate-800">
+        {lines.map((line, idx) => {
+          const n = idx + 1;
+          const tag = tags.get(n);
+          const rowBg =
+            tag === "modified"
+              ? theme.modified
+              : tag === "removed"
+              ? theme.removed
+              : tag === "added"
+              ? theme.added
+              : "";
+
+          return (
+            <div
+              key={n}
+              data-side={side}
+              data-line={n}
+              className={`${theme.baseRow} ${rowBg} relative`} > 
+              <span
+                className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num}  bg-slate-50 dark:bg-neutral-900`}>
+              {n}
+              </span>
+              <code className="block whitespace-pre pr-4">
+                {renderHighlightedSQL(line)}
+              </code>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
   return (
     <>
       <div className={className}>
