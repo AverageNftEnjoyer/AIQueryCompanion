@@ -1,7 +1,8 @@
+// app/layout.tsx
 import React from "react"
 import type { Metadata } from "next"
 import { Space_Grotesk, DM_Sans } from "next/font/google"
-import { ThemeProvider } from "@/components/theme-provider" 
+import { ThemeProvider } from "@/components/theme-provider"
 import "./globals.css"
 
 const spaceGrotesk = Space_Grotesk({
@@ -32,15 +33,15 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`light ${spaceGrotesk.variable} ${dmSans.variable} antialiased`}
+      className={`${spaceGrotesk.variable} ${dmSans.variable} antialiased`}
     >
-      <body className="font-body">
+      <body className="font-body min-h-dvh bg-[color:var(--background)]">
         <ThemeProvider
-          attribute="class"            
-          defaultTheme="light"       
-          enableSystem={false}        
-          storageKey="qa-theme"        
-          disableTransitionOnChange   
+          attribute="class"
+          defaultTheme="dark"           
+          enableSystem={false}
+          storageKey="qa-theme"
+          disableTransitionOnChange
         >
           {children}
         </ThemeProvider>

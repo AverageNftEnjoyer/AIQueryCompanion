@@ -6,13 +6,15 @@ export const maxDuration = 60;
 import { NextResponse } from "next/server";
 
 /** ============================== Config ============================== **/
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-nano"; // or your chosen model
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-nano";
 const REQUEST_TIMEOUT_MS = Math.min(
   Number(process.env.CHATBOT_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 50000),
-  (typeof maxDuration === "number" ? maxDuration : 60) * 1000 - 2000 // small safety buffer
+  (typeof maxDuration === "number" ? maxDuration : 60) * 1000 - 2000
 );
 const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1));
-const CLIP_BYTES = Math.max(10_000, Number(process.env.CHATBOT_CLIP_BYTES ?? 12_000));
+
+// Keep full queries (no clipping) so line numbers match.
+const CLIP_BYTES = Infinity;
 
 /** ============================== Types ============================== **/
 type Msg = { role: "system" | "user" | "assistant"; content: string };
@@ -25,7 +27,7 @@ interface ChatbotBody {
     stats?: unknown;
     changeCount?: number;
   };
-  history?: Msg[]; // optional conversational history from the client
+  history?: Msg[];
 }
 
 /** ============================== Utilities ============================== **/
@@ -36,7 +38,7 @@ function isNonEmptyString(x: any): x is string {
 function safeErrMessage(e: any, fallback = "Unexpected error") {
   const raw = typeof e?.message === "string" ? e.message : fallback;
   return raw
-    .replace(/(Bearer\s+)[\w\.\-]+/gi, "$1[REDACTED]")
+    .replace(/(Bearer\s+)[\w.\-]+/gi, "$1[REDACTED]")
     .replace(/(api[-_ ]?key\s*[:=]\s*)\w+/gi, "$1[REDACTED]")
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]");
 }
@@ -63,8 +65,9 @@ async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 4
     } catch (e: any) {
       lastErr = e;
       const msg = String(e?.message || "");
-      // Retry only on 429/5xx/timeouts/aborts
-      if (!/429|5\d\d|timeout|aborted|AbortError/i.test(msg)) break;
+      const retryable =
+        /(?:\b429\b|5\d\d|ETIMEDOUT|ECONNRESET|ENETUNREACH|EAI_AGAIN|timeout|aborted|AbortError)/i.test(msg);
+      if (!retryable || i === max - 1) break;
       await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)));
     }
   }
@@ -73,10 +76,8 @@ async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 4
 
 function clipText(s: string, budget = CLIP_BYTES) {
   const raw = (s || "").replace(/\r/g, "");
-  if (raw.length <= budget) return raw;
-  const head = raw.slice(0, Math.floor(budget * 0.6));
-  const tail = raw.slice(-Math.floor(budget * 0.35));
-  return `${head}\n/* ...clipped... */\n${tail}`;
+  if (!Number.isFinite(budget) || raw.length <= budget) return raw;
+  return raw; // effectively disabled clipping
 }
 
 function softNormalize(s: string) {
@@ -88,84 +89,60 @@ function looksRude(s: string) {
   return /(fuck|idiot|stupid|dumbass|moron|kill yourself|kys|bitch|asshole)/i.test(t);
 }
 
-/** ============================== Prompt (Overhauled) ============================== **/
-const systemPrompt: Msg = {
-  role: "system",
-  content: [
-    "You are **Query Companion**, a senior SQL/PLSQL reviewer and tutor.",
-    "You can answer interactive questions about:",
-    "- SQL & PL/SQL fundamentals (e.g., 'What does SQL stand for?', joins, indexes, window functions).",
-    "- Performance and optimization (sargability, join selectivity, index usage, GROUP BY cardinality, ORDER BY/CTE costs).",
-    "- Transactions and reliability (ACID, COMMIT/ROLLBACK patterns, error handling).",
-    "- Diffrences between two provided queries (oldQuery vs newQuery).",
-    "",
-    "CONVERSATION STYLE:",
-    "- Be concise and practical (1–6 sentences unless asked for more).",
-    "- Use the user’s prior turns (history) for context.",
-    "- If the exact behavior depends on unknown details (schema/stats), say what’s unknown and how to verify (EXPLAIN PLAN, row counts, DBMS_METADATA.GET_DDL, user_source/all_source diffs).",
-    "- If the user is rude, stay calm and continue helping briefly, then steer back to the topic.",
-    "",
-    "RELEVANCE POLICY (loose):",
-    "- Treat any SQL/PLSQL/database question as RELEVANT, even if general. Answer normally.",
-    "- If the user asks something clearly unrelated to SQL/databases (e.g., weather, sports scores, recipes), politely decline with a single line and suggest SQL/data topics instead.",
-    "",
-    "WHEN ASKED ABOUT THE DIFF:",
-    "- Compare oldQuery vs newQuery. Call out risk items (COMMITs in loops, broadened WHERE, non-sargable filters, set operations altering row counts).",
-    "- Mention performance angles (join selectivity, indexes, window functions, GROUP BY, ORDER BY/CTE).",
-    "- Provide a short verification plan.",
-    "",
-    "FORMAT:",
-    "- Keep answers self-contained and readable. Prefer plain English, minimal code unless requested.",
-  ].join("\n"),
-};
+/** ============================== Line Lookup ============================== **/
+function parseLineLookup(q: string) {
+  const t = softNormalize(q);
+  const m1 = t.match(/\bline\s+(\d{1,7})\b/);
+  if (m1) return { kind: "single", line: Number(m1[1]) };
+  const m2 = t.match(/\blines?\s+(\d{1,7})\s*[-to]+\s*(\d{1,7})/);
+  if (m2) {
+    const a = Number(m2[1]);
+    const b = Number(m2[2]);
+    return { kind: "range", start: Math.min(a, b), end: Math.max(a, b) };
+  }
+  return { kind: "none" };
+}
 
-/** Build final messages array for the API */
-function buildMessages(payload: {
-  question: string;
-  oldQuery: string;
-  newQuery: string;
-  context: ChatbotBody["context"];
-  history?: Msg[];
-}): Msg[] {
-  const { question, oldQuery, newQuery, context, history } = payload;
+function extractLines(src: string, which: any) {
+  const lines = src.split("\n");
+  const N = lines.length;
+  if (which.kind === "single" && which.line) {
+    const n = Math.min(Math.max(1, which.line), N);
+    const contextBefore = Math.max(1, n - 2);
+    const contextAfter = Math.min(N, n + 2);
+    return {
+      target: n,
+      total: N,
+      text: lines.slice(contextBefore - 1, contextAfter).join("\n"),
+      exact: lines[n - 1] ?? "",
+    };
+  }
+  if (which.kind === "range") {
+    const s = Math.min(Math.max(1, which.start), N);
+    const e = Math.min(Math.max(1, which.end), N);
+    return { total: N, text: lines.slice(s - 1, e).join("\n") };
+  }
+  return null;
+}
 
-  // Optional assistant context priming (very compact to save tokens)
-  const primer: Msg = {
-    role: "assistant",
+/** ============================== Prompt helpers ============================== **/
+function systemPrompt(): Msg {
+  return {
+    role: "system",
     content: [
-      "Context summary:",
-      context?.changeCount != null ? `• changeCount: ${context.changeCount}` : "",
-      context?.stats ? "• stats provided" : "",
-      oldQuery ? "• oldQuery: (clipped)" : "",
-      newQuery ? "• newQuery: (clipped)" : "",
-    ]
-      .filter(Boolean)
-      .join("\n"),
+      "You are Query Companion — an Oracle SQL/PLSQL and SQL tutor.",
+      "Default style: ≤3 short sentences unless the user explicitly asks for more (with words like explain, why, details).",
+      "Stay on SQL/PLSQL and the provided queries. Off-topic: reply once with 'I'm sorry — that was off-topic for SQL/PLSQL and the provided queries.'",
+    ].join("\n"),
   };
+}
 
-  const userMsg: Msg = {
-    role: "user",
-    content: JSON.stringify(
-      {
-        question,
-        oldQuery,
-        newQuery,
-        context: {
-          changeCount: context?.changeCount,
-          stats: context?.stats,
-        },
-      },
-      null,
-      0
-    ),
-  };
-
-  const msgs: Msg[] = [systemPrompt, ...(history ?? []), primer, userMsg];
-  return msgs;
+function wantsExpansion(q: string) {
+  return /\b(explain|details|deep|verbose|why|walk ?through)\b/i.test(q);
 }
 
 /** ============================== LLM Call ============================== **/
-async function callOpenAI(messages: Msg[]): Promise<string> {
+async function callOpenAI(messages: Msg[], question: string): Promise<string> {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   const OPENAI_MODEL = DEFAULT_OPENAI_MODEL;
   if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
@@ -173,6 +150,7 @@ async function callOpenAI(messages: Msg[]): Promise<string> {
   const body = {
     model: OPENAI_MODEL,
     messages,
+    max_completion_tokens: wantsExpansion(question) ? 600 : 220,
   };
 
   const r = await withRetries(() =>
@@ -197,6 +175,12 @@ async function callOpenAI(messages: Msg[]): Promise<string> {
   return j?.choices?.[0]?.message?.content?.trim() ?? "";
 }
 
+function clampAnswer(ans: string, q: string) {
+  if (wantsExpansion(q)) return ans;
+  const parts = ans.split(/(?<=\.|\?|!)\s+/).filter(Boolean);
+  return parts.slice(0, 3).join(" ");
+}
+
 /** ============================== Route ============================== **/
 export async function POST(req: Request) {
   try {
@@ -204,30 +188,29 @@ export async function POST(req: Request) {
     const question = String(body?.question ?? "").trim();
     const oldQuery = clipText(String(body?.oldQuery ?? ""));
     const newQuery = clipText(String(body?.newQuery ?? ""));
-    const context = (body?.context ?? {}) as ChatbotBody["context"];
-    const history = Array.isArray(body?.history) ? (body.history as Msg[]) : undefined;
 
     if (!isNonEmptyString(question)) {
       return NextResponse.json({ error: "question is required" }, { status: 400 });
     }
 
-    const rude = looksRude(question);
+    // Fast-path for "line 280" style questions
+    const lineReq = parseLineLookup(question);
+    if (lineReq.kind !== "none" && isNonEmptyString(newQuery)) {
+      const ext = extractLines(newQuery, lineReq);
+      if (ext) {
+        return NextResponse.json({
+          answer: `Here’s the snippet:\n${ext.text}`,
+          meta: { mode: "line-lookup", totalLines: ext.total },
+        });
+      }
+    }
 
-    const msgs = buildMessages({
-      question: rude
-        ? `${question}\n\n(Tone note: user was rude; please respond calmly and helpfully, then steer back to topic.)`
-        : question,
-      oldQuery,
-      newQuery,
-      context,
-      history,
-    });
+    const msgs: Msg[] = [systemPrompt(), { role: "user", content: question }];
+    let answer = await callOpenAI(msgs, question);
+    if (!answer) answer = "I don’t have a specific answer yet.";
+    answer = clampAnswer(answer, question);
 
-    const answer = await callOpenAI(msgs);
-    return NextResponse.json({
-      answer: answer || "I don’t have a specific answer yet.",
-      meta: { model: DEFAULT_OPENAI_MODEL, rude },
-    });
+    return NextResponse.json({ answer, meta: { model: DEFAULT_OPENAI_MODEL } });
   } catch (err: any) {
     const msg = safeErrMessage(err);
     return NextResponse.json({ error: msg }, { status: 500 });

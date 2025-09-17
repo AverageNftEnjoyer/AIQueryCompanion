@@ -1,12 +1,9 @@
 // /app/results.tsx
-
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { flushSync } from "react-dom";
-import { useTransition } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -27,11 +24,13 @@ import {
 } from "lucide-react";
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ";
+import ChatPanel from "@/components/chatpanel";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
 type GoodBad = "good" | "bad";
 type Audience = "stakeholder" | "developer";
+type AnalysisMode = "fast" | "expert";
 
 interface AnalysisResult {
   summary: string;
@@ -138,7 +137,6 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
   const pulseBg = isLight ? "bg-black/10" : "bg-white/10";
   const textColor = isLight ? "text-gray-700" : "text-white/70";
 
-
   return (
     <div className="w-full flex flex-col items-center justify-center py-16">
       <div className="flex items-end gap-1.5 mb-6">
@@ -158,9 +156,7 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
         </div>
         <div className={`mt-6 flex items-center gap-2 ${textColor}`} aria-live="polite">
           <Zap className="w-4 h-4 animate-pulse" />
-          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
-            {messages[index]}
-          </span>
+          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>{messages[index]}</span>
         </div>
       </div>
     </div>
@@ -181,6 +177,7 @@ export default function ResultsPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [streaming, setStreaming] = useState(false);
+  const [analysisStarted, setAnalysisStarted] = useState(false); // gate for streaming explanations
   const startedRef = useRef(false);
 
   const doneAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -204,6 +201,9 @@ export default function ResultsPage() {
   const [summaryDeveloper, setSummaryDeveloper] = useState<string>("");
   const [summarizing, setSummarizing] = useState<boolean>(false);
   const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null);
+
+  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert"); // Fast/Expert toggle
+
   const totalOldLines = useMemo(() => (oldQuery ? oldQuery.split("\n").length : 0), [oldQuery]);
   const totalNewLines = useMemo(() => (newQuery ? newQuery.split("\n").length : 0), [newQuery]);
 
@@ -231,24 +231,7 @@ export default function ResultsPage() {
     }
   };
 
-  type ChatMsg = { role: "user" | "assistant"; content: string };
-  const [chatMessages, setChatMessages] = useState<ChatMsg[]>([
-    {
-      role: "assistant",
-      content:
-        "Hello! I'm your Query Companion, are you ready to explore the changes together?",
-    },
-  ]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatLoading, setChatLoading] = useState(false);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
-
-  const scrollChatToBottom = () => {
-    queueMicrotask(() => {
-      chatScrollRef.current?.scrollTo({ top: chatScrollRef.current.scrollHeight, behavior: "smooth" });
-    });
-  };
-  useEffect(scrollChatToBottom, [chatMessages.length, chatLoading]);
+  const scrollChatToBottom = () => {}; // no-op (chat is now isolated in ChatPanel)
 
   const playSfx = (ref: React.RefObject<HTMLAudioElement>) => {
     if (!soundOn) return;
@@ -297,6 +280,7 @@ export default function ResultsPage() {
     }
   };
 
+  // ===== INITIAL LOAD: load queries and PREPARE CHANGES ONLY (no summaries, no explanations) =====
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -327,58 +311,14 @@ export default function ResultsPage() {
     setOldQuery(parsed.oldQuery);
     setNewQuery(parsed.newQuery);
 
-    // Kick UI visible, then run both: streaming analysis + auto-summary in parallel.
     (async () => {
       setLoading(false);
-      setStreaming(true);
 
       const canonOld = canonicalizeSQL(parsed!.oldQuery);
       const canonNew = canonicalizeSQL(parsed!.newQuery);
 
-      // === Auto-Summary immediately on load ===
-      const autoFetchSummary = async (forAudience: Audience) => {
-        try {
-          const res = await fetch(`/api/summarize?audience=${forAudience}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              newQuery: canonNew,
-              analysis: null,
-              audience: forAudience,
-            }),
-          });
-          if (res.ok) {
-            const data = await res.json();
-            const t = String(data?.tldr || "");
-            if (forAudience === "stakeholder") setSummaryStakeholder(t);
-            else setSummaryDeveloper(t);
-          } else {
-            const fallback =
-              "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.";
-            if (forAudience === "stakeholder") setSummaryStakeholder(fallback);
-            else setSummaryDeveloper(fallback);
-          }
-        } catch {
-          const fallback =
-            "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.";
-          if (forAudience === "stakeholder") setSummaryStakeholder(fallback);
-          else setSummaryDeveloper(fallback);
-        }
-      };
-
-      setSummarizing(true);
-      setLoadingAudience(audience);
-      autoFetchSummary(audience).finally(() => {
-        setSummarizing(false);
-        setLoadingAudience(null);
-        setTimeout(() => {
-          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-          summaryHeaderRef.current?.focus();
-        }, 120);
-      });
-
+      // === PREPARE CHANGES ONLY (no explanations yet) ===
       try {
-        // === Streaming item-by-item analysis ===
         const PAGE_SIZE = 24;
         const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
@@ -388,9 +328,6 @@ export default function ResultsPage() {
         const prepData = await prepRes.json().catch(() => ({}));
         if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
 
-        const total = prepData?.page?.total ?? 0;
-
-        // Gather placeholders for all pages
         let placeholders = (prepData?.analysis?.changes ?? []) as AnalysisResult["changes"];
         let nextCursor: number | null = prepData?.page?.nextCursor ?? null;
         while (nextCursor !== null) {
@@ -405,44 +342,22 @@ export default function ResultsPage() {
           nextCursor = j?.page?.nextCursor ?? null;
         }
 
+        // Keep explanations flagged as pending — UI will show placeholders until "Generate Analysis"
+        const prepared = placeholders.map((c) => ({
+          ...c,
+          explanation: "Pending…",
+        }));
+
         const byIndex = new Map<number, AnalysisResult["changes"][number]>();
-        for (const c of placeholders) if (typeof c.index === "number") byIndex.set(c.index, c);
+        for (const c of prepared) if (typeof c.index === "number") byIndex.set(c.index, c);
         const mergedPlaceholders = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
 
         setAnalysis((prev) => ({
           ...prev,
-          summary: `Streaming ${total} changes… 0 explained.`,
+          summary: "Analysis is ready. Click “Generate Analysis” (Fast/Expert) to stream detailed explanations.",
           changes: mergedPlaceholders,
         }));
-
-        for (let i = 0; i < total; i++) {
-          const r = await fetch(`/api/analyze?mode=item&index=${i}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oldQuery: canonOld, newQuery: canonNew }),
-          });
-          const j = await r.json().catch(() => ({}));
-          if (!r.ok) continue;
-
-          const [incoming] = (j?.analysis?.changes ?? []);
-          if (!incoming || typeof incoming.index !== "number") continue;
-
-          setAnalysis((prev) => {
-            const map = new Map<number, AnalysisResult["changes"][number]>();
-            for (const c of prev.changes) if (typeof c.index === "number") map.set(c.index, c);
-            map.set(incoming.index, incoming);
-            const merged = Array.from(map.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-            const done = merged.filter((m) => m.explanation && m.explanation !== "Pending…").length;
-            return { ...prev, summary: `Streaming ${total} changes… ${done} explained.`, changes: merged };
-          });
-
-          await new Promise((res) => setTimeout(res, 0));
-        }
-
-        setStreaming(false);
-        playDoneSound();
       } catch (e: any) {
-        setStreaming(false);
         setError(e?.message || "Unexpected error");
       }
     })();
@@ -475,13 +390,7 @@ export default function ResultsPage() {
     if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter);
   }, [sideFilter]);
 
-  useEffect(() => {
-    if (!startedRef.current) return;
-    if (!loading && !error && !streaming && analysis && !analysisDoneSoundPlayedRef.current) {
-      analysisDoneSoundPlayedRef.current = true;
-      playDoneSound();
-    }
-  }, [loading, error, streaming, analysis]); // eslint-disable-line react-hooks/exhaustive-deps
+  // NOTE: Removed the global "auto play when streaming ends" effect to avoid double chimes.
 
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience);
@@ -499,13 +408,11 @@ export default function ResultsPage() {
   const displayChanges = useMemo(() => {
     const items = deriveDisplayChanges(analysis);
     return items.filter(
-      (chg) =>
-        (typeFilter === "all" || chg.type === typeFilter) &&
-        (sideFilter === "all" || chg.side === sideFilter)
+      (chg) => (typeFilter === "all" || chg.type === typeFilter) && (sideFilter === "all" || chg.side === sideFilter)
     );
   }, [analysis, typeFilter, sideFilter]);
 
-  // Summary fetcher for audience toggle
+  // ===== Summary fetcher (manual only) =====
   async function fetchSummary(forAudience: Audience) {
     if (summarizeAbortRef.current) summarizeAbortRef.current.abort();
     summarizeAbortRef.current = new AbortController();
@@ -542,7 +449,7 @@ export default function ResultsPage() {
           summaryHeaderRef.current?.focus();
         }, 100);
       }
-      await playDoneSound();
+      // (Removed playDoneSound for summaries)
     } catch (e: any) {
       if (e?.name !== "AbortError") {
         const fallback =
@@ -553,7 +460,7 @@ export default function ResultsPage() {
           summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
           summaryHeaderRef.current?.focus();
         }, 100);
-        await playDoneSound();
+        // (Removed playDoneSound for summaries)
       }
     } finally {
       setSummarizing(false);
@@ -563,17 +470,12 @@ export default function ResultsPage() {
 
   const handleSwitchAudience = async (nextAudience: Audience) => {
     setAudience(nextAudience);
-    const hasCached =
-      (nextAudience === "stakeholder" && summaryStakeholder) ||
-      (nextAudience === "developer" && summaryDeveloper);
-    if (!hasCached) {
-      await fetchSummary(nextAudience);
-    } else {
-      setTimeout(() => {
-        summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-        summaryHeaderRef.current?.focus();
-      }, 80);
-    }
+    playSfx(switchAudioRef); // use switch sound on toggle
+    // Do not auto-generate; user must click "Generate Summary"
+    setTimeout(() => {
+      summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      summaryHeaderRef.current?.focus();
+    }, 80);
   };
 
   const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
@@ -634,54 +536,88 @@ export default function ResultsPage() {
     : "bg-black/30 border-white/10 text-white";
   const chipText = isLight ? "text-slate-700" : "text-white/80";
 
-  const suggestions = [
-    "Why is COMMIT inside the loop risky?",
-    "Which WHERE changes narrowed the rows?",
-    "Any window functions or set operations used?",
-    "How did GROUP BY affect totals?",
-    "What could hurt index usage here?",
-  ];
-  const modelHint = "GPT-5";
+  // ===== Generate Analysis handler (streams detailed explanations) =====
+  const runAnalysis = async () => {
+    if (streaming) return;
+    if (!canonicalOld || !canonicalNew) return;
 
-  const sendChat = async () => {
-  const q = chatInput.trim();
-  if (!q) return;
+    setAnalysisStarted(true);
+    analysisDoneSoundPlayedRef.current = false; // reset completion chime
+    setStreaming(true);
+    setError(null);
 
-  flushSync(() => {
-    setChatInput("");
-    setChatMessages((m) => [...m, { role: "user", content: q }]);
-    setChatLoading(true);
-  });
+    try {
+      const PAGE_SIZE = 24;
 
-  try {
-    const res = await fetch("/api/chatbot", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question: q,
-        oldQuery: canonicalOld,
-        newQuery: canonicalNew,
-        context: { stats: stats ?? null, changeCount: analysis?.changes?.length ?? 0 },
-      }),
-    });
+      // Re-prep (safe) to get total page count
+      const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+      });
+      const prepData = await prepRes.json().catch(() => ({}));
+      if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
 
-    const data = await res.json().catch(() => ({}));
-    const answer = res.ok
-      ? String((data as any)?.answer ?? "").trim()
-      : `⚠️ ${(data as any)?.error || `Chat error (${res.status})`}`;
+      const total = prepData?.page?.total ?? 0;
 
-    setChatMessages((m) => [...m, { role: "assistant", content: answer || "I didn’t get a reply." }]);
-  } catch {
-    setChatMessages((m) => [...m, { role: "assistant", content: "⚠️ Network error while contacting the assistant." }]);
-  } finally {
-    setChatLoading(false);
-    scrollChatToBottom();
-  }
-};
-  const onChatKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendChat();
+      let placeholders = (prepData?.analysis?.changes ?? []) as AnalysisResult["changes"];
+      let nextCursor: number | null = prepData?.page?.nextCursor ?? null;
+      while (nextCursor !== null) {
+        const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
+        placeholders = placeholders.concat(j?.analysis?.changes ?? []);
+        nextCursor = j?.page?.nextCursor ?? null;
+      }
+
+      const byIndex = new Map<number, AnalysisResult["changes"][number]>();
+      for (const c of placeholders) if (typeof c.index === "number") byIndex.set(c.index, c);
+      const mergedPlaceholders = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+
+      setAnalysis((prev) => ({
+        ...prev,
+        summary: `Streaming ${total} changes… 0 explained.`,
+        changes: mergedPlaceholders,
+      }));
+
+      for (let i = 0; i < total; i++) {
+        const r = await fetch(`/api/analyze?mode=item&index=${i}&analysisMode=${analysisMode}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) continue;
+
+        const [incoming] = j?.analysis?.changes ?? [];
+        if (!incoming || typeof incoming.index !== "number") continue;
+
+        setAnalysis((prev) => {
+          const map = new Map<number, AnalysisResult["changes"][number]>();
+          for (const c of prev.changes) if (typeof c.index === "number") map.set(c.index, c);
+          map.set(incoming.index, incoming);
+          const merged = Array.from(map.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+          const done = merged.filter((m) => m.explanation && m.explanation !== "Pending…").length;
+          return { ...prev, summary: `Streaming ${total} changes… ${done} explained.`, changes: merged };
+        });
+
+        await new Promise((res) => setTimeout(res, 0));
+      }
+
+      setStreaming(false);
+
+      // ✅ Play "done" sound exactly once, only after ALL items complete
+      if (!analysisDoneSoundPlayedRef.current) {
+        analysisDoneSoundPlayedRef.current = true;
+        playDoneSound();
+      }
+    } catch (e: any) {
+      setStreaming(false);
+      setError(e?.message || "Unexpected error");
     }
   };
 
@@ -776,7 +712,9 @@ export default function ResultsPage() {
               <Button
                 asChild
                 variant="outline"
-                className={`${isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"}`}
+                className={`${
+                  isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"
+                }`}
               >
                 <Link href="/">Go Home</Link>
               </Button>
@@ -810,13 +748,7 @@ export default function ResultsPage() {
                 <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
                   {/* Query Comparison */}
                   <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-                    <QueryComparison
-                      ref={cmpRef}
-                      oldQuery={oldQuery}
-                      newQuery={newQuery}
-                      showTitle={false}
-                      syncScrollEnabled={syncEnabled}
-                    />
+                    <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} syncScrollEnabled={syncEnabled} />
                   </div>
                   {/* Dual minimaps */}
                   <div className="hidden lg:flex h-full items-stretch gap-2">
@@ -827,9 +759,10 @@ export default function ResultsPage() {
                       forceSide="old"
                       onJump={({ line }) => cmpRef.current?.scrollTo({ side: "old", line })}
                       className={`w-6 h-full rounded-md
-                          ${isLight
-                            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                            : "bg-white/5 border border-white/10 hover:border-white/20"
+                          ${
+                            isLight
+                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                              : "bg-white/5 border border-white/10 hover:border-white/20"
                           }`}
                       soundEnabled={soundOn}
                     />
@@ -841,9 +774,10 @@ export default function ResultsPage() {
                       forceSide="new"
                       onJump={({ line }) => cmpRef.current?.scrollTo({ side: "new", line })}
                       className={`w-6 h-full rounded-md
-                          ${isLight
-                            ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                            : "bg-white/5 border border-white/10 hover:border-white/20"
+                          ${
+                            isLight
+                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                              : "bg-white/5 border border-white/10 hover:border-white/20"
                           }`}
                       soundEnabled={soundOn}
                     />
@@ -966,16 +900,27 @@ export default function ResultsPage() {
                     </CardContent>
                   </Card>
 
-                  {/* ===== Summary Card (auto-loaded) ===== */}
-                  {(summarizing || summaryStakeholder || summaryDeveloper) && (
-                    <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
-                      <CardContent className="p-5">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 ref={summaryHeaderRef} tabIndex={-1} className="text-slate-900 font-semibold focus:outline-none">
-                            Summary
-                          </h3>
+                  {/* ===== Summary Card (manual generation only) ===== */}
+                  <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
+                    <CardContent className="p-5">
+                      <div className="flex items-center justify-between mb-4">
+                        <h3 ref={summaryHeaderRef} tabIndex={-1} className="text-slate-900 font-semibold focus:outline-none">
+                          Summary
+                        </h3>
 
-                          {/* Audience toggle */}
+                        {/* Controls: Generate Summary + audience toggle */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => fetchSummary(audience)}
+                            disabled={summarizing || !!loadingAudience}
+                            title="Generate summary"
+                            className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                            <span className="text-sm">Generate Summary</span>
+                          </button>
+
                           <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
                             <button
                               type="button"
@@ -1013,63 +958,87 @@ export default function ResultsPage() {
                             </button>
                           </div>
                         </div>
+                      </div>
 
-                        <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          {!currentSummary && (summarizing || loadingAudience) ? (
-                            <div className="space-y-4">
-                              <div className="inline-flex items-center gap-2 text-gray-700">
-                                <Loader2 className="h-4 w-4 animate-spin" />
-                                <span>Generating {audience} summary…</span>
-                              </div>
-                              <div className="space-y-2">
-                                <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
-                                <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
-                                <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                                <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
-                              </div>
+                      <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        {!currentSummary && (summarizing || loadingAudience) ? (
+                          <div className="space-y-4">
+                            <div className="inline-flex items-center gap-2 text-gray-700">
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <span>Generating {audience} summary…</span>
                             </div>
-                          ) : currentSummary ? (
-                            <p className="text-gray-800 text-sm leading-relaxed">{currentSummary}</p>
-                          ) : (
-                            <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
+                            <div className="space-y-2">
+                              <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
+                              <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
+                              <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
+                              <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
+                            </div>
+                          </div>
+                        ) : currentSummary ? (
+                          <p className="text-gray-800 text-sm leading-relaxed">{currentSummary}</p>
+                        ) : (
+                          <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
                 </div>
 
                 {/* RIGHT COLUMN */}
                 <div className="space-y-5 sm:space-y-6 md:space-y-8">
                   {/* AI Analysis */}
                   <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-                    <CardContent className="p-5 mt-2">
+                    <CardContent className="p-5">
                       <div className="flex items-center justify-between mb-4">
                         <h3 className="text-slate-900 font-semibold">
                           AI Analysis {streaming && <span className="text-xs text-gray-500 ml-2">• In Progress..</span>}
                         </h3>
 
-                        {(typeFilter !== "all" || sideFilter !== "all") && (
-                          <div className="flex items-center gap-2 text-xs">
-                            <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">Filtered view</span>
-                            {typeFilter !== "all" && (
-                              <span className="px-2 py-1 rounded bg-gray-100 border border-gray-200 text-gray-700">
-                                Type: {typeFilter}
-                              </span>
-                            )}
-                            {sideFilter !== "all" && (
-                              <span className="px-2 py-1 rounded bg-indigo-100 border border-indigo-200 text-indigo-800">
-                                Side: {sideFilter}
-                              </span>
-                            )}
-                            <span className="px-2 py-1 rounded bg-emerald-100 border-emerald-200 text-emerald-800">
-                              {displayChanges.length} match{displayChanges.length === 1 ? "" : "es"}
-                            </span>
+                        {/* Controls — Generate Analysis button + Fast/Expert toggle */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={runAnalysis}
+                            disabled={streaming || !canonicalNew}
+                            title="Generate analysis"
+                            className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                            <span className="text-sm">Generate Analysis</span>
+                          </button>
+
+                          <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAnalysisMode("fast");
+                                playSfx(switchAudioRef);
+                              }}
+                              className={`px-3 h-8 rounded-full text-sm transition ${
+                                analysisMode === "fast" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                              }`}
+                              title="Fast mode (quick pass)"
+                            >
+                              Fast
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAnalysisMode("expert");
+                                playSfx(switchAudioRef);
+                              }}
+                              className={`px-3 h-8 rounded-full text-sm transition ${
+                                analysisMode === "expert" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                              }`}
+                              title="Expert mode (deeper pass)"
+                            >
+                              Expert
+                            </button>
                           </div>
-                        )}
+                        </div>
                       </div>
 
-                      <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
+                      <div className="h-[27.6rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
                         <div className="space-y-4">
                           {displayChanges.length > 0 ? (
                             displayChanges.map((chg, index) => (
@@ -1111,7 +1080,10 @@ export default function ResultsPage() {
                                   </div>
 
                                   <div className="flex-1">
-                                    {chg.explanation === "Pending…" ? (
+                                    {/* Before user runs analysis: show placeholder text per change */}
+                                    {!analysisStarted ? (
+                                      <p className="text-gray-700 text-sm">Generate Analysis for further details on this change.</p>
+                                    ) : chg.explanation === "Pending…" ? (
                                       <div className="space-y-2" aria-busy="true" aria-live="polite">
                                         <div className="h-3 w-[95%] bg-gray-200 rounded animate-pulse" />
                                         <div className="h-3 w-[90%] bg-gray-200 rounded animate-pulse" />
@@ -1134,62 +1106,18 @@ export default function ResultsPage() {
                       </div>
                     </CardContent>
                   </Card>
-                <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-                  <CardContent className="p-5 h-[34rem] flex flex-col"> {/* fixed height + flex */}
-                    <div className="flex items-center justify-between mb-4">
-                      <h3 className="text-slate-900 font-semibold">Query Companion</h3>
-                      <span className="text-xs text-gray-500">
-                        {chatLoading ? "Composing…" : ""}
-                      </span>
-                    </div>
 
-                    {/* Chat messages scroll inside this flex-1 container */}
-                    <div
-                      ref={chatScrollRef}
-                      className="flex-1 min-h-0 bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-y-auto scroll-overlay"
-                      aria-live="polite"
-                    >
-                      <div className="space-y-3">
-                        {chatMessages.map((m, i) => (
-                          <div
-                            key={i}
-                            className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
-                              m.role === "user"
-                                ? "ml-auto bg-emerald-100 text-emerald-900"
-                                : "mr-auto bg-white text-gray-900 border border-gray-200"
-                            }`}
-                          >
-                            {m.content}
-                          </div>
-                        ))}
-                        {chatLoading && (
-                          <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
-                            <span className="inline-flex items-center gap-2">
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Thinking…
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Input bar pinned at bottom */}
-                    <div className="mt-3 flex gap-2">
-                      <input
-                        type="text"
-                        value={chatInput}
-                        onChange={(e) => setChatInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            sendChat();
-                          }
-                        }}
-                        placeholder="Ask me anything about the changes…"
-                        className="flex-1 h-10 rounded-md border border-gray-300 bg-white px-3 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-300"
-                      />
-                    </div>
-                  </CardContent>
-                </Card>
+                  {/* Query Companion*/}
+                  <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
+                    <CardContent className="p-0">
+                      <ChatPanel
+                          rawOld={oldQuery}
+                          rawNew={newQuery}
+                          changeCount={analysis?.changes?.length ?? 0}
+                          stats={stats ?? null}
+                        />
+                    </CardContent>
+                  </Card>
                 </div>
               </section>
             </div>

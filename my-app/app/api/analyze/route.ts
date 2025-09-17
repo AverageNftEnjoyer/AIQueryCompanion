@@ -10,6 +10,7 @@ import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
 type GoodBad = "good" | "bad";
+type DetailMode = "fast" | "expert";
 
 type ChangeItem = {
   type: ChangeType;
@@ -62,7 +63,6 @@ const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ??
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80));
 
 // —— Networking knobs ——
-// Keep function time budget safe; reserve a couple seconds for framework overhead.
 const FUNCTION_MAX_MS = (typeof maxDuration === "number" ? maxDuration : 60) * 1000;
 const SAFE_BUDGET_MS = Math.max(5000, FUNCTION_MAX_MS - 2000);
 const REQUEST_TIMEOUT_MS = Math.min(
@@ -72,12 +72,10 @@ const REQUEST_TIMEOUT_MS = Math.min(
 const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1));
 
 // —— Model budget knobs ——
-// Smaller than MAX_QUERY_CHARS to avoid overfeeding the model; we also pass small per-item contexts.
 const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80));
 const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 12_000));
 
 // —— Paging knobs ——
-// Keep pages small enough that a single LLM call doesn’t blow your time budget.
 const DEFAULT_PAGE_LIMIT = Math.max(10, Number(process.env.ANALYZE_PAGE_LIMIT ?? 30));
 const MAX_PAGE_LIMIT = 100;
 
@@ -108,6 +106,14 @@ function groupingFromHeaders(req: Request) {
     threshold: clamp(isFinite(thr) ? thr : GROUP_THRESHOLD, 2, 50),
     maxLines: clamp(isFinite(max) ? max : MAX_GROUP_LINES, 20, 200),
   };
+}
+
+function detailFromRequest(req: Request, url: URL): DetailMode {
+  const h = new Headers(req.headers);
+  const header = (h.get("x-analysis-detail") || "").toLowerCase();
+  const qp = (url.searchParams.get("detail") || "").toLowerCase();
+  const raw = (qp || header) as DetailMode | "";
+  return raw === "expert" ? "expert" : "fast";
 }
 
 function safeErrMessage(e: any, fallback = "Unexpected error") {
@@ -240,7 +246,12 @@ function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): strin
 
 /* ========================== Payload builder for LLM ========================== */
 
-function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
+function buildUserPayload(
+  oldQuery: string,
+  newQuery: string,
+  changes: ChangeItem[],
+  detail: DetailMode
+) {
   const enriched = changes.map((c, i) => {
     const span = spanFromDescription(c.description);
     const critical = isCriticalChange(c.description);
@@ -255,7 +266,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
     const newCtx = extractLineWindow(newQuery, c.side !== "old" ? c.lineNumber : Math.max(1, c.lineNumber - 1)).slice(0, 800);
 
     return {
-      index: i, // page-local index
+      index: i, 
       type: c.type,
       side: c.side,
       lineNumber: c.lineNumber,
@@ -267,11 +278,18 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
     };
   });
 
+  // Mode-aware length/tone policy
+  const lengthPolicy =
+    detail === "fast"
+      ? "Write 2-4 human sentences per change regardless of 'verbosity'. Focus ONLY on: (1) what changed in concrete terms, (2) functional effect, (3) immediate performance/plan impact or data correctness implications. Be specific to the provided description/context. Do NOT add generic deployment/testing boilerplate unless directly and uniquely caused by the change."
+      : "Write 6–10 sentences per change (use 'verbosity' to bias within that range: short≈7, medium≈9, long≈12). Provide senior-level depth: semantics of the change, execution plan implications (sargability, cardinality/row-estimates, join order), indexing, concurrency/locking, transaction boundaries and failure modes, edge cases, and targeted test/validation steps tied to the concrete change. Avoid generic advice unless tied to the provided description/context.";
+
   return {
     task: "Explain each change so a junior developer understands what changed and why it matters.",
+    mode: detail,
     guidance: [
       "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-      "Write length according to 'verbosity' per change: short=1–2 sentences, medium=3–5, long=5–8.",
+      lengthPolicy,
       "Use 'hints' when present. If 'transactional_change', discuss transaction safety (row locks, consistency, error recovery), and risks of COMMIT-in-loop (partial commits, orphaned state, redo/undo churn).",
       "Audience is junior-level: use plain language; define jargon briefly (e.g., 'sargable' = index-friendly).",
       "Describe effects on clauses: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
@@ -289,7 +307,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
       explanations: [
         {
           index: "number (echo input index)",
-          text: "string (1–8 sentences based on 'verbosity')",
+          text: "string (mode-governed sentence count; see 'guidance')",
           clauses: "array of enums subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
           change_kind: "string enum describing type",
           syntax: "enum: ['good','bad']",
@@ -688,6 +706,8 @@ export async function POST(req: Request) {
     const itemIndexParam = Number(url.searchParams.get("index") ?? NaN); // used when mode=item
     const prepOnly = url.searchParams.get("prepOnly") === "1";
 
+    const detail: DetailMode = detailFromRequest(req, url); // <-- fast | expert
+
     const { oldQuery, newQuery } = body as { oldQuery: string; newQuery: string };
 
     const canonOld = canonicalizeSQL(oldQuery);
@@ -772,7 +792,7 @@ export async function POST(req: Request) {
       };
 
       // cache the prep page for quick reloads
-      cache.set(`${baseKey}:prep:${cursor}:${limit}`, responsePayload);
+      cache.set(`${baseKey}:prep:${cursor}:${limit}:${detail}`, responsePayload);
 
       return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } });
     }
@@ -787,7 +807,8 @@ export async function POST(req: Request) {
       const systemPrompt = [
         "You are a senior Oracle SQL reviewer for a junior developer audience.",
         "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-        "Use 'verbosity' (short/medium/long) per item, and consider 'hints'.",
+        "Honor the length/tone policy provided in the user's payload 'guidance' for the requested detail mode (fast or expert).",
+        "Use 'hints' and 'verbosity' to bias depth within the allowed range.",
         "If hints include 'transactional_change', explain transaction safety (row locks, partial commits, consistency, error recovery) and when COMMIT-in-loop is dangerous.",
         "Avoid generic phrases like 'business-ready dataset', 'reasonably fresh', 'core tables', 'scope that matters for reporting', 'supports day-to-day monitoring'. Be concrete and reference the change.",
         "Each item: index, text, clauses(subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
@@ -796,7 +817,7 @@ export async function POST(req: Request) {
         "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
       ].join(" ");
 
-      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems));
+      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems, detail));
 
       const hasOpenAI = !!process.env.OPENAI_API_KEY;
 
@@ -895,6 +916,7 @@ export async function POST(req: Request) {
             error: explanationsText ? undefined : lastError,
             timeoutMs: REQUEST_TIMEOUT_MS,
             retries: RETRIES,
+            detailMode: detail,
           },
         }),
       };
@@ -903,7 +925,7 @@ export async function POST(req: Request) {
     }
 
     /* ======================== MODE: page (existing behavior) ======================== */
-    const cacheKey = `${baseKey}:${cursor}:${limit}:page`;
+    const cacheKey = `${baseKey}:${cursor}:${limit}:page:${detail}`;
     if (cache.has(cacheKey)) {
       return NextResponse.json(cache.get(cacheKey), { headers: { "Cache-Control": "no-store" } });
     }
@@ -915,7 +937,8 @@ export async function POST(req: Request) {
     const systemPrompt = [
       "You are a senior Oracle SQL reviewer for a junior developer audience.",
       "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-      "Use 'verbosity' (short/medium/long) per item, and consider 'hints'.",
+      "Honor the length/tone policy provided in the user's payload 'guidance' for the requested detail mode (fast or expert).",
+      "Use 'hints' and 'verbosity' to bias depth within the allowed range.",
       "If hints include 'transactional_change', explain transaction safety (row locks, partial commits, consistency, error recovery) and when COMMIT-in-loop is dangerous.",
       "Avoid generic phrases like 'business-ready dataset', 'reasonably fresh', 'core tables', 'scope that matters for reporting', 'supports day-to-day monitoring'. Be concrete and reference the change.",
       "Each item: index, text, clauses(subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
@@ -924,7 +947,7 @@ export async function POST(req: Request) {
       "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
     ].join(" ");
 
-    const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems));
+    const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems, detail));
 
     let explanationsText = "";
     let modelUsed = "";
@@ -1041,6 +1064,7 @@ export async function POST(req: Request) {
           timeoutMs: REQUEST_TIMEOUT_MS,
           retries: RETRIES,
           modelUsed,
+          detailMode: detail,
         },
       }),
     };
