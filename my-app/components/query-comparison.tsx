@@ -233,24 +233,33 @@ function QueryComparisonInner(
         </Card>
       </div>
 
-      <style jsx global>{`
-        @keyframes qa-flash {
-          0%   { background-color: rgba(250, 204, 21, 0.65); box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.85); }
-          60%  { background-color: rgba(250, 204, 21, 0.28); box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.55); }
-          100% { background-color: transparent; box-shadow: inset 0 0 0 0 rgba(250, 204, 21, 0); }
-        }
-        .qa-flash-highlight {
-          animation: qa-flash 1.1s ease-out;
-          transition: background-color 0.8s ease-out;
-          border-radius: 0.25rem;
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .qa-flash-highlight {
-            animation-duration: 0ms;
-            background-color: rgba(250, 204, 21, 0.35);
-          }
-        }
-      `}</style>
+     <style jsx global>{`
+  /* Flash effect (existing) ... */
+
+  /* === Light scrollbar overrides === */
+  .hover-scroll::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  .hover-scroll::-webkit-scrollbar-track {
+    background: #f8fafc; /* light gray track */
+  }
+  .hover-scroll::-webkit-scrollbar-thumb {
+    background-color: #cbd5e1; /* slate-300 thumb */
+    border-radius: 6px;
+    border: 2px solid #f8fafc; /* creates padding effect */
+  }
+  .hover-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: #94a3b8; /* slate-400 on hover */
+  }
+
+  /* Firefox support */
+  .hover-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: #cbd5e1 #f8fafc;
+  }
+`}</style>
+
     </>
   )
 }
