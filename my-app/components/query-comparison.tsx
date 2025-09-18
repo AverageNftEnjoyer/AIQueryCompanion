@@ -234,31 +234,31 @@ function QueryComparisonInner(
       </div>
 
      <style jsx global>{`
-  /* Flash effect (existing) ... */
+        /* Flash effect (existing) ... */
 
-  /* === Light scrollbar overrides === */
-  .hover-scroll::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-  .hover-scroll::-webkit-scrollbar-track {
-    background: #f8fafc; /* light gray track */
-  }
-  .hover-scroll::-webkit-scrollbar-thumb {
-    background-color: #cbd5e1; /* slate-300 thumb */
-    border-radius: 6px;
-    border: 2px solid #f8fafc; /* creates padding effect */
-  }
-  .hover-scroll::-webkit-scrollbar-thumb:hover {
-    background-color: #94a3b8; /* slate-400 on hover */
-  }
+        /* === Light scrollbar overrides === */
+        .hover-scroll::-webkit-scrollbar {
+          width: 10px;
+          height: 10px;
+        }
+        .hover-scroll::-webkit-scrollbar-track {
+          background: #f8fafc; /* light gray track */
+        }
+        .hover-scroll::-webkit-scrollbar-thumb {
+          background-color: #cbd5e1; /* slate-300 thumb */
+          border-radius: 6px;
+          border: 2px solid #f8fafc; /* creates padding effect */
+        }
+        .hover-scroll::-webkit-scrollbar-thumb:hover {
+          background-color: #94a3b8; /* slate-400 on hover */
+        }
 
-  /* Firefox support */
-  .hover-scroll {
-    scrollbar-width: thin;
-    scrollbar-color: #cbd5e1 #f8fafc;
-  }
-`}</style>
+        /* Firefox support */
+        .hover-scroll {
+          scrollbar-width: thin;
+          scrollbar-color: #cbd5e1 #f8fafc;
+        }
+      `}</style>
 
     </>
   )

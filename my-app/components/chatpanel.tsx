@@ -6,16 +6,17 @@ import React, { memo, useRef, useState, useEffect } from "react";
 type ChatMsg = { role: "user" | "assistant"; content: string };
 
 type ChatPanelProps = {
-  // New preferred props (for accurate line numbers)
   rawOld?: string;
   rawNew?: string;
-  // Back-compat props (if you still pass canonical)
   canonicalOld?: string;
   canonicalNew?: string;
-
   changeCount?: number;
   stats?: unknown;
   placeholder?: string;
+    heightClass?: string;
+
+  /** NEW: Let parent control the panel height (e.g., h-[28rem]) */
+  containerHeightClass?: string;
 };
 
 function extractLineContext(sql: string, lineNum: number, window = 6) {
@@ -53,6 +54,7 @@ const ChatPanel = memo(function ChatPanel({
   changeCount = 0,
   stats = null,
   placeholder = "Ask me anything about the changes…",
+heightClass = "h-[34rem]",
 }: ChatPanelProps) {
   // Prefer raw* (accurate line numbers); fall back to canonical*
   const oldText = (rawOld ?? canonicalOld ?? "").toString();
@@ -75,15 +77,12 @@ const ChatPanel = memo(function ChatPanel({
   async function send() {
     const q = (inputRef.current?.value || "").trim();
     if (!q) return;
-
-    // Clear input without re-rendering (uncontrolled input)
     if (inputRef.current) inputRef.current.value = "";
 
     setMessages((m) => [...m, { role: "user", content: q }]);
     setLoading(true);
 
     try {
-      // If user mentions a line, attach exact context from *newText*
       const maybeLine = findLineMention(q);
       const lineContext = maybeLine ? extractLineContext(newText, maybeLine, 6) : null;
 
@@ -92,7 +91,6 @@ const ChatPanel = memo(function ChatPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: q,
-          // Send raw (or fallback) so the server sees real lines
           oldQuery: oldText,
           newQuery: newText,
           context: {
@@ -126,7 +124,7 @@ const ChatPanel = memo(function ChatPanel({
   }
 
   return (
-    <div className="p-5 h-[34rem] flex flex-col">
+    <div className={`p-5 ${heightClass} flex flex-col`}>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-slate-900 font-semibold">Query Companion</h3>
         <span className="text-xs text-gray-500">{loading ? "" : ""}</span>
