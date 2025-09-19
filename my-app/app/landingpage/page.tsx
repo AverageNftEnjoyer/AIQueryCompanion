@@ -1,3 +1,4 @@
+
 // /app/landingpage.tsx
 "use client";
 
@@ -26,7 +27,6 @@ import {
   BarChart3,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { canonicalizeSQL } from "@/lib/query-differ";
 
 export const dynamic = "force-dynamic";
 
@@ -243,10 +243,11 @@ function QueryAnalyzer() {
     setBusyMode("analyze");
     setAnalysisError(null);
 
-    const canon = canonicalizeSQL(src);
+    // ⬇️ Preserve indentation: normalize only line endings, no reformatting
+    const raw = src.replace(/\r\n/g, "\n");
 
     // Results page expects { mode: "single", singleQuery: string }
-    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "single", singleQuery: canon }));
+    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "single", singleQuery: raw }));
     sessionStorage.setItem("qa:allowSound", "1");
     window.location.href = "/results";
   };
@@ -262,11 +263,12 @@ function QueryAnalyzer() {
     setBusyMode("compare");
     setAnalysisError(null);
 
-    const canonOld = canonicalizeSQL(oldQuery);
-    const canonNew = canonicalizeSQL(newQuery);
+    // ⬇️ Preserve indentation: normalize only line endings, no reformatting
+    const rawOld = oldQuery.replace(/\r\n/g, "\n");
+    const rawNew = newQuery.replace(/\r\n/g, "\n");
 
     // Results page expects { mode: "compare", oldQuery, newQuery }
-    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare", oldQuery: canonOld, newQuery: canonNew }));
+    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare", oldQuery: rawOld, newQuery: rawNew }));
     sessionStorage.setItem("qa:allowSound", "1");
     window.location.href = "/results";
   };

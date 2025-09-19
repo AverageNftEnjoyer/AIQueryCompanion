@@ -1,3 +1,4 @@
+// components/query-comparison.tsx
 "use client"
 
 import { useMemo, useRef, forwardRef, useImperativeHandle } from "react"
@@ -104,16 +105,19 @@ function QueryComparisonInner(
     if (src && dst) syncOther(src, dst)
   }
 
+  // Flash/highlight a specific line element briefly
   function flashLine(side: "old" | "new", line: number) {
     const pane = side === "old" ? leftRef.current : rightRef.current
     if (!pane) return
     const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`)
     if (!el) return
 
-    el.classList.remove("qa-flash-highlight")
+    // Ensure the CSS class matches your globals.css: .flash-highlight
+    el.classList.remove("flash-highlight")
+    // force reflow to restart the animation
     void el.offsetWidth
-    el.classList.add("qa-flash-highlight")
-    window.setTimeout(() => el.classList.remove("qa-flash-highlight"), 1500)
+    el.classList.add("flash-highlight")
+    window.setTimeout(() => el.classList.remove("flash-highlight"), 1500)
   }
 
   useImperativeHandle(ref, () => ({
@@ -125,20 +129,30 @@ function QueryComparisonInner(
         const tR =
           r.querySelector<HTMLElement>(`[data-side="new"][data-line="${line}"]`) ||
           r.querySelector<HTMLElement>(`[data-line="${line}"]`)
+
+        // prevent feedback loop
         suppressSync.current.old = true
         suppressSync.current.new = true
+
         if (tR) r.scrollTop = tR.offsetTop - r.clientHeight / 2
+
+        // sync left pane to right's relative position
         const rv = r.scrollTop / Math.max(1, r.scrollHeight - r.clientHeight)
         const rh = r.scrollLeft / Math.max(1, r.scrollWidth - r.clientWidth)
         l.scrollTop = rv * Math.max(1, l.scrollHeight - l.clientHeight)
         l.scrollLeft = rh * Math.max(1, l.scrollWidth - l.clientWidth)
-        if (flash) flashLine("new", line)
+
+        if (flash) {
+          flashLine("old", line)
+          flashLine("new", line)
+        }
         return
       }
 
       const primary = side === "old" ? leftRef.current : rightRef.current
       if (!primary) return
       suppressSync.current[side] = true
+
       const target =
         primary.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`) ||
         primary.querySelector<HTMLElement>(`[data-line="${line}"]`)
@@ -146,6 +160,7 @@ function QueryComparisonInner(
       if (target) {
         primary.scrollTop = target.offsetTop - primary.clientHeight / 2
       } else {
+        // fallback: proportional scroll
         const total = (side === "old" ? canonicalOld : canonicalNew).split("\n").length
         const ratio = Math.max(0, Math.min(1, (line - 1) / Math.max(1, total - 1)))
         primary.scrollTop = ratio * Math.max(1, primary.scrollHeight - primary.clientHeight)
@@ -155,57 +170,58 @@ function QueryComparisonInner(
     },
   }))
 
- const renderSide = (
-  text: string,
-  tags: Map<number, OldTag | NewTag>,
-  ariaLabel: string,
-  side: "old" | "new"
-) => {
-  const lines = text.split("\n");
-  const refDiv = side === "old" ? leftRef : rightRef;
+  const renderSide = (
+    text: string,
+    tags: Map<number, OldTag | NewTag>,
+    ariaLabel: string,
+    side: "old" | "new"
+  ) => {
+    const lines = text.split("\n")
+    const refDiv = side === "old" ? leftRef : rightRef
 
-  return (
-    <div
-      ref={refDiv}
-      onScroll={() => onPaneScroll(side)}
-      className="rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
-      style={{ ...heightStyle, scrollbarGutter: "stable" }}  // <- ONE scrollbar here
-      aria-label={ariaLabel}
-      tabIndex={0}
-    >
-      <div className="relative w-max p-3 font-mono text-[11px] leading-snug text-slate-800">
-        {lines.map((line, idx) => {
-          const n = idx + 1;
-          const tag = tags.get(n);
-          const rowBg =
-            tag === "modified"
-              ? theme.modified
-              : tag === "removed"
-              ? theme.removed
-              : tag === "added"
-              ? theme.added
-              : "";
+    return (
+      <div
+        ref={refDiv}
+        onScroll={() => onPaneScroll(side)}
+        className="rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
+        style={{ ...heightStyle, scrollbarGutter: "stable" }}
+        aria-label={ariaLabel}
+        tabIndex={0}
+      >
+        <div className="relative w-max p-3 font-mono text-[11px] leading-snug text-slate-800">
+          {lines.map((line, idx) => {
+            const n = idx + 1
+            const tag = tags.get(n)
+            const rowBg =
+              tag === "modified"
+                ? theme.modified
+                : tag === "removed"
+                ? theme.removed
+                : tag === "added"
+                ? theme.added
+                : ""
 
-          return (
-            <div
-              key={n}
-              data-side={side}
-              data-line={n}
-              className={`${theme.baseRow} ${rowBg} relative`} > 
-              <span
-                className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num}  bg-slate-50 dark:bg-neutral-900`}>
-              {n}
-              </span>
-              <code className="block whitespace-pre pr-4">
-                {renderHighlightedSQL(line)}
-              </code>
-            </div>
-          );
-        })}
+            return (
+              <div
+                key={n}
+                data-side={side}
+                data-line={n}
+                className={`${theme.baseRow} ${rowBg} relative`}
+              >
+                <span
+                  className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-slate-50 dark:bg-neutral-900`}
+                >
+                  {n}
+                </span>
+                <code className="block whitespace-pre pr-4">{renderHighlightedSQL(line)}</code>
+              </div>
+            )
+          })}
+        </div>
       </div>
-    </div>
-  );
-};
+    )
+  }
+
   return (
     <>
       <div className={className}>
@@ -233,10 +249,8 @@ function QueryComparisonInner(
         </Card>
       </div>
 
-     <style jsx global>{`
-        /* Flash effect (existing) ... */
-
-        /* === Light scrollbar overrides === */
+      <style jsx global>{`
+        /* === Light scrollbar overrides (keep) === */
         .hover-scroll::-webkit-scrollbar {
           width: 10px;
           height: 10px;
@@ -247,7 +261,7 @@ function QueryComparisonInner(
         .hover-scroll::-webkit-scrollbar-thumb {
           background-color: #cbd5e1; /* slate-300 thumb */
           border-radius: 6px;
-          border: 2px solid #f8fafc; /* creates padding effect */
+          border: 2px solid #f8fafc; /* padding effect */
         }
         .hover-scroll::-webkit-scrollbar-thumb:hover {
           background-color: #94a3b8; /* slate-400 on hover */
@@ -259,7 +273,6 @@ function QueryComparisonInner(
           scrollbar-color: #cbd5e1 #f8fafc;
         }
       `}</style>
-
     </>
   )
 }

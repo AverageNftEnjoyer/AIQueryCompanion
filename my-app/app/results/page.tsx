@@ -93,7 +93,7 @@ function toMiniChanges(analysis: AnalysisResult | null) {
   }));
 }
 
-/** === Single-query viewer: matches comparison pane feel === */
+/** === Single-query viewer: matches comparison pane feel; preserves indentation exactly === */
 function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }) {
   const lines = useMemo(() => (query ? query.split("\n") : []), [query]);
   return (
@@ -106,13 +106,23 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
             className="h-full rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
             style={{ scrollbarGutter: "stable" }}
           >
-            <div className="relative w-max min-w-full p-3 font-mono text-[11px] leading-snug text-slate-800">
+            <div
+              className="relative w-max min-w-full p-3 font-mono text-[11px] leading-snug text-slate-800"
+              style={{
+                fontVariantLigatures: "none",
+                // ensure tabs render with width and do not collapse
+                MozTabSize: 4 as unknown as string,
+                OTabSize: 4 as unknown as string,
+                tabSize: 4 as unknown as string,
+              }}
+            >
               {lines.length ? (
                 lines.map((line, idx) => (
                   <div key={idx} className="group flex items-start gap-3 px-3 py-1.5 rounded-md relative">
                     <span className="sticky left-0 z-10 w-12 pr-2 text-right select-none text-slate-400 bg-slate-50">
                       {idx + 1}
                     </span>
+                    {/* preserve exact indentation: */}
                     <code className="block whitespace-pre pr-4">{line}</code>
                   </div>
                 ))
@@ -246,9 +256,24 @@ export default function ResultsPage() {
   const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null);
 
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert");
+    const canonicalOld = useMemo(
+      () => (mode === "compare" && oldQuery ? canonicalizeSQL(oldQuery) : ""),
+      [mode, oldQuery]
+    );
+    const canonicalNew = useMemo(
+      () => (newQuery ? canonicalizeSQL(newQuery) : ""),
+      [newQuery]
+    );
 
-  const totalOldLines = useMemo(() => (oldQuery ? oldQuery.split("\n").length : 0), [oldQuery]);
-  const totalNewLines = useMemo(() => (newQuery ? newQuery.split("\n").length : 0), [newQuery]);
+const totalOldLines = useMemo(() => {
+  if (mode === "compare") return (canonicalOld ? canonicalOld.split("\n").length : 0);
+  return (oldQuery ? oldQuery.split("\n").length : 0);
+}, [mode, canonicalOld, oldQuery]);
+
+const totalNewLines = useMemo(() => {
+  if (mode === "compare") return (canonicalNew ? canonicalNew.split("\n").length : 0);
+  return (newQuery ? newQuery.split("\n").length : 0);
+}, [mode, canonicalNew, newQuery]);
 
   const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis]);
   const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old"), [allMiniChanges]);
@@ -336,7 +361,7 @@ export default function ResultsPage() {
     await primeAutoplay(el);
   };
 
-  // ===== INITIAL LOAD: support both modes =====
+  // ===== INITIAL LOAD: preserve raw indentation from payload =====
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -359,30 +384,33 @@ export default function ResultsPage() {
       return;
     }
 
+    const normalizeEOL = (s: string) => s.replace(/\r\n/g, "\n");
+
     if (!parsed || (parsed as any).mode === "single") {
-      const q = canonicalizeSQL(String((parsed as any)?.singleQuery || (parsed as any)?.newQuery || ""));
+      const qRaw = String((parsed as any)?.singleQuery || (parsed as any)?.newQuery || "");
+      const q = normalizeEOL(qRaw); // ⬅️ preserve exact spacing/tabs
       if (!q || q.length > MAX_QUERY_CHARS) {
         router.push("/");
         return;
       }
       setMode("single");
       setSingleQuery(q);
-      setNewQuery(q); // so ChatPanel can still use rawNew
+      setNewQuery(q); // keep for ChatPanel
       setOldQuery("");
       setLoading(false);
       return;
     }
 
     // compare
-    const o = canonicalizeSQL(String((parsed as any).oldQuery || ""));
-    const n = canonicalizeSQL(String((parsed as any).newQuery || ""));
+    const o = normalizeEOL(String((parsed as any).oldQuery || ""));
+    const n = normalizeEOL(String((parsed as any).newQuery || ""));
     if (!o || !n || o.length > MAX_QUERY_CHARS || n.length > MAX_QUERY_CHARS) {
       router.push("/");
       return;
     }
     setMode("compare");
-    setOldQuery(o);
-    setNewQuery(n);
+    setOldQuery(o); // ⬅️ raw (preserved)
+    setNewQuery(n); // ⬅️ raw (preserved)
     setLoading(false);
 
     // PREPARE CHANGES ONLY (no explanations yet) — compare mode only
@@ -392,7 +420,8 @@ export default function ResultsPage() {
         const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: o, newQuery: n }),
+          // Use canonicalized for analysis backend if needed; does not affect display
+          body: JSON.stringify({ oldQuery: canonicalizeSQL(o), newQuery: canonicalizeSQL(n) }),
         });
         const prepData = await prepRes.json().catch(() => ({}));
         if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
@@ -403,7 +432,7 @@ export default function ResultsPage() {
           const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oldQuery: o, newQuery: n }),
+            body: JSON.stringify({ oldQuery: canonicalizeSQL(o), newQuery: canonicalizeSQL(n) }),
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
@@ -462,8 +491,6 @@ export default function ResultsPage() {
     if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience);
   }, [audience]);
 
-  const canonicalOld = useMemo(() => (mode === "compare" && oldQuery ? canonicalizeSQL(oldQuery) : ""), [mode, oldQuery]);
-  const canonicalNew = useMemo(() => (newQuery ? canonicalizeSQL(newQuery) : ""), [newQuery]);
 
   const stats = useMemo(() => {
     if (mode !== "compare") return null;
@@ -846,186 +873,185 @@ export default function ResultsPage() {
               )}
 
               {/* TOP PANE(S) — same height for both modes */}
-             <section className="mt-1">
-  <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
-    {mode === "single" ? (
-      <>
-        {/* Left: Single query (2/3 width) */}
-        <div className="flex-[2] min-w-0">
-          <SingleQueryView query={singleQuery} isLight={isLight} />
-        </div>
-
-        {/* Right: 1/3 width split vertically into Summary (top) and Chat (bottom) */}
-        <div className="flex-[1] min-w-0 h-full flex flex-col gap-3">
-          {/* Summary card (top half) */}
-          <Card
-            ref={summaryRef}
-            className={`flex-1 min-h-0 scroll-mt-24 ${
-              isLight ? "bg-slate-50 border-slate-200" : "bg-white border-slate-200"
-            } shadow-lg`}
-          >
-            <CardContent className="p-5 h-full flex flex-col">
-              {/* Header row */}
-              <div className="flex items-center justify-between mb-4">
-                <h3
-                  ref={summaryHeaderRef}
-                  tabIndex={-1}
-                  className={`${isLight ? "text-slate-900" : "text-slate-900"} font-semibold focus:outline-none`}
-                >
-                  Summary
-                </h3>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fetchSummary(audience)}
-                    disabled={summarizing || !!loadingAudience}
-                    title="Generate summary"
-                    className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                    <span className="text-sm">Generate Summary</span>
-                  </button>
-
-                  <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
-                    <button
-                      type="button"
-                      onClick={() => handleSwitchAudience("stakeholder")}
-                      disabled={loadingAudience === "stakeholder"}
-                      className={`px-3 h-8 rounded-full text-sm transition ${
-                        audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                      }`}
-                      title="Stakeholder-friendly summary"
-                    >
-                      {loadingAudience === "stakeholder" ? (
-                        <span className="inline-flex items-center gap-1">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
-                        </span>
-                      ) : (
-                        "Stakeholder"
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleSwitchAudience("developer")}
-                      disabled={loadingAudience === "developer"}
-                      className={`px-3 h-8 rounded-full text-sm transition ${
-                        audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                      }`}
-                      title="Developer-focused summary"
-                    >
-                      {loadingAudience === "developer" ? (
-                        <span className="inline-flex items-center gap-1">
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
-                        </span>
-                      ) : (
-                        "Developer"
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-
-              {/* Body on its own row (full width) */}
-              <div className="flex-1 min-h-0 bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-auto">
-                {(() => {
-                  const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
-                  if (!currentSummary && (summarizing || loadingAudience)) {
-                    return (
-                      <div className="space-y-4">
-                        <div className="inline-flex items-center gap-2 text-gray-700">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          <span>Generating {audience} summary…</span>
-                        </div>
-                        <div className="space-y-2">
-                          <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
-                          <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
-                          <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                          <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
-                        </div>
-                      </div>
-                    );
-                  }
-                  return currentSummary ? (
-                    <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{currentSummary}</p>
-                  ) : (
-                    <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
-                  );
-                })()}
-              </div>
-            </CardContent>
-          </Card>
-
-                        {/* Chat card (bottom half) */}
-                        <Card className="flex-1 min-h-0 bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
-                          <CardContent className="p-0 h-full flex flex-col min-h-0">
-                            {/* Force ChatPanel to fill the card without overflowing the viewport */}
-                            <div className="chatpanel-fit h-full min-h-0">
-                              <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </>
-                  ) : (
+              <section className="mt-1">
+                <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
+                  {mode === "single" ? (
                     <>
-                      {/* Query Comparison */}
-                      <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-                        <QueryComparison
-                          ref={cmpRef}
-                          oldQuery={oldQuery}
-                          newQuery={newQuery}
-                          showTitle={false}
-                          syncScrollEnabled={syncEnabled}
-                        />
+                      {/* Left: Single query (2/3 width) */}
+                      <div className="flex-[2] min-w-0">
+                        <SingleQueryView query={singleQuery} isLight={isLight} />
                       </div>
 
-                      {/* Dual minimaps */}
-                      <div className="hidden lg:flex h-full items-stretch gap-2">
-                        <MiniMap
-                          totalLines={totalOldLines}
-                          changes={miniOld}
-                          forceSide="old"
-                          onJump={({ line }) => {
-                            playMiniClick();
-                            cmpRef.current?.scrollTo({ side: "old", line });
-                          }}
-                          className={`w-6 h-full rounded-md ${
-                            isLight
-                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                              : "bg-white/5 border border-white/10 hover:border-white/20"
-                          }`}
-                          soundEnabled={soundOn}
-                        />
-                        <MiniMap
-                          totalLines={totalNewLines}
-                          changes={miniNew}
-                          forceSide="new"
-                          onJump={({ line }) => {
-                            playMiniClick();
-                            cmpRef.current?.scrollTo({ side: "new", line });
-                          }}
-                          className={`w-6 h-full rounded-md ${
-                            isLight
-                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                              : "bg-white/5 border border-white/10 hover:border-white/20"
-                          }`}
-                          soundEnabled={soundOn}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
+                      {/* Right: 1/3 width split vertically into Summary (top) and Chat (bottom) */}
+                      <div className="flex-[1] min-w-0 h-full flex flex-col gap-3">
+                        {/* Summary card (top half) */}
+                        <Card
+                          ref={summaryRef}
+                          className={`flex-1 min-h-0 scroll-mt-24 ${
+                            isLight ? "bg-slate-50 border-slate-200" : "bg-white border-slate-200"
+                          } shadow-lg`}
+                        >
+                          <CardContent className="p-5 h-full flex flex-col">
+                            {/* Header row */}
+                            <div className="flex items-center justify-between mb-4">
+                              <h3
+                                ref={summaryHeaderRef}
+                                tabIndex={-1}
+                                className={`${isLight ? "text-slate-900" : "text-slate-900"} font-semibold focus:outline-none`}
+                              >
+                                Summary
+                              </h3>
 
-                <div
-                  className={`relative z-20 flex items-center justify-center text-xs mt-3 ${
-                    isLight ? "text-gray-500" : "text-white/60"
-                  }`}
-                >
-                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
-                  {mode === "single" ? "Use the right panel for Summary & Chat" : "Scroll for Changes & AI Analysis"}
-                </div>
-              </section>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => fetchSummary(audience)}
+                                  disabled={summarizing || !!loadingAudience}
+                                  title="Generate summary"
+                                  className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
+                                >
+                                  {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                                  <span className="text-sm">Generate Summary</span>
+                                </button>
+
+                                <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSwitchAudience("stakeholder")}
+                                    disabled={loadingAudience === "stakeholder"}
+                                    className={`px-3 h-8 rounded-full text-sm transition ${
+                                      audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                                    }`}
+                                    title="Stakeholder-friendly summary"
+                                  >
+                                    {loadingAudience === "stakeholder" ? (
+                                      <span className="inline-flex items-center gap-1">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
+                                      </span>
+                                    ) : (
+                                      "Stakeholder"
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSwitchAudience("developer")}
+                                    disabled={loadingAudience === "developer"}
+                                    className={`px-3 h-8 rounded-full text-sm transition ${
+                                      audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                                    }`}
+                                    title="Developer-focused summary"
+                                  >
+                                    {loadingAudience === "developer" ? (
+                                      <span className="inline-flex items-center gap-1">
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
+                                      </span>
+                                    ) : (
+                                      "Developer"
+                                    )}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                              {/* Body on its own row (full width) */}
+                              <div className="flex-1 min-h-0 bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-auto">
+                                {(() => {
+                                  const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
+                                  if (!currentSummary && (summarizing || loadingAudience)) {
+                                    return (
+                                      <div className="space-y-4">
+                                        <div className="inline-flex items-center gap-2 text-gray-700">
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                          <span>Generating {audience} summary…</span>
+                                        </div>
+                                        <div className="space-y-2">
+                                          <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
+                                          <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
+                                          <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
+                                          <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
+                                        </div>
+                                      </div>
+                                    );
+                                  }
+                                  return currentSummary ? (
+                                    <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{currentSummary}</p>
+                                  ) : (
+                                    <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
+                                  );
+                                })()}
+                              </div>
+                            </CardContent>
+                          </Card>
+
+                          {/* Chat card (bottom half) */}
+                          <Card className="flex-1 min-h-0 bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
+                            <CardContent className="p-0 h-full flex flex-col min-h-0">
+                              {/* Force ChatPanel to fill the card without overflowing the viewport */}
+                              <div className="chatpanel-fit h-full min-h-0">
+                                <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        {/* Query Comparison */}
+                        <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
+                          <QueryComparison
+                            ref={cmpRef}
+                            oldQuery={mode === "compare" ? canonicalOld : oldQuery}
+                            newQuery={mode === "compare" ? canonicalNew : newQuery}
+                            showTitle={false}
+                            syncScrollEnabled={syncEnabled}
+                          />
+                        </div>
+
+                        {/* Dual minimaps */}
+                        <div className="hidden lg:flex h-full items-stretch gap-2">
+                          <MiniMap
+                            totalLines={totalOldLines}
+                            changes={miniOld}
+                            forceSide="old"
+                            onJump={({ line }) => {
+                              playMiniClick();
+                              cmpRef.current?.scrollTo({ side: "old", line });
+                            }}
+                            className={`w-6 h-full rounded-md ${
+                              isLight
+                                ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                                : "bg-white/5 border border-white/10 hover:border-white/20"
+                            }`}
+                            soundEnabled={soundOn}
+                          />
+                          <MiniMap
+                            totalLines={totalNewLines}
+                            changes={miniNew}
+                            forceSide="new"
+                            onJump={({ line }) => {
+                              playMiniClick();
+                              cmpRef.current?.scrollTo({ side: "new", line });
+                            }}
+                            className={`w-6 h-full rounded-md ${
+                              isLight
+                                ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                                : "bg-white/5 border border-white/10 hover:border-white/20"
+                            }`}
+                            soundEnabled={soundOn}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  <div
+                    className={`relative z-20 flex items-center justify-center text-xs mt-3 ${
+                      isLight ? "text-gray-500" : "text-white/60"
+                    }`}
+                  >
+                    <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+                    {mode === "single" ? "Use the right panel for Summary & Chat" : "Scroll for Changes & AI Analysis"}
+                  </div>
+                </section>
 
               {/* LOWER PANELS */}
               {mode === "compare" ? (
@@ -1359,8 +1385,8 @@ export default function ResultsPage() {
                     <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                       <CardContent className="p-0">
                         <ChatPanel
-                          rawOld={oldQuery}
-                          rawNew={newQuery}
+                          rawOld={oldQuery}   // raw (preserved)
+                          rawNew={newQuery}   // raw (preserved)
                           changeCount={analysis?.changes?.length ?? 0}
                           stats={stats ?? null}
                         />
