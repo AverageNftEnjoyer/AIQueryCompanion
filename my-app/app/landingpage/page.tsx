@@ -1,13 +1,13 @@
 // /app/landingpage.tsx
-"use client"
+"use client";
 
-import type React from "react"
-import { useState, useRef, useMemo, useEffect } from "react"
-import { useSearchParams } from "next/navigation"
-import Link from "next/link"
-import { Card, CardContent } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Textarea } from "@/components/ui/textarea"
+import type React from "react";
+import { Suspense, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import { useSearchParams } from "next/navigation";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Upload,
   FileText,
@@ -17,283 +17,276 @@ import {
   AlertCircle,
   X,
   Brain,
-  Sun,
-  Moon,
+  Home,
   Bell,
   BellOff,
-  Home,
-} from "lucide-react"
-import { Alert, AlertDescription } from "@/components/ui/alert"
-import { canonicalizeSQL } from "@/lib/query-differ"
+  Link2,
+  Sun,
+  Moon,
+  BarChart3,
+} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { canonicalizeSQL } from "@/lib/query-differ";
 
-const CARD_HEIGHT = 580
-const MAX_QUERY_CHARS = 120_000
+export const dynamic = "force-dynamic";
 
-type BusyMode = "analyze" | "compare" | null
-type LandingMode = "analyze" | "compare"
+const CARD_HEIGHT = 580;
+const MAX_QUERY_CHARS = 120_000;
 
-export default function QueryAnalyzer() {
+type BusyMode = "analyze" | "compare" | null;
+type LandingMode = "analyze" | "compare";
+
+/** ---------- Top-level page exports a Suspense wrapper (fixes Vercel error) ---------- */
+export default function LandingPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>}>
+      <QueryAnalyzer />
+    </Suspense>
+  );
+}
+
+/** ---------- Your original landing logic, now safe to use useSearchParams ---------- */
+function QueryAnalyzer() {
   // ---- Which variant to show, based on /landingpage?mode=analyze|compare ----
-  const search = useSearchParams()
-  const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode
-  const [landingMode] = useState<LandingMode>(initialMode)
+  const search = useSearchParams();
+  const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode;
+  const [landingMode] = useState<LandingMode>(initialMode);
 
-  // ---- Chrome state (match results page) ----
-  const [soundOn, setSoundOn] = useState<boolean>(true)
-  const [lightUI, setLightUI] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false
-    const saved = localStorage.getItem("qa:lightUI")
-    return saved === "1"
-  })
-  const switchAudioRef = useRef<HTMLAudioElement | null>(null)
+  // ---- Header: light/dark + sound (replicated style from Results/Home) ----
+  const [lightUI, setLightUI] = useState<boolean>(false);
+  const [soundOn, setSoundOn] = useState(true);
+  const [syncEnabled, setSyncEnabled] = useState(true); // not used here, but kept to match header controls
 
-  // Initialize sound preference (shared key with results page)
-  useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("qa:soundOn") : null
-    if (saved === "0") setSoundOn(false)
-  }, [])
-
-  const clearResumeHandler = (() => {
-    let handler: ((e?: any) => void) | null = null
-    return () => {
-      if (handler) {
-        window.removeEventListener("pointerdown", handler)
-        window.removeEventListener("keydown", handler)
-        handler = null
-      }
-    }
-  })()
-
-  const primeAutoplay = async (el: HTMLAudioElement) => {
+  const switchAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playSwitch = () => {
+    if (!soundOn) return;
+    const el = switchAudioRef.current;
+    if (!el) return;
     try {
-      el.pause()
-      el.currentTime = 0
-      el.volume = 0.5
-      await el.play()
-    } catch {
-      const resume = () => {
-        el.play().finally(() => {
-          clearResumeHandler()
-        })
-      }
-      // @ts-ignore
-      ;(clearResumeHandler as any).handler = resume
-      window.addEventListener("pointerdown", resume, { once: true })
-      window.addEventListener("keydown", resume, { once: true })
-    }
-  }
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.5;
+      el.play().catch(() => {});
+    } catch {}
+  };
 
-  const playSfx = async () => {
-    if (!soundOn) return
-    const el = switchAudioRef.current
-    if (!el) return
-    await primeAutoplay(el)
-  }
+  const handleToggleSound = () => {
+    setSoundOn((v) => {
+      const next = !v;
+      if (!v) setTimeout(playSwitch, 0);
+      return next;
+    });
+  };
+  const handleToggleSync = () => {
+    setSyncEnabled((v) => !v);
+    playSwitch();
+  };
+  const toggleLightUI = () => {
+    setLightUI((v) => !v);
+    playSwitch();
+  };
 
-  const toggleLightUI = async () => {
-    setLightUI((v) => {
-      const next = !v
-      if (typeof window !== "undefined") localStorage.setItem("qa:lightUI", next ? "1" : "0")
-      return next
-    })
-    await playSfx()
-  }
-
-  const handleToggleSound = async () => {
-    setSoundOn((prev) => {
-      const next = !prev
-      if (typeof window !== "undefined") localStorage.setItem("qa:soundOn", next ? "1" : "0")
-      return next
-    })
-    await playSfx()
-  }
-
-  const isLight = lightUI
-  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white"
+  const isLight = lightUI;
+  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
   const headerBgClass = isLight
     ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-    : "bg-black/30 border-white/10 text-white"
+    : "bg-black/30 border-white/10 text-white";
 
   const gridBg = (
     <div className="pointer-events-none absolute inset-0 opacity-90">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.08),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.08),transparent_60%)]" />
       <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
     </div>
-  )
+  );
   const gridBgLight = (
     <div className="pointer-events-none absolute inset-0 opacity-80">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.035),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.035),transparent_60%)]" />
       <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
     </div>
-  )
+  );
 
   // ---- State ----
-  const [oldQuery, setOldQuery] = useState("")
-  const [newQuery, setNewQuery] = useState("")
-  const [busyMode, setBusyMode] = useState<BusyMode>(null)
-  const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [oldQuery, setOldQuery] = useState("");
+  const [newQuery, setNewQuery] = useState("");
+  const [busyMode, setBusyMode] = useState<BusyMode>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<{
-    type: "old" | "new" | null
-    status: "success" | "error" | "uploading" | null
-    message: string
-    fileName?: string
-  }>({ type: null, status: null, message: "" })
-  const [dragActive, setDragActive] = useState<{ old: boolean; new: boolean }>({ old: false, new: false })
-  const oldFileInputRef = useRef<HTMLInputElement>(null)
-  const newFileInputRef = useRef<HTMLInputElement>(null)
+    type: "old" | "new" | null;
+    status: "success" | "error" | "uploading" | null;
+    message: string;
+    fileName?: string;
+  }>({ type: null, status: null, message: "" });
+  const [dragActive, setDragActive] = useState<{ old: boolean; new: boolean }>({ old: false, new: false });
+  const oldFileInputRef = useRef<HTMLInputElement>(null);
+  const newFileInputRef = useRef<HTMLInputElement>(null);
 
   // Only count chars for the fields relevant to the current mode
-  const charCountBadOld = useMemo(() => oldQuery.length > MAX_QUERY_CHARS, [oldQuery])
-  const charCountBadNew = useMemo(() => newQuery.length > MAX_QUERY_CHARS, [newQuery])
+  const charCountBadOld = useMemo(() => oldQuery.length > MAX_QUERY_CHARS, [oldQuery]);
+  const charCountBadNew = useMemo(() => newQuery.length > MAX_QUERY_CHARS, [newQuery]);
 
   // ---- File helpers ----
   const handleFileUpload = async (file: File, queryType: "old" | "new") => {
-    setUploadStatus({ type: queryType, status: "uploading", message: "Reading file..." })
+    setUploadStatus({ type: queryType, status: "uploading", message: "Reading file..." });
 
     if (!file.name.endsWith(".txt") && !file.name.endsWith(".sql")) {
-      setUploadStatus({ type: queryType, status: "error", message: "Please upload a .txt or .sql file" })
-      return
+      setUploadStatus({ type: queryType, status: "error", message: "Please upload a .txt or .sql file" });
+      return;
     }
     if (file.size > 5 * 1024 * 1024) {
-      setUploadStatus({ type: queryType, status: "error", message: "File size must be less than 5MB" })
-      return
+      setUploadStatus({ type: queryType, status: "error", message: "File size must be less than 5MB" });
+      return;
     }
 
     try {
-      const reader = new FileReader()
+      const reader = new FileReader();
       reader.onload = (e) => {
-        const content = (e.target?.result as string) ?? ""
+        const content = (e.target?.result as string) ?? "";
         if (content.trim().length === 0) {
-          setUploadStatus({ type: queryType, status: "error", message: "File appears to be empty" })
-          return
+          setUploadStatus({ type: queryType, status: "error", message: "File appears to be empty" });
+          return;
         }
         if (content.length > MAX_QUERY_CHARS) {
           setUploadStatus({
             type: queryType,
             status: "error",
             message: `File too large for analysis (${content.length.toLocaleString()} > ${MAX_QUERY_CHARS.toLocaleString()} chars)`,
-          })
-          return
+          });
+          return;
         }
-        if (queryType === "old") setOldQuery(content)
-        else setNewQuery(content)
+        if (queryType === "old") setOldQuery(content);
+        else setNewQuery(content);
 
         setUploadStatus({
           type: queryType,
           status: "success",
           message: `Successfully loaded ${file.name}`,
           fileName: file.name,
-        })
-        setTimeout(() => setUploadStatus({ type: null, status: null, message: "" }), 3000)
-      }
-      reader.onerror = () => setUploadStatus({ type: queryType, status: "error", message: "Error reading file" })
-      reader.readAsText(file)
+        });
+        setTimeout(() => setUploadStatus({ type: null, status: null, message: "" }), 3000);
+      };
+      reader.onerror = () => setUploadStatus({ type: queryType, status: "error", message: "Error reading file" });
+      reader.readAsText(file);
     } catch {
-      setUploadStatus({ type: queryType, status: "error", message: "Failed to process file" })
+      setUploadStatus({ type: queryType, status: "error", message: "Failed to process file" });
     }
-  }
+  };
 
   const handleDragEnter = (e: React.DragEvent, queryType: "old" | "new") => {
-    e.preventDefault(); e.stopPropagation()
-    setDragActive((prev) => ({ ...prev, [queryType]: true }))
-  }
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive((prev) => ({ ...prev, [queryType]: true }));
+  };
   const handleDragLeave = (e: React.DragEvent, queryType: "old" | "new") => {
-    e.preventDefault(); e.stopPropagation()
-    setDragActive((prev) => ({ ...prev, [queryType]: false }))
-  }
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation() }
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive((prev) => ({ ...prev, [queryType]: false }));
+  };
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
   const handleDrop = (e: React.DragEvent, queryType: "old" | "new") => {
-    e.preventDefault(); e.stopPropagation()
-    setDragActive((prev) => ({ ...prev, [queryType]: false }))
-    const files = e.dataTransfer.files
-    if (files && files[0]) handleFileUpload(files[0], queryType)
-  }
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive((prev) => ({ ...prev, [queryType]: false }));
+    const files = e.dataTransfer.files;
+    if (files && files[0]) handleFileUpload(files[0], queryType);
+  };
   const handleFileInputChange = (event: React.ChangeEvent<HTMLInputElement>, queryType: "old" | "new") => {
-    const file = event.target.files?.[0]
-    if (file) handleFileUpload(file, queryType)
-  }
+    const file = event.target.files?.[0];
+    if (file) handleFileUpload(file, queryType);
+  };
   const clearQuery = (queryType: "old" | "new") => {
-    if (queryType === "old") { setOldQuery(""); if (oldFileInputRef.current) oldFileInputRef.current.value = "" }
-    else { setNewQuery(""); if (newFileInputRef.current) newFileInputRef.current.value = "" }
-    setUploadStatus({ type: null, status: null, message: "" })
-  }
+    if (queryType === "old") {
+      setOldQuery("");
+      if (oldFileInputRef.current) oldFileInputRef.current.value = "";
+    } else {
+      setNewQuery("");
+      if (newFileInputRef.current) newFileInputRef.current.value = "";
+    }
+    setUploadStatus({ type: null, status: null, message: "" });
+  };
 
   const resetAll = () => {
-    setOldQuery("")
-    setNewQuery("")
-    setAnalysisError(null)
-    setUploadStatus({ type: null, status: null, message: "" })
-    if (oldFileInputRef.current) oldFileInputRef.current.value = ""
-    if (newFileInputRef.current) newFileInputRef.current.value = ""
-    window.scrollTo({ top: 0, behavior: "smooth" })
-  }
+    setOldQuery("");
+    setNewQuery("");
+    setAnalysisError(null);
+    setUploadStatus({ type: null, status: null, message: "" });
+    if (oldFileInputRef.current) oldFileInputRef.current.value = "";
+    if (newFileInputRef.current) newFileInputRef.current.value = "";
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   // ---- Actions ----
   const validateSizePair = (a: string, b: string) => {
     if (a.length > MAX_QUERY_CHARS || b.length > MAX_QUERY_CHARS) {
       setAnalysisError(
         `Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters. ` +
-        `Current sizes: old=${a.length.toLocaleString()} new=${b.length.toLocaleString()}`
-      )
-      return false
+          `Current sizes: old=${a.length.toLocaleString()} new=${b.length.toLocaleString()}`
+      );
+      return false;
     }
-    return true
-  }
+    return true;
+  };
 
-  const handleAnalyze = async () => {
-    const src = newQuery.trim() ? newQuery : oldQuery.trim()
+  // Analyze (SINGLE) — used when landingMode === "analyze"
+  const handleAnalyze = () => {
+    const src = newQuery.trim() ? newQuery : oldQuery.trim(); // fallback if needed
     if (!src) {
-      alert("Please provide a query before analyzing")
-      return
+      alert("Please provide a query before analyzing");
+      return;
     }
     if (src.length > MAX_QUERY_CHARS) {
       setAnalysisError(
         `Query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters. Current size: ${src.length.toLocaleString()}`
-      )
-      return
+      );
+      return;
     }
 
-    setBusyMode("analyze")
-    setAnalysisError(null)
-    await playSfx()
+    setBusyMode("analyze");
+    setAnalysisError(null);
 
-    const canon = canonicalizeSQL(src)
-    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "single", singleQuery: canon }))
-    sessionStorage.setItem("qa:allowSound", "1")
-    window.location.href = "/results"
-  }
+    const canon = canonicalizeSQL(src);
 
-  const handleCompare = async () => {
+    // Results page expects { mode: "single", singleQuery: string }
+    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "single", singleQuery: canon }));
+    sessionStorage.setItem("qa:allowSound", "1");
+    window.location.href = "/results";
+  };
+
+  // Compare (DUAL) — used when landingMode === "compare"
+  const handleCompare = () => {
     if (!oldQuery.trim() || !newQuery.trim()) {
-      alert("Please provide both queries to compare")
-      return
+      alert("Please provide both queries to compare");
+      return;
     }
-    if (!validateSizePair(oldQuery, newQuery)) return
+    if (!validateSizePair(oldQuery, newQuery)) return;
 
-    setBusyMode("compare")
-    setAnalysisError(null)
-    await playSfx()
+    setBusyMode("compare");
+    setAnalysisError(null);
 
-    const canonOld = canonicalizeSQL(oldQuery)
-    const canonNew = canonicalizeSQL(newQuery)
+    const canonOld = canonicalizeSQL(oldQuery);
+    const canonNew = canonicalizeSQL(newQuery);
 
-    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare", oldQuery: canonOld, newQuery: canonNew }))
-    sessionStorage.setItem("qa:allowSound", "1")
-    window.location.href = "/results"
-  }
+    // Results page expects { mode: "compare", oldQuery, newQuery }
+    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare", oldQuery: canonOld, newQuery: canonNew }));
+    sessionStorage.setItem("qa:allowSound", "1");
+    window.location.href = "/results";
+  };
 
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
       {isLight ? gridBgLight : gridBg}
 
-      {/* Shared header (matches results page) */}
+      {/* ---------- Header replicated from Results/Home ---------- */}
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
-            {/* Left: Home (still links to "/") */}
+            {/* Left: Home */}
             <div className="flex">
               <Link
                 href="/"
+                onClick={() => playSwitch()}
                 className={`inline-flex items-center justify-center w-10 h-10 rounded-lg transition border ${
                   isLight
                     ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
@@ -307,17 +300,28 @@ export default function QueryAnalyzer() {
             {/* Center: Title */}
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
-                <GitCompare className="w-5 h-5" />
+                <BarChart3 className="w-5 h-5" />
                 <span className="font-heading font-semibold text-lg">
-                  {landingMode === "analyze"
-                    ? "AI-Powered Query Companion — Analyze"
-                    : "AI-Powered Query Companion — Compare"}
+                  {landingMode === "analyze" ? "AI-Powered Query Companion — Analyze" : "AI-Powered Query Companion — Compare"}
                 </span>
               </span>
             </div>
 
-            {/* Right: Toggles (light/dark + sound) */}
+            {/* Right Controls */}
             <div className="flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={handleToggleSync}
+                title="Toggle synced scrolling"
+                className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
+              >
+                <Link2
+                  className={`h-5 w-5 transition ${
+                    isLight ? (syncEnabled ? "text-gray-700" : "text-gray-400") : syncEnabled ? "text-white" : "text-white/60"
+                  }`}
+                />
+              </button>
+
               <button
                 type="button"
                 onClick={toggleLightUI}
@@ -348,29 +352,29 @@ export default function QueryAnalyzer() {
         </div>
       </header>
 
-      {/* SFX */}
-      <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
-
+      {/* ---------- Body ---------- */}
       <main className="relative z-10">
+        <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
+
         <div className="container mx-auto px-6 py-10">
           {uploadStatus.status && (
             <Alert
-              className={`mb-8 ${isLight ? "bg-white border-emerald-500/20" : "bg-black/40 backdrop-blur border-white/15"} ${
-                uploadStatus.status === "error" ? (isLight ? "border-red-500/40" : "border-red-500/40") : "border-emerald-500/40"
+              className={`mb-8 ${isLight ? "bg-white" : "bg-black/40"} backdrop-blur border-white/15 ${
+                uploadStatus.status === "error" ? "border-red-500/40" : "border-emerald-500/40"
               }`}
             >
               <div className="flex items-center gap-3">
                 {uploadStatus.status === "success" && <CheckCircle className="w-5 h-5 text-emerald-500" />}
                 {uploadStatus.status === "error" && <AlertCircle className="w-5 h-5 text-red-500" />}
-                {uploadStatus.status === "uploading" && <Brain className="w-5 h-5 animate-pulse text-indigo-500" />}
-                <AlertDescription className={`flex-1 ${isLight ? "text-gray-700" : "text-gray-200"}`}>
+                {uploadStatus.status === "uploading" && <Brain className="w-5 h-5 animate-pulse text-indigo-400" />}
+                <AlertDescription className={`${isLight ? "text-gray-800" : "text-gray-200"} flex-1`}>
                   {uploadStatus.message}
                 </AlertDescription>
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => setUploadStatus({ type: null, status: null, message: "" })}
-                  className={`${isLight ? "text-gray-500 hover:text-gray-800" : "text-gray-400 hover:text-white"}`}
+                  className={`${isLight ? "text-gray-600 hover:text-gray-900" : "text-gray-400 hover:text-white"}`}
                 >
                   <X className="w-4 h-4" />
                 </Button>
@@ -379,16 +383,16 @@ export default function QueryAnalyzer() {
           )}
 
           {analysisError && (
-            <Alert className={`mb-8 ${isLight ? "bg-white border-red-500/40" : "bg-black/40 backdrop-blur border-red-500/40"}`}>
+            <Alert className={`mb-8 ${isLight ? "bg-white border-red-500/40" : "bg-black/40 border-red-500/40"} backdrop-blur`}>
               <AlertCircle className="w-5 h-5 text-red-500" />
-              <AlertDescription className={`flex-1 ${isLight ? "text-gray-800" : "text-gray-200"}`}>
+              <AlertDescription className={`${isLight ? "text-gray-800" : "text-gray-200"} flex-1`}>
                 <strong>Analysis Error:</strong> {analysisError}
               </AlertDescription>
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={() => setAnalysisError(null)}
-                className={`${isLight ? "text-gray-500 hover:text-gray-800" : "text-gray-400 hover:text-white"}`}
+                className={`${isLight ? "text-gray-600 hover:text-gray-900" : "text-gray-400 hover:text-white"}`}
               >
                 <X className="w-4 h-4" />
               </Button>
@@ -401,7 +405,9 @@ export default function QueryAnalyzer() {
               <div className="grid lg:grid-cols-2 gap-8 mb-10">
                 {/* Original Query */}
                 <div>
-                  <h3 className={`text-sm font-medium ${isLight ? "text-gray-700" : "text-white/80"} mb-3`}>Original Query</h3>
+                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>
+                    Original Query
+                  </h3>
                   <Card
                     className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadOld ? "ring-2 ring-red-400" : ""}`}
                     style={{ height: CARD_HEIGHT }}
@@ -465,7 +471,9 @@ export default function QueryAnalyzer() {
 
                 {/* Updated Query */}
                 <div>
-                  <h3 className={`text-sm font-medium ${isLight ? "text-gray-700" : "text-white/80"} mb-3`}>Updated Query</h3>
+                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>
+                    Updated Query
+                  </h3>
                   <Card
                     className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadNew ? "ring-2 ring-red-400" : ""}`}
                     style={{ height: CARD_HEIGHT }}
@@ -532,14 +540,10 @@ export default function QueryAnalyzer() {
               <div className="flex items-center justify-center gap-3 mb-8">
                 <Button
                   onClick={handleCompare}
-                  disabled={
-                    busyMode !== null ||
-                    !oldQuery.trim() || !newQuery.trim() ||
-                    charCountBadOld || charCountBadNew
-                  }
+                  disabled={busyMode !== null || !oldQuery.trim() || !newQuery.trim() || charCountBadOld || charCountBadNew}
                   size="lg"
                   className="px-8 py-3 font-heading font-medium text-base rounded-md bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 text-white border border-white/10 shadow-md transition-all"
-                  title={(!oldQuery.trim() || !newQuery.trim()) ? "Paste both queries to enable" : undefined}
+                  title={!oldQuery.trim() || !newQuery.trim() ? "Paste both queries to enable" : undefined}
                 >
                   {busyMode === "compare" ? (
                     <div className="flex items-center gap-3">
@@ -565,7 +569,7 @@ export default function QueryAnalyzer() {
                     type="button"
                     variant="outline"
                     onClick={resetAll}
-                    className={`${isLight ? "border-black/15 text-gray-800 hover:bg-black/5" : "border-white/15 text-white/90 hover:bg-white/10"}`}
+                    className="border-white/15 text-white/90 hover:bg-white/10"
                     title="Start a new comparison"
                   >
                     <X className="w-5 h-5" />
@@ -577,7 +581,7 @@ export default function QueryAnalyzer() {
             <>
               {/* Analyze SINGLE: one upload box labeled "Upload Query" */}
               <div className="mb-10 mx-auto lg:w-1/2">
-                <h3 className={`text-sm font-medium ${isLight ? "text-gray-700" : "text-white/80"} mb-3`}>Upload Query</h3>
+                <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>Upload Query</h3>
                 <Card
                   className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadNew ? "ring-2 ring-red-400" : ""}`}
                   style={{ height: CARD_HEIGHT }}
@@ -672,7 +676,7 @@ export default function QueryAnalyzer() {
                     type="button"
                     variant="outline"
                     onClick={resetAll}
-                    className={`${isLight ? "border-black/15 text-gray-800 hover:bg-black/5" : "border-white/15 text-white/90 hover:bg-white/10"}`}
+                    className="border-white/15 text-white/90 hover:bg-white/10"
                     title="Start a new analysis"
                   >
                     <X className="w-5 h-5" />
@@ -684,5 +688,5 @@ export default function QueryAnalyzer() {
         </div>
       </main>
     </div>
-  )
+  );
 }
