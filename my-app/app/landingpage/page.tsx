@@ -45,17 +45,14 @@ export default function LandingPage() {
   );
 }
 
-/** ---------- Your original landing logic, now safe to use useSearchParams ---------- */
 function QueryAnalyzer() {
-  // ---- Which variant to show, based on /landingpage?mode=analyze|compare ----
   const search = useSearchParams();
   const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode;
   const [landingMode] = useState<LandingMode>(initialMode);
 
-  // ---- Header: light/dark + sound (replicated style from Results/Home) ----
   const [lightUI, setLightUI] = useState<boolean>(false);
   const [soundOn, setSoundOn] = useState(true);
-  const [syncEnabled, setSyncEnabled] = useState(true); // not used here, but kept to match header controls
+  const [syncEnabled, setSyncEnabled] = useState(true); 
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const playSwitch = () => {
