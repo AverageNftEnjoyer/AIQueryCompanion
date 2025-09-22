@@ -24,8 +24,16 @@ if (!OPENAI_ASSISTANT_ID) {
 /** ============================== Types ============================== **/
 interface ChatbotBody {
   question?: string;
-  oldQuery?: string;
-  newQuery?: string;
+  oldQuery?: string;      // raw old
+  newQuery?: string;      // raw new
+
+  /** NEW: exact text currently visible to the user in the UI editor/viewer */
+  visibleOld?: string;
+  visibleNew?: string;
+
+  /** Optional hint; when not provided we default to 'visible' if visible* are present */
+  indexing?: "visible" | "canonical";
+
   context?: {
     stats?: unknown;
     changeCount?: number;
@@ -50,9 +58,9 @@ function openAIHeaders() {
   };
 }
 
-/** ============================== Line helpers (canonical + numbered) ============================== **/
+/** ============================== Line helpers (VISIBLE-first) ============================== **/
 function splitLF(s: string) {
-  return s.replace(/\r\n/g, "\n").split("\n");
+  return (s ?? "").replace(/\r\n/g, "\n").split("\n");
 }
 
 function numberSelectedLines(lines: string[], indices: number[]) {
@@ -62,10 +70,10 @@ function numberSelectedLines(lines: string[], indices: number[]) {
     .join("\n");
 }
 
-function buildDisplayBlock(label: "OLD" | "NEW", canonical: string, opts?: { head?: number; tail?: number }) {
+function buildDisplayBlock(label: string, text: string, opts?: { head?: number; tail?: number }) {
   const head = Math.max(0, opts?.head ?? 800);
   const tail = Math.max(0, opts?.tail ?? 800);
-  const lines = splitLF(canonical);
+  const lines = splitLF(text);
   const total = lines.length;
 
   // If small enough, include everything
@@ -73,7 +81,7 @@ function buildDisplayBlock(label: "OLD" | "NEW", canonical: string, opts?: { hea
     const allIdx = Array.from({ length: total }, (_, i) => i);
     const content = numberSelectedLines(lines, allIdx);
     return {
-      header: `DISPLAY_${label}_QUERY (canonicalized; numbered; total ${total} lines)`,
+      header: `${label} (numbered; total ${total} lines)`,
       content,
       included: total,
       total,
@@ -93,7 +101,7 @@ function buildDisplayBlock(label: "OLD" | "NEW", canonical: string, opts?: { hea
   ].join("\n");
 
   return {
-    header: `DISPLAY_${label}_QUERY (canonicalized; numbered; total ${total} lines; truncated with head ${head} & tail ${tail})`,
+    header: `${label} (numbered; total ${total} lines; truncated with head ${head} & tail ${tail})`,
     content: parts,
     included: head + tail,
     total,
@@ -101,15 +109,15 @@ function buildDisplayBlock(label: "OLD" | "NEW", canonical: string, opts?: { hea
   };
 }
 
-function sliceLines(canonical: string, start1: number, end1?: number) {
-  const lines = splitLF(canonical);
+function sliceLines(text: string, start1: number, end1?: number) {
+  const lines = splitLF(text);
   const total = lines.length;
   const from = Math.max(1, start1);
   const to = Math.min(total, end1 ?? start1);
   const idxs: number[] = [];
   for (let x = from; x <= to; x++) idxs.push(x - 1);
-  const text = numberSelectedLines(lines, idxs);
-  return { text, from, to, total };
+  const chunk = numberSelectedLines(lines, idxs);
+  return { text: chunk, from, to, total };
 }
 
 function parseLineQuery(q: string):
@@ -186,34 +194,49 @@ async function getMessages(threadId: string) {
   return res.json();
 }
 
-/** ============================== Prompt Builder (size-aware) ============================== **/
+/** ============================== Prompt Builder (VISIBLE-indexed) ============================== **/
 function buildPrompt(body: ChatbotBody) {
   const question = (body?.question || "").trim();
 
-  // Canonicalize to match UI line numbers
+  // Canonical snapshots (for semantic stability / diffs)
   const canOld = body.oldQuery ? canonicalizeSQL(body.oldQuery) : "";
   const canNew = body.newQuery ? canonicalizeSQL(body.newQuery) : "";
 
-  // Always default to NEW if target unspecified
+  // Visible snapshots (the exact text the user sees in the UI)
+  const visOld = (body.visibleOld ?? canOld) || "";
+  const visNew = (body.visibleNew ?? canNew) || "";
+
+  // Decide indexing source of truth
+  const indexing: "visible" | "canonical" =
+    body.indexing ?? (body.visibleOld || body.visibleNew ? "visible" : "canonical");
+
   const lineReq = parseLineQuery(question);
   const focusTarget: "old" | "new" = lineReq?.target ?? "new";
-  const focusSrc = focusTarget === "old" ? canOld : canNew;
 
-  // Build FOCUS_LINES (precise, numbered)
+  const srcVisible = focusTarget === "old" ? visOld : visNew;
+  const srcCanonical = focusTarget === "old" ? canOld : canNew;
+
+  // FOCUS_LINES: always use the declared indexing source (prefer VISIBLE)
   let focusBlock = "";
-  if (lineReq && focusSrc) {
-    const { text, from, to, total } = sliceLines(focusSrc, lineReq.start, lineReq.end);
-    focusBlock =
-      `FOCUS_RANGE: ${focusTarget.toUpperCase()} lines ${from}${to && to !== from ? `-${to}` : ""} of ${total}\n` +
-      "FOCUS_LINES:\n```\n" + text + "\n```\n";
-  } else if (lineReq && !focusSrc) {
-    focusBlock = `FOCUS_RANGE: (${focusTarget.toUpperCase()} query not provided by user)\n`;
+  if (lineReq) {
+    const focusText = indexing === "visible" ? srcVisible : srcCanonical;
+    if (focusText) {
+      const { text, from, to, total } = sliceLines(focusText, lineReq.start, lineReq.end);
+      focusBlock =
+        `FOCUS_RANGE (${indexing.toUpperCase()}): ${focusTarget.toUpperCase()} lines ${from}${
+          to && to !== from ? `-${to}` : ""
+        } of ${total}\n` +
+        "FOCUS_LINES:\n```\n" + text + "\n```\n";
+    } else {
+      focusBlock = `FOCUS_RANGE: (${focusTarget.toUpperCase()} query not provided by user)\n`;
+    }
   }
 
-  // Size-aware DISPLAY blocks (numbered, head/tail truncation for huge files)
-  // Start generous; we will shrink if needed.
-  let oldBlk = canOld ? buildDisplayBlock("OLD", canOld, { head: 800, tail: 800 }) : null;
-  let newBlk = canNew ? buildDisplayBlock("NEW", canNew, { head: 800, tail: 800 }) : null;
+  // Build DISPLAY blocks (both visible and canonical; we’ll shrink as needed)
+  let vOldBlk = visOld ? buildDisplayBlock("DISPLAY_VISIBLE_OLD", visOld, { head: 800, tail: 800 }) : null;
+  let vNewBlk = visNew ? buildDisplayBlock("DISPLAY_VISIBLE_NEW", visNew, { head: 800, tail: 800 }) : null;
+  let cOldBlk = canOld ? buildDisplayBlock("DISPLAY_CANONICAL_OLD", canOld, { head: 800, tail: 800 }) : null;
+  let cNewBlk = canNew ? buildDisplayBlock("DISPLAY_CANONICAL_NEW", canNew, { head: 800, tail: 800 }) : null;
 
   const metaBits: string[] = [];
   if (body.context?.changeCount != null) metaBits.push(`Change count: ${body.context.changeCount}`);
@@ -221,29 +244,27 @@ function buildPrompt(body: ChatbotBody) {
 
   const header =
     "SYSTEM NOTES FOR ASSISTANT:\n" +
-    "- When the user references a line number, ALWAYS use DISPLAY_* (canonicalized, numbered) blocks; NEVER count lines in raw text.\n" +
-    "- If OLD/NEW is unspecified, default to DISPLAY_NEW_QUERY.\n" +
-    "- If FOCUS_LINES is present, start by quoting those exact line(s), then explain clearly in 2–4 sentences.\n" +
-    "- Keep answers concise unless the user asks for more detail.\n";
+    "- Treat DISPLAY_VISIBLE_* as the single source of truth for line numbers.\n" +
+    "- When the user references a line/range, ALWAYS quote from VISIBLE blocks (not canonical).\n" +
+    "- If OLD/NEW is unspecified, default to VISIBLE NEW.\n" +
+    "- Use CANONICAL blocks only to improve SQL understanding; do not renumber lines.\n" +
+    "- If FOCUS_LINES is present, start by quoting those exact line(s) and then explain in 2–4 sentences.\n";
 
-  // Compose once to measure size, then shrink if needed
   const compose = () => {
     const ctxParts: string[] = [];
-    if (oldBlk) {
-      ctxParts.push(`${oldBlk.header}:\n\`\`\`\n${oldBlk.content}\n\`\`\``);
-    }
-    if (newBlk) {
-      ctxParts.push(`${newBlk.header}:\n\`\`\`\n${newBlk.content}\n\`\`\``);
-    }
+    if (vOldBlk) ctxParts.push(`${vOldBlk.header}:\n\`\`\`\n${vOldBlk.content}\n\`\`\``);
+    if (vNewBlk) ctxParts.push(`${vNewBlk.header}:\n\`\`\`\n${vNewBlk.content}\n\`\`\``);
+    if (cOldBlk) ctxParts.push(`${cOldBlk.header}:\n\`\`\`\n${cOldBlk.content}\n\`\`\``);
+    if (cNewBlk) ctxParts.push(`${cNewBlk.header}:\n\`\`\`\n${cNewBlk.content}\n\`\`\``);
     if (focusBlock) ctxParts.push(focusBlock);
     if (metaBits.length) ctxParts.push(metaBits.join("\n"));
-
     return [header, ...(ctxParts.length ? [`Context:\n${ctxParts.join("\n\n")}`] : []), `User question: ${question}`].join("\n\n");
   };
 
   let full = compose();
 
-  // If too large, shrink display blocks gradually
+  // Shrink to stay under MAX_CONTENT.
+  // Priority to KEEP: VISIBLE blocks and FOCUS_LINES. Drop CANONICAL first.
   const shrinkSteps = [
     { head: 500, tail: 500 },
     { head: 300, tail: 300 },
@@ -254,37 +275,44 @@ function buildPrompt(body: ChatbotBody) {
 
   let step = 0;
   while (full.length > MAX_CONTENT && step < shrinkSteps.length) {
-    if (oldBlk) oldBlk = buildDisplayBlock("OLD", canOld, shrinkSteps[step]);
-    if (newBlk) newBlk = buildDisplayBlock("NEW", canNew, shrinkSteps[step]);
+    if (cOldBlk) cOldBlk = buildDisplayBlock("DISPLAY_CANONICAL_OLD", canOld, shrinkSteps[step]);
+    if (cNewBlk) cNewBlk = buildDisplayBlock("DISPLAY_CANONICAL_NEW", canNew, shrinkSteps[step]);
+    if (vOldBlk) vOldBlk = buildDisplayBlock("DISPLAY_VISIBLE_OLD", visOld, shrinkSteps[step]);
+    if (vNewBlk) vNewBlk = buildDisplayBlock("DISPLAY_VISIBLE_NEW", visNew, shrinkSteps[step]);
     full = compose();
     step++;
   }
 
-  // Last resort: drop OLD if still too big and user did not ask about OLD lines
-  if (full.length > MAX_CONTENT && oldBlk && (!lineReq || focusTarget !== "old")) {
-    oldBlk = null;
+  // Drop CANONICAL blocks entirely if still too big
+  if (full.length > MAX_CONTENT) {
+    cOldBlk = null;
     full = compose();
   }
-  // Drop NEW if still too big and user asked about OLD specifically
-  if (full.length > MAX_CONTENT && newBlk && lineReq && focusTarget === "old") {
-    newBlk = null;
+  if (full.length > MAX_CONTENT) {
+    cNewBlk = null;
     full = compose();
   }
 
-  // If still too big, keep only FOCUS_LINES + minimal note
+  // Last resort: keep only FOCUS_LINES + tiny visible block for the focused side
   if (full.length > MAX_CONTENT) {
-    const minimal =
-      [header]
-        .concat(
-          focusBlock
-            ? [`Context:\n${focusBlock}`]
-            : [
-                "Context:\nNo focus lines were extracted. Provide the line or range you want (e.g., `line 120-130`).",
-              ]
-        )
-        .concat([`User question: ${question}`])
-        .join("\n\n");
-    return { full: minimal };
+    const focusVis = focusTarget === "old" ? visOld : visNew;
+    const tiny = buildDisplayBlock(`DISPLAY_VISIBLE_${focusTarget.toUpperCase()}`, focusVis, { head: 40, tail: 40 });
+    // Keep only the tiny block that matches focus
+    if (focusTarget === "old") {
+      vOldBlk = tiny;
+      vNewBlk = null;
+    } else {
+      vNewBlk = tiny;
+      vOldBlk = null;
+    }
+    cOldBlk = null;
+    cNewBlk = null;
+    full = [
+      header,
+      "Context:\n" + (focusBlock || ""),
+      tiny ? `${tiny.header}:\n\`\`\`\n${tiny.content}\n\`\`\`` : "",
+      `User question: ${question}`,
+    ].filter(Boolean).join("\n\n");
   }
 
   return { full };
@@ -307,7 +335,7 @@ export async function POST(req: Request) {
       );
     }
 
-    // Build message with DISPLAY_* numbering (size-aware) and optional FOCUS_LINES
+    // Build message with DISPLAY_VISIBLE_* numbering and optional FOCUS_LINES
     const { full } = buildPrompt(body);
 
     // Always call the Assistant (no short-circuit)

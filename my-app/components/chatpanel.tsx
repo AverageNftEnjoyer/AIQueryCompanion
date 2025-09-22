@@ -13,7 +13,7 @@ type ChatPanelProps = {
   changeCount?: number;
   stats?: unknown;
   placeholder?: string;
-    heightClass?: string;
+  heightClass?: string;
 
   /** NEW: Let parent control the panel height (e.g., h-[28rem]) */
   containerHeightClass?: string;
@@ -39,11 +39,20 @@ function extractLineContext(sql: string, lineNum: number, window = 6) {
   };
 }
 
+// More forgiving line detector to help local context (API still does robust parsing)
 function findLineMention(q: string): number | null {
-  const m = q.match(/\bline\s+(\d{1,7})\b/i);
-  if (!m) return null;
-  const n = Number(m[1]);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  // matches: "line 280", "lines 120-130" (returns first), "L280", "#280"
+  const m1 = q.match(/\blines?\s+(\d{1,7})(?:\s*[-–]\s*\d+)?\b/i);
+  if (m1) {
+    const n = Number(m1[1]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  const m2 = q.match(/(?:\b[lL]\s*|\#)(\d{1,7})\b/);
+  if (m2) {
+    const n = Number(m2[1]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+  return null;
 }
 
 const ChatPanel = memo(function ChatPanel({
@@ -54,11 +63,21 @@ const ChatPanel = memo(function ChatPanel({
   changeCount = 0,
   stats = null,
   placeholder = "Ask me anything about the changes…",
-heightClass = "h-[34rem]",
+  heightClass = "h-[34rem]",
+  containerHeightClass,
 }: ChatPanelProps) {
-  // Prefer raw* (accurate line numbers); fall back to canonical*
-  const oldText = (rawOld ?? canonicalOld ?? "").toString();
-  const newText = (rawNew ?? canonicalNew ?? "").toString();
+  // Determine mode from presence of both queries
+  const compareMode = !!rawOld && !!rawNew;
+
+  // What the panes actually DISPLAY (must match UI for correct line numbers):
+  // - compare mode: UI shows canonicalized text in both panes
+  // - single mode: UI shows raw new query with preserved spacing
+  const visibleOld = compareMode ? (canonicalOld ?? rawOld ?? "") : (rawOld ?? canonicalOld ?? "");
+  const visibleNew = compareMode ? (canonicalNew ?? rawNew ?? "") : (rawNew ?? canonicalNew ?? "");
+
+  // For completeness we still send raw values too
+  const oldTextRaw = (rawOld ?? "").toString();
+  const newTextRaw = (rawNew ?? "").toString();
 
   const [messages, setMessages] = useState<ChatMsg[]>([
     { role: "assistant", content: "Hello! I'm your Query Companion, are you ready to explore the changes together?" },
@@ -84,15 +103,32 @@ heightClass = "h-[34rem]",
 
     try {
       const maybeLine = findLineMention(q);
-      const lineContext = maybeLine ? extractLineContext(newText, maybeLine, 6) : null;
+
+      // Extract local context from the SAME text the API will use for indexing:
+      // default to NEW side; route will switch to OLD if the user explicitly asks for old.
+      const focusFrom = visibleNew || visibleOld || "";
+      const lineContext = maybeLine ? extractLineContext(focusFrom, maybeLine, 6) : null;
 
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: q,
-          oldQuery: oldText,
-          newQuery: newText,
+
+          // raw (as pasted)
+          oldQuery: oldTextRaw,
+          newQuery: newTextRaw,
+
+          // ✅ exact display strings used for line numbering in the assistant
+          visibleOld,
+          visibleNew,
+
+          // Force visible indexing so line numbers match what the user sees
+          indexing: "visible",
+
+          // Optional: mode hint for your own observability
+          mode: compareMode ? "compare" : "single",
+
           context: {
             stats,
             changeCount,
@@ -109,7 +145,7 @@ heightClass = "h-[34rem]",
         }),
       });
 
-      const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({} as any));
       const answer = res.ok
         ? String((data as any)?.answer ?? "").trim()
         : `⚠️ ${(data as any)?.error || `Chat error (${res.status})`}`;
@@ -124,7 +160,7 @@ heightClass = "h-[34rem]",
   }
 
   return (
-    <div className={`p-5 ${heightClass} flex flex-col`}>
+    <div className={`p-5 ${containerHeightClass ?? heightClass} flex flex-col`}>
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-slate-900 font-semibold">Query Companion</h3>
         <span className="text-xs text-gray-500">{loading ? "" : ""}</span>
@@ -151,7 +187,7 @@ heightClass = "h-[34rem]",
           {loading && (
             <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
               <span className="inline-flex items-center gap-2">
-                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24">
+                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" aria-hidden="true">
                   <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
                 </svg>
                 Thinking…

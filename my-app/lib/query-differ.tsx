@@ -96,7 +96,7 @@ export function canonicalizeSQL(input: string): string {
       "\n\n$1"
     )
 
-    normalized = normalized.replace(/\s+$/g, "") 
+    normalized = normalized.replace(/\s+$/g, "")
 
     out += normalized + comment + "\n"
     i = nl === -1 ? lf.length : nl + 1
