@@ -22,6 +22,7 @@ export const metadata: Metadata = {
   description:
     "Full-stack tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
   generator: "v0.app",
+  // No `icons` block needed — Next.js will auto-detect app/icon.png
 }
 
 export default function RootLayout({
@@ -38,7 +39,7 @@ export default function RootLayout({
       <body className="font-body min-h-dvh bg-[color:var(--background)]">
         <ThemeProvider
           attribute="class"
-          defaultTheme="dark"           
+          defaultTheme="dark"
           enableSystem={false}
           storageKey="qa-theme"
           disableTransitionOnChange

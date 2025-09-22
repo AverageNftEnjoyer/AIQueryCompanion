@@ -696,7 +696,7 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
           const done = merged.filter((m) => m.explanation && m.explanation !== "Pending…").length;
           return { ...prev, summary: `Streaming ${total} changes… ${done} explained.`, changes: merged };
         });
-
+        playSfx(doneAudioRef);
         await new Promise((res) => setTimeout(res, 0));
       }
 
