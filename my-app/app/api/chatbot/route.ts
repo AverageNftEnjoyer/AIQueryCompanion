@@ -6,9 +6,7 @@ export const maxDuration = 60;
 import { NextResponse } from "next/server";
 import { canonicalizeSQL } from "@/lib/query-differ";
 
-/** ============================== Config ============================== **/
 const REQUEST_TIMEOUT_MS = 50_000;
-// Hard cap for Assistants message 'content' is 256,000 chars. Keep a safety buffer.
 const MAX_CONTENT = 240_000;
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -21,19 +19,13 @@ if (!OPENAI_ASSISTANT_ID) {
   throw new Error("Missing OPENAI_ASSISTANT_ID in environment");
 }
 
-/** ============================== Types ============================== **/
 interface ChatbotBody {
   question?: string;
-  oldQuery?: string;      // raw old
-  newQuery?: string;      // raw new
-
-  /** NEW: exact text currently visible to the user in the UI editor/viewer */
+  oldQuery?: string;
+  newQuery?: string;
   visibleOld?: string;
   visibleNew?: string;
-
-  /** Optional hint; when not provided we default to 'visible' if visible* are present */
   indexing?: "visible" | "canonical";
-
   context?: {
     stats?: unknown;
     changeCount?: number;
@@ -41,7 +33,6 @@ interface ChatbotBody {
   history?: { role: string; content: string }[];
 }
 
-/** ============================== Utilities ============================== **/
 function safeErrMessage(e: any, fallback = "Unexpected error") {
   const raw = typeof e?.message === "string" ? e.message : fallback;
   return raw
@@ -54,17 +45,18 @@ function openAIHeaders() {
   return {
     Authorization: `Bearer ${OPENAI_API_KEY}`,
     "Content-Type": "application/json",
-    "OpenAI-Beta": "assistants=v2", // ✅ required for Assistants API
+    "OpenAI-Beta": "assistants=v2",
   };
 }
 
-/** ============================== Line helpers (VISIBLE-first) ============================== **/
-function splitLF(s: string) {
-  return (s ?? "").replace(/\r\n/g, "\n").split("\n");
+/* ---------- Line helpers (VISIBLE-first, trims trailing empty line) ---------- */
+function splitVisibleLines(s: string) {
+  const parts = (s ?? "").replace(/\r\n/g, "\n").split("\n");
+  if (parts.length > 0 && parts[parts.length - 1] === "") parts.pop();
+  return parts;
 }
 
 function numberSelectedLines(lines: string[], indices: number[]) {
-  // indices are 0-based line indexes; we render as 1-based
   return indices
     .map((idx) => `${String(idx + 1).padStart(6, " ")} | ${lines[idx] ?? ""}`)
     .join("\n");
@@ -73,10 +65,9 @@ function numberSelectedLines(lines: string[], indices: number[]) {
 function buildDisplayBlock(label: string, text: string, opts?: { head?: number; tail?: number }) {
   const head = Math.max(0, opts?.head ?? 800);
   const tail = Math.max(0, opts?.tail ?? 800);
-  const lines = splitLF(text);
+  const lines = splitVisibleLines(text);
   const total = lines.length;
 
-  // If small enough, include everything
   if (total <= head + tail + 50) {
     const allIdx = Array.from({ length: total }, (_, i) => i);
     const content = numberSelectedLines(lines, allIdx);
@@ -89,7 +80,6 @@ function buildDisplayBlock(label: string, text: string, opts?: { head?: number; 
     };
   }
 
-  // Otherwise include head and tail slices with a gap marker
   const headIdx = Array.from({ length: Math.min(head, total) }, (_, i) => i);
   const tailStart = Math.max(0, total - tail);
   const tailIdx = Array.from({ length: total - tailStart }, (_, i) => tailStart + i);
@@ -110,7 +100,7 @@ function buildDisplayBlock(label: string, text: string, opts?: { head?: number; 
 }
 
 function sliceLines(text: string, start1: number, end1?: number) {
-  const lines = splitLF(text);
+  const lines = splitVisibleLines(text);
   const total = lines.length;
   const from = Math.max(1, start1);
   const to = Math.min(total, end1 ?? start1);
@@ -120,14 +110,14 @@ function sliceLines(text: string, start1: number, end1?: number) {
   return { text: chunk, from, to, total };
 }
 
-function parseLineQuery(q: string):
-  | { target: "old" | "new"; start: number; end?: number }
-  | null {
-  // Examples: "line 300", "line 120-130", "old line 50", "new line 77–92"
+function parseLineQuery(
+  q: string
+): { target: "old" | "new" | null; start: number; end?: number } | null {
   const re = /\b(?:(old|new)\s*)?line\s+(\d+)(?:\s*[-–]\s*(\d+))?\b/i;
   const m = q.match(re);
   if (!m) return null;
-  const target = (m[1]?.toLowerCase() as "old" | "new") ?? "new";
+  const rawTarget = m[1]?.toLowerCase();
+  const target = rawTarget === "old" || rawTarget === "new" ? (rawTarget as "old" | "new") : null;
   const start = parseInt(m[2], 10);
   const end = m[3] ? parseInt(m[3], 10) : undefined;
   if (!Number.isFinite(start) || start < 1) return null;
@@ -135,7 +125,26 @@ function parseLineQuery(q: string):
   return { target, start, end };
 }
 
-/** ============================== Assistants API Helpers ============================== **/
+function parseSideFollowup(q: string): { target: "old" | "new"; line?: number } | null {
+  const m = q.match(/^\s*(old|new)(?:\s*(?:line)?\s*(\d{1,7}))?\s*$/i);
+  if (!m) return null;
+  const target = m[1].toLowerCase() as "old" | "new";
+  const line = m[2] ? parseInt(m[2], 10) : undefined;
+  return { target, line };
+}
+
+function findLastUnscopedLine(history: ChatbotBody["history"]): number | null {
+  if (!history) return null;
+  for (let i = history.length - 1; i >= 0; i--) {
+    const h = history[i];
+    if (h.role !== "user") continue;
+    const parsed = parseLineQuery(h.content);
+    if (parsed && parsed.target == null) return parsed.start;
+  }
+  return null;
+}
+
+/* ------------------------------ Assistants API ------------------------------ */
 async function createThread() {
   const res = await fetch("https://api.openai.com/v1/threads", {
     method: "POST",
@@ -147,14 +156,11 @@ async function createThread() {
 }
 
 async function addMessage(threadId: string, fullContent: string) {
-  const res = await fetch(
-    `https://api.openai.com/v1/threads/${threadId}/messages`,
-    {
-      method: "POST",
-      headers: openAIHeaders(),
-      body: JSON.stringify({ role: "user", content: fullContent }),
-    }
-  );
+  const res = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+    method: "POST",
+    headers: openAIHeaders(),
+    body: JSON.stringify({ role: "user", content: fullContent }),
+  });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
@@ -174,10 +180,10 @@ async function pollRun(threadId: string, runId: string) {
   let run: any;
   while (status === "in_progress" || status === "queued") {
     await new Promise((r) => setTimeout(r, 1200));
-    const res = await fetch(
-      `https://api.openai.com/v1/threads/${threadId}/runs/${runId}`,
-      { headers: openAIHeaders(), cache: "no-store" }
-    );
+    const res = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+      headers: openAIHeaders(),
+      cache: "no-store",
+    });
     if (!res.ok) throw new Error(await res.text());
     run = await res.json();
     status = run.status;
@@ -194,45 +200,39 @@ async function getMessages(threadId: string) {
   return res.json();
 }
 
-/** ============================== Prompt Builder (VISIBLE-indexed) ============================== **/
+/* ----------------------- Prompt Builder (VISIBLE-indexed) ----------------------- */
 function buildPrompt(body: ChatbotBody) {
   const question = (body?.question || "").trim();
 
-  // Canonical snapshots (for semantic stability / diffs)
   const canOld = body.oldQuery ? canonicalizeSQL(body.oldQuery) : "";
   const canNew = body.newQuery ? canonicalizeSQL(body.newQuery) : "";
 
-  // Visible snapshots (the exact text the user sees in the UI)
   const visOld = (body.visibleOld ?? canOld) || "";
   const visNew = (body.visibleNew ?? canNew) || "";
 
-  // Decide indexing source of truth
   const indexing: "visible" | "canonical" =
     body.indexing ?? (body.visibleOld || body.visibleNew ? "visible" : "canonical");
 
   const lineReq = parseLineQuery(question);
-  const focusTarget: "old" | "new" = lineReq?.target ?? "new";
+  const focusTarget: "old" | "new" = (lineReq?.target ?? "new");
 
   const srcVisible = focusTarget === "old" ? visOld : visNew;
   const srcCanonical = focusTarget === "old" ? canOld : canNew;
 
-  // FOCUS_LINES: always use the declared indexing source (prefer VISIBLE)
   let focusBlock = "";
   if (lineReq) {
     const focusText = indexing === "visible" ? srcVisible : srcCanonical;
     if (focusText) {
       const { text, from, to, total } = sliceLines(focusText, lineReq.start, lineReq.end);
       focusBlock =
-        `FOCUS_RANGE (${indexing.toUpperCase()}): ${focusTarget.toUpperCase()} lines ${from}${
-          to && to !== from ? `-${to}` : ""
-        } of ${total}\n` +
+        `FOCUS_RANGE (${indexing.toUpperCase()}): ${focusTarget.toUpperCase()} lines ${from}` +
+        `${to && to !== from ? `-${to}` : ""} of ${total}\n` +
         "FOCUS_LINES:\n```\n" + text + "\n```\n";
     } else {
       focusBlock = `FOCUS_RANGE: (${focusTarget.toUpperCase()} query not provided by user)\n`;
     }
   }
 
-  // Build DISPLAY blocks (both visible and canonical; we’ll shrink as needed)
   let vOldBlk = visOld ? buildDisplayBlock("DISPLAY_VISIBLE_OLD", visOld, { head: 800, tail: 800 }) : null;
   let vNewBlk = visNew ? buildDisplayBlock("DISPLAY_VISIBLE_NEW", visNew, { head: 800, tail: 800 }) : null;
   let cOldBlk = canOld ? buildDisplayBlock("DISPLAY_CANONICAL_OLD", canOld, { head: 800, tail: 800 }) : null;
@@ -263,8 +263,6 @@ function buildPrompt(body: ChatbotBody) {
 
   let full = compose();
 
-  // Shrink to stay under MAX_CONTENT.
-  // Priority to KEEP: VISIBLE blocks and FOCUS_LINES. Drop CANONICAL first.
   const shrinkSteps = [
     { head: 500, tail: 500 },
     { head: 300, tail: 300 },
@@ -283,7 +281,6 @@ function buildPrompt(body: ChatbotBody) {
     step++;
   }
 
-  // Drop CANONICAL blocks entirely if still too big
   if (full.length > MAX_CONTENT) {
     cOldBlk = null;
     full = compose();
@@ -293,11 +290,9 @@ function buildPrompt(body: ChatbotBody) {
     full = compose();
   }
 
-  // Last resort: keep only FOCUS_LINES + tiny visible block for the focused side
   if (full.length > MAX_CONTENT) {
     const focusVis = focusTarget === "old" ? visOld : visNew;
     const tiny = buildDisplayBlock(`DISPLAY_VISIBLE_${focusTarget.toUpperCase()}`, focusVis, { head: 40, tail: 40 });
-    // Keep only the tiny block that matches focus
     if (focusTarget === "old") {
       vOldBlk = tiny;
       vNewBlk = null;
@@ -312,13 +307,15 @@ function buildPrompt(body: ChatbotBody) {
       "Context:\n" + (focusBlock || ""),
       tiny ? `${tiny.header}:\n\`\`\`\n${tiny.content}\n\`\`\`` : "",
       `User question: ${question}`,
-    ].filter(Boolean).join("\n\n");
+    ]
+      .filter(Boolean)
+      .join("\n\n");
   }
 
   return { full };
 }
 
-/** ============================== Route ============================== **/
+/* ---------------------------------- Route ---------------------------------- */
 export async function POST(req: Request) {
   try {
     const body = (await req.json().catch(() => ({}))) as ChatbotBody;
@@ -335,10 +332,44 @@ export async function POST(req: Request) {
       );
     }
 
-    // Build message with DISPLAY_VISIBLE_* numbering and optional FOCUS_LINES
-    const { full } = buildPrompt(body);
+    const hasVisibleOld = !!(body.visibleOld && body.visibleOld.length);
+    const hasVisibleNew = !!(body.visibleNew && body.visibleNew.length);
+    const compareMode = (hasVisibleOld && hasVisibleNew) || (!!body.oldQuery && !!body.newQuery);
 
-    // Always call the Assistant (no short-circuit)
+    const sideFollowup = parseSideFollowup(question);
+    if (sideFollowup && compareMode) {
+      let line = sideFollowup.line;
+      if (!line) {
+        const last = findLastUnscopedLine(body.history);
+        if (last) line = last;
+      }
+      if (line) {
+        body.question = `${sideFollowup.target} line ${line}`;
+      } else {
+        return NextResponse.json(
+          {
+            answer: `Which line number in the ${sideFollowup.target.toUpperCase()} query? (e.g., “${sideFollowup.target} line 280”)`,
+            meta: { mode: "disambiguate", playSound: true },
+          },
+          { status: 200 }
+        );
+      }
+    }
+
+    const parsed = parseLineQuery(body.question || question);
+    if (compareMode && parsed && parsed.target == null) {
+      const n = parsed.start;
+      return NextResponse.json(
+        {
+          answer: `Did you mean OLD or NEW for line ${n}? Reply with “old line ${n}” or “new line ${n}”.`,
+          meta: { mode: "disambiguate", playSound: true },
+        },
+        { status: 200 }
+      );
+    }
+
+    const { full } = buildPrompt({ ...body, question: body.question || question });
+
     const thread = await createThread();
     await addMessage(thread.id, full);
     const run = await runAssistant(thread.id);

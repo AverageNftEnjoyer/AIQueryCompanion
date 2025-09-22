@@ -266,14 +266,18 @@ export default function ResultsPage() {
     );
 
 const totalOldLines = useMemo(() => {
-  if (mode === "compare") return (canonicalOld ? canonicalOld.split("\n").length : 0);
+  // ✅ compare mode: count RAW lines (what the user sees)
+  if (mode === "compare") return (oldQuery ? oldQuery.split("\n").length : 0);
+  // single mode: count raw old if present
   return (oldQuery ? oldQuery.split("\n").length : 0);
-}, [mode, canonicalOld, oldQuery]);
+}, [mode, oldQuery]);
 
 const totalNewLines = useMemo(() => {
-  if (mode === "compare") return (canonicalNew ? canonicalNew.split("\n").length : 0);
+  // ✅ compare mode: count RAW lines (what the user sees)
+  if (mode === "compare") return (newQuery ? newQuery.split("\n").length : 0);
+  // single mode: count raw new
   return (newQuery ? newQuery.split("\n").length : 0);
-}, [mode, canonicalNew, newQuery]);
+}, [mode, newQuery]);
 
   const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis]);
   const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old"), [allMiniChanges]);
@@ -875,117 +879,17 @@ const totalNewLines = useMemo(() => {
               {/* TOP PANE(S) — same height for both modes */}
               <section className="mt-1">
                 <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
-                  {mode === "single" ? (
-                    <>
-                      {/* Left: Single query (2/3 width) */}
-                      <div className="flex-[2] min-w-0">
-                        <SingleQueryView query={singleQuery} isLight={isLight} />
-                      </div>
+                  {mode === "single" ? (<>
+                        {/* Left: Single query (2/3 width) */}
+                        <div className="flex-[2] min-w-0 h-full">
+                          <SingleQueryView query={singleQuery} isLight={isLight} />
+                        </div>
 
-                      {/* Right: 1/3 width split vertically into Summary (top) and Chat (bottom) */}
-                      <div className="flex-[1] min-w-0 h-full flex flex-col gap-3">
-                        {/* Summary card (top half) */}
-                        <Card
-                          ref={summaryRef}
-                          className={`flex-1 min-h-0 scroll-mt-24 ${
-                            isLight ? "bg-slate-50 border-slate-200" : "bg-white border-slate-200"
-                          } shadow-lg`}
-                        >
-                          <CardContent className="p-5 h-full flex flex-col">
-                            {/* Header row */}
-                            <div className="flex items-center justify-between mb-4">
-                              <h3
-                                ref={summaryHeaderRef}
-                                tabIndex={-1}
-                                className={`${isLight ? "text-slate-900" : "text-slate-900"} font-semibold focus:outline-none`}
-                              >
-                                Summary
-                              </h3>
-
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => fetchSummary(audience)}
-                                  disabled={summarizing || !!loadingAudience}
-                                  title="Generate summary"
-                                  className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                                >
-                                  {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                                  <span className="text-sm">Generate Summary</span>
-                                </button>
-
-                                <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSwitchAudience("stakeholder")}
-                                    disabled={loadingAudience === "stakeholder"}
-                                    className={`px-3 h-8 rounded-full text-sm transition ${
-                                      audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                                    }`}
-                                    title="Stakeholder-friendly summary"
-                                  >
-                                    {loadingAudience === "stakeholder" ? (
-                                      <span className="inline-flex items-center gap-1">
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
-                                      </span>
-                                    ) : (
-                                      "Stakeholder"
-                                    )}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSwitchAudience("developer")}
-                                    disabled={loadingAudience === "developer"}
-                                    className={`px-3 h-8 rounded-full text-sm transition ${
-                                      audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                                    }`}
-                                    title="Developer-focused summary"
-                                  >
-                                    {loadingAudience === "developer" ? (
-                                      <span className="inline-flex items-center gap-1">
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
-                                      </span>
-                                    ) : (
-                                      "Developer"
-                                    )}
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                              {/* Body on its own row (full width) */}
-                              <div className="flex-1 min-h-0 bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-auto">
-                                {(() => {
-                                  const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
-                                  if (!currentSummary && (summarizing || loadingAudience)) {
-                                    return (
-                                      <div className="space-y-4">
-                                        <div className="inline-flex items-center gap-2 text-gray-700">
-                                          <Loader2 className="h-4 w-4 animate-spin" />
-                                          <span>Generating {audience} summary…</span>
-                                        </div>
-                                        <div className="space-y-2">
-                                          <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
-                                          <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
-                                          <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                                          <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
-                                        </div>
-                                      </div>
-                                    );
-                                  }
-                                  return currentSummary ? (
-                                    <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{currentSummary}</p>
-                                  ) : (
-                                    <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
-                                  );
-                                })()}
-                              </div>
-                            </CardContent>
-                          </Card>
-
-                          {/* Chat card (bottom half) */}
-                          <Card className="flex-1 min-h-0 bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
+                        {/* Right: Chat only — full height to match the query box */}
+                        <div className="flex-[1] min-w-0 h-full">
+                          <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
                             <CardContent className="p-0 h-full flex flex-col min-h-0">
-                              {/* Force ChatPanel to fill the card without overflowing the viewport */}
+                              {/* Force ChatPanel to fill the entire card height */}
                               <div className="chatpanel-fit h-full min-h-0">
                                 <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
                               </div>
@@ -999,8 +903,8 @@ const totalNewLines = useMemo(() => {
                         <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
                           <QueryComparison
                             ref={cmpRef}
-                            oldQuery={mode === "compare" ? canonicalOld : oldQuery}
-                            newQuery={mode === "compare" ? canonicalNew : newQuery}
+                            oldQuery={mode === "compare" ? oldQuery : oldQuery}
+                            newQuery={mode === "compare" ? newQuery : newQuery}
                             showTitle={false}
                             syncScrollEnabled={syncEnabled}
                           />
@@ -1042,15 +946,14 @@ const totalNewLines = useMemo(() => {
                       </>
                     )}
                   </div>
-
                   <div
-                    className={`relative z-20 flex items-center justify-center text-xs mt-3 ${
-                      isLight ? "text-gray-500" : "text-white/60"
-                    }`}
-                  >
-                    <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
-                    {mode === "single" ? "Use the right panel for Summary & Chat" : "Scroll for Changes & AI Analysis"}
-                  </div>
+                  className={`relative z-20 flex items-center justify-center text-xs mt-3 ${
+                    isLight ? "text-gray-500" : "text-white/60"
+                  }`}
+                >
+                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
+                  {mode === "single" ? "Use the right panel to chat" : "Scroll for Changes & AI Analysis"}
+                </div>
                 </section>
 
               {/* LOWER PANELS */}

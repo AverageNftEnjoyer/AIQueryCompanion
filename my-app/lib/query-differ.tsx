@@ -77,7 +77,7 @@ export function canonicalizeSQL(input: string): string {
     // clause breaks for stability
     normalized = normalized
       .replace(/,\s*/g, ", ")
-      .replace(/, /g, ",\n  ") // split list items
+      .replace(/, /g, ",\n  ")
       .replace(/\bINNER JOIN\b/gi, "\nINNER JOIN")
       .replace(/\bLEFT JOIN\b/gi, "\nLEFT JOIN")
       .replace(/\bRIGHT JOIN\b/gi, "\nRIGHT JOIN")
@@ -90,7 +90,7 @@ export function canonicalizeSQL(input: string): string {
       .replace(/\bHAVING\b/gi, "\nHAVING")
       .replace(/\bUNION\b/gi, "\nUNION")
 
-    // visual spacing before major clauses
+  // visual spacing before major clauses
     normalized = normalized.replace(
       /\n(SELECT\b|FROM\b|WHERE\b|GROUP BY\b|ORDER BY\b|HAVING\b|UNION\b|INNER JOIN\b|LEFT JOIN\b|RIGHT JOIN\b|FULL JOIN\b)/gi,
       "\n\n$1"
@@ -163,9 +163,14 @@ function normalizeLineForCompare(s: string) {
   return s.replace(/\s+/g, " ").trim().toUpperCase()
 }
 
-export function generateQueryDiff(oldQueryRaw: string, newQueryRaw: string): ComparisonResult {
-  const oldQuery = canonicalizeSQL(oldQueryRaw)
-  const newQuery = canonicalizeSQL(newQueryRaw)
+export function generateQueryDiff(
+  oldQueryRaw: string,
+  newQueryRaw: string,
+  opts?: { basis?: "canonical" | "raw" }
+): ComparisonResult {
+  const basis = opts?.basis ?? "canonical"
+  const oldQuery = basis === "canonical" ? canonicalizeSQL(oldQueryRaw) : normalizeEOL(oldQueryRaw)
+  const newQuery = basis === "canonical" ? canonicalizeSQL(newQueryRaw) : normalizeEOL(newQueryRaw)
 
   const oldRaw = oldQuery.split("\n")
   const newRaw = newQuery.split("\n")
@@ -251,7 +256,6 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
   while (i < hardStop) {
     const ch = line[i]
 
-    // string literal
     if (ch === "'") {
       let j = i + 1
       while (j < hardStop) {

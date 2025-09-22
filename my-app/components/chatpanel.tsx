@@ -14,8 +14,6 @@ type ChatPanelProps = {
   stats?: unknown;
   placeholder?: string;
   heightClass?: string;
-
-  /** NEW: Let parent control the panel height (e.g., h-[28rem]) */
   containerHeightClass?: string;
 };
 
@@ -39,9 +37,7 @@ function extractLineContext(sql: string, lineNum: number, window = 6) {
   };
 }
 
-// More forgiving line detector to help local context (API still does robust parsing)
 function findLineMention(q: string): number | null {
-  // matches: "line 280", "lines 120-130" (returns first), "L280", "#280"
   const m1 = q.match(/\blines?\s+(\d{1,7})(?:\s*[-–]\s*\d+)?\b/i);
   if (m1) {
     const n = Number(m1[1]);
@@ -66,16 +62,12 @@ const ChatPanel = memo(function ChatPanel({
   heightClass = "h-[34rem]",
   containerHeightClass,
 }: ChatPanelProps) {
-  // Determine mode from presence of both queries
   const compareMode = !!rawOld && !!rawNew;
 
-  // What the panes actually DISPLAY (must match UI for correct line numbers):
-  // - compare mode: UI shows canonicalized text in both panes
-  // - single mode: UI shows raw new query with preserved spacing
-  const visibleOld = compareMode ? (canonicalOld ?? rawOld ?? "") : (rawOld ?? canonicalOld ?? "");
-  const visibleNew = compareMode ? (canonicalNew ?? rawNew ?? "") : (rawNew ?? canonicalNew ?? "");
+  // ✅ Use RAW in compare mode so numbering matches analyze mode exactly
+  const visibleOld = compareMode ? (rawOld ?? "") : (rawOld ?? canonicalOld ?? "");
+  const visibleNew = compareMode ? (rawNew ?? "") : (rawNew ?? canonicalNew ?? "");
 
-  // For completeness we still send raw values too
   const oldTextRaw = (rawOld ?? "").toString();
   const newTextRaw = (rawNew ?? "").toString();
 
@@ -103,9 +95,6 @@ const ChatPanel = memo(function ChatPanel({
 
     try {
       const maybeLine = findLineMention(q);
-
-      // Extract local context from the SAME text the API will use for indexing:
-      // default to NEW side; route will switch to OLD if the user explicitly asks for old.
       const focusFrom = visibleNew || visibleOld || "";
       const lineContext = maybeLine ? extractLineContext(focusFrom, maybeLine, 6) : null;
 
@@ -114,21 +103,12 @@ const ChatPanel = memo(function ChatPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question: q,
-
-          // raw (as pasted)
           oldQuery: oldTextRaw,
           newQuery: newTextRaw,
-
-          // ✅ exact display strings used for line numbering in the assistant
           visibleOld,
           visibleNew,
-
-          // Force visible indexing so line numbers match what the user sees
           indexing: "visible",
-
-          // Optional: mode hint for your own observability
           mode: compareMode ? "compare" : "single",
-
           context: {
             stats,
             changeCount,
@@ -142,6 +122,10 @@ const ChatPanel = memo(function ChatPanel({
                 }
               : null),
           },
+          // ✅ send recent history so route can resolve “old/new” follow-ups
+          history: [...messages, { role: "user", content: q }]
+            .slice(-8)
+            .map((m) => ({ role: m.role, content: m.content })),
         }),
       });
 
