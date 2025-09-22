@@ -1,3 +1,4 @@
+// /app/api/analyze/route.ts
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -10,7 +11,8 @@ import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
 type GoodBad = "good" | "bad";
-type DetailMode = "fast" | "expert";
+/** Single fixed mode for 2–6 sentence explanations */
+type DetailMode = "single";
 
 type ChangeItem = {
   type: ChangeType;
@@ -50,19 +52,23 @@ type ChangeExplanation = {
   _suggestions?: string[];
 };
 
-/* Provider config (mirrors summarize.ts) */
 type Provider = "openai";
 
-const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-nano";
 const PROVIDER: Provider = "openai";
+
+/** Prefer your Agent, else use your cheap model */
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+const ANALYSIS_AGENT_ID = process.env.ANALYSIS_AGENT_ID || ""; 
+const DEFAULT_MODEL = process.env.ANALYSIS_AGENT_MODEL || "gpt-4.1-nano";
 
 const MAX_QUERY_CHARS = 120_000;
 
-// —— Grouping knobs (server defaults; can be overridden by request headers safely) ——
+// —— Grouping knobs —— //
 const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2));
 const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80));
 
-// —— Networking knobs ——
+// —— Networking knobs —— //
 const FUNCTION_MAX_MS = (typeof maxDuration === "number" ? maxDuration : 60) * 1000;
 const SAFE_BUDGET_MS = Math.max(5000, FUNCTION_MAX_MS - 2000);
 const REQUEST_TIMEOUT_MS = Math.min(
@@ -71,11 +77,11 @@ const REQUEST_TIMEOUT_MS = Math.min(
 );
 const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1));
 
-// —— Model budget knobs ——
+// —— Model budget knobs —— //
 const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80));
 const ANALYSIS_MODEL_CLIP_BYTES = Math.max(8_000, Number(process.env.ANALYSIS_MODEL_CLIP_BYTES ?? 12_000));
 
-// —— Paging knobs ——
+// —— Paging knobs —— //
 const DEFAULT_PAGE_LIMIT = Math.max(10, Number(process.env.ANALYZE_PAGE_LIMIT ?? 30));
 const MAX_PAGE_LIMIT = 100;
 
@@ -108,12 +114,9 @@ function groupingFromHeaders(req: Request) {
   };
 }
 
-function detailFromRequest(req: Request, url: URL): DetailMode {
-  const h = new Headers(req.headers);
-  const header = (h.get("x-analysis-detail") || "").toLowerCase();
-  const qp = (url.searchParams.get("detail") || "").toLowerCase();
-  const raw = (qp || header) as DetailMode | "";
-  return raw === "expert" ? "expert" : "fast";
+/** Always single mode */
+function detailFromRequest(_req: Request, _url: URL): DetailMode {
+  return "single";
 }
 
 function safeErrMessage(e: any, fallback = "Unexpected error") {
@@ -165,7 +168,6 @@ function tokenFromDescription(desc: string): string {
   return (m?.[1] ?? "").trim();
 }
 
-/* Relax suppression: keep simple/quoted tokens; only drop pure punctuation */
 function shouldSuppressServer(desc: string): boolean {
   const tok = tokenFromDescription(desc);
   if (!tok) return true;
@@ -186,7 +188,6 @@ function spanFromDescription(desc: string): number {
   return 1;
 }
 
-/* Critical tokens deserve long explanations even if single-line */
 const CRITICAL_TOKENS = /\b(COMMIT|ROLLBACK|SAVEPOINT|AUTONOMOUS_TRANSACTION|SET\s+TRANSACTION|ISOLATION\s+LEVEL|LOCK\s+TABLE)\b/i;
 function isCriticalChange(desc: string): boolean {
   return CRITICAL_TOKENS.test(desc);
@@ -199,7 +200,6 @@ function verbosityForSpan(span: number, critical = false): "short" | "medium" | 
   return "long";
 }
 
-/* Provide a slim per-item local context window to anchor explanations */
 function extractLineWindow(sql: string, line: number, window = 8): string {
   const lines = (sql || "").split("\n");
   const a = Math.max(0, line - 1 - window);
@@ -235,7 +235,6 @@ function coerceExplanations(content: string): ChangeExplanation[] {
   }
 }
 
-/* Clip whole-SQL for model; item-level context is added separately */
 function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): string {
   const raw = (sql || "").replace(/\r/g, "");
   if (raw.length <= budget) return raw;
@@ -244,29 +243,23 @@ function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): strin
   return `${head}\n/* ...clipped for model... */\n${tail}`;
 }
 
-/* ========================== Payload builder for LLM ========================== */
+/* ========================== Payload builder (single) ========================== */
 
-function buildUserPayload(
-  oldQuery: string,
-  newQuery: string,
-  changes: ChangeItem[],
-  detail: DetailMode
-) {
+function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
   const enriched = changes.map((c, i) => {
     const span = spanFromDescription(c.description);
     const critical = isCriticalChange(c.description);
-    const verbosity = verbosityForSpan(span, critical);
+    const verbosity = verbosityForSpan(span, critical); // short≈2–3, medium≈4–5, long≈6
     const hints: string[] = [];
     if (critical) hints.push("transactional_change");
     if (/\bJOIN\b/i.test(c.description)) hints.push("join_change");
     if (/\bWHERE\b/i.test(c.description)) hints.push("predicate_change");
 
-    // Small, local context slices (bounded to ~800 chars each)
     const oldCtx = extractLineWindow(oldQuery, c.side === "old" ? c.lineNumber : Math.max(1, c.lineNumber - 1)).slice(0, 800);
     const newCtx = extractLineWindow(newQuery, c.side !== "old" ? c.lineNumber : Math.max(1, c.lineNumber - 1)).slice(0, 800);
 
     return {
-      index: i, 
+      index: i,
       type: c.type,
       side: c.side,
       lineNumber: c.lineNumber,
@@ -278,26 +271,17 @@ function buildUserPayload(
     };
   });
 
-  // Mode-aware length/tone policy
   const lengthPolicy =
-    detail === "fast"
-      ? "Write 2-4 human sentences per change regardless of 'verbosity'. Focus ONLY on: (1) what changed in concrete terms, (2) functional effect, (3) immediate performance/plan impact or data correctness implications. Be specific to the provided description/context. Do NOT add generic deployment/testing boilerplate unless directly and uniquely caused by the change."
-      : "Write 6–10 sentences per change (use 'verbosity' to bias within that range: short≈7, medium≈9, long≈12). Provide senior-level depth: semantics of the change, execution plan implications (sargability, cardinality/row-estimates, join order), indexing, concurrency/locking, transaction boundaries and failure modes, edge cases, and targeted test/validation steps tied to the concrete change. Avoid generic advice unless tied to the provided description/context.";
+    "Write 2–6 sentences per change (use 'verbosity' to bias: short≈2–3, medium≈4–5, long≈6). Focus on exactly what changed, correctness/edge-cases, and plan/index/cardinality implications. Keep it concrete and tied to the provided description/context.";
 
   return {
-    task: "Explain each change so a junior developer understands what changed and why it matters.",
-    mode: detail,
+    task: "Explain each change for a junior developer.",
     guidance: [
       "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
       lengthPolicy,
-      "Use 'hints' when present. If 'transactional_change', discuss transaction safety (row locks, consistency, error recovery), and risks of COMMIT-in-loop (partial commits, orphaned state, redo/undo churn).",
-      "Audience is junior-level: use plain language; define jargon briefly (e.g., 'sargable' = index-friendly).",
-      "Describe effects on clauses: SELECT, FROM, JOIN, WHERE, GROUP BY, HAVING, ORDER BY, LIMIT/OFFSET, WINDOW.",
-      "Identify change_kind (filter_narrowed, join_added, aggregation_changed, transactional_change, etc.).",
-      "Provide 'syntax' and 'performance' ratings as 'good' or 'bad'. If 'bad', include one-sentence *_explanation.",
-      "Add brief business impact if implied by names; else mark as 'weak' or 'none'.",
-      "Do NOT use boilerplate like 'business-ready dataset', 'core tables', 'reasonably fresh', 'scope that matters for reporting', 'supports day-to-day monitoring'.",
-      "Reference the provided change 'description' and per-item 'context' (old/newer) when helpful. Do not paste the full SQL."
+      "If 'transactional_change', discuss locks/consistency and why COMMIT-in-loop is risky.",
+      "Avoid boilerplate; tie advice to the provided context snippets.",
+      "Each item must include: index, text (2–6 sentences), clauses (subset), change_kind, syntax('good'|'bad'), performance('good'|'bad'), syntax_explanation if syntax='bad', performance_explanation if performance='bad', business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
     ],
     dialect: "Oracle SQL",
     oldQuery: clipSqlForModel(oldQuery),
@@ -307,74 +291,130 @@ function buildUserPayload(
       explanations: [
         {
           index: "number (echo input index)",
-          text: "string (mode-governed sentence count; see 'guidance')",
-          clauses: "array of enums subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
-          change_kind: "string enum describing type",
-          syntax: "enum: ['good','bad']",
-          performance: "enum: ['good','bad']",
-          syntax_explanation: "string (present only if syntax='bad', 1 sentence)",
-          performance_explanation: "string (present only if performance='bad', 1 sentence)",
-          business_impact: "enum: ['clear','weak','none']",
-          risk: "enum: ['low','medium','high']",
-          suggestions: "array of strings (0–2 items)"
+          text: "string (2–6 sentences)",
+          clauses: "array subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
+          change_kind: "string",
+          syntax: "good|bad",
+          performance: "good|bad",
+          syntax_explanation: "string if syntax='bad'",
+          performance_explanation: "string if performance='bad'",
+          business_impact: "clear|weak|none",
+          risk: "low|medium|high",
+          suggestions: "array (0–2)"
         }
       ]
     }
   };
 }
 
-/* ============================== OpenAI provider ============================== */
+/* ========================== OpenAI Agent / Model call ========================== */
 
-async function callOpenAI(systemPrompt: string, userContent: string): Promise<{ text: string; model: string }> {
-  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-  const OPENAI_MODEL = process.env.OPENAI_MODEL_ANALYZE || DEFAULT_OPENAI_MODEL; // allow override
+async function callLLM(systemPrompt: string, userContent: string): Promise<{ text: string; model: string; via: "agent" | "model" }> {
   if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
 
-  const makeBody = (useJsonMode: boolean) => ({
-    model: OPENAI_MODEL,
-    ...(useJsonMode ? { response_format: { type: "json_object" as const } } : {}),
-    messages: [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userContent },
-    ],
-  });
+  // ---- Try Agent (Responses API) first if configured ----
+  if (ANALYSIS_AGENT_ID) {
+    const attemptAgent = async () =>
+      withRetries(async () => {
+        const r = await fetchWithTimeout(
+          `${OPENAI_BASE_URL.replace(/\/+$/,"")}/responses`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              agent: ANALYSIS_AGENT_ID,
+              input: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: userContent },
+              ],
+              // Ask for strict JSON back:
+              response_format: { type: "json_object" },
+              temperature: 0,
+              max_output_tokens: 300, // plenty for 2–6 sentences
+            }),
+          },
+          REQUEST_TIMEOUT_MS
+        );
 
-  const attempt = async (useJsonMode: boolean) => withRetries(async () => {
-    const r = await fetchWithTimeout(
-      "https://api.openai.com/v1/chat/completions",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${OPENAI_API_KEY}` },
-        body: JSON.stringify(makeBody(useJsonMode)),
-      },
-      REQUEST_TIMEOUT_MS
-    );
+        if (isRetryableStatus(r.status)) {
+          const errText = await r.text().catch(() => "");
+          const e = new Error(`OpenAI Responses ${r.status}: ${errText || "retryable error"}`) as any;
+          e.__retryable = true;
+          throw e;
+        }
+        if (!r.ok) {
+          const errText = await r.text().catch(() => "");
+          throw new Error(`OpenAI Responses ${r.status}: ${errText}`);
+        }
 
-    if (isRetryableStatus(r.status)) {
-      const errText = await r.text().catch(() => "");
-      const e = new Error(`Upstream ${r.status}: ${errText || "retryable error"}`) as any;
-      e.__retryable = true;
-      throw e;
+        const j = await r.json().catch(() => ({}));
+        const text =
+          (j?.output_text ??
+            (Array.isArray(j?.output)
+              ? j.output
+                  .flatMap((o: any) => (Array.isArray(o?.content) ? o.content : []))
+                  .map((c: any) => c?.text)
+                  .filter(Boolean)
+                  .join("\n")
+              : "")) ||
+          j?.choices?.[0]?.message?.content?.trim() ||
+          "";
+
+        return { text, model: `agent:${ANALYSIS_AGENT_ID}`, via: "agent" as const };
+      });
+
+    try {
+      const res = await attemptAgent();
+      if (res.text && res.text.trim().length) return res;
+    } catch {
+      // fall through to model
     }
-    if (!r.ok) {
-      const errText = await r.text().catch(() => "");
-      throw new Error(`OpenAI ${r.status}: ${errText}`);
-    }
-
-    const j = await r.json();
-    const text = j?.choices?.[0]?.message?.content?.trim() ?? "";
-    return { text, model: OPENAI_MODEL };
-  });
-
-  try {
-    return await attempt(true);
-  } catch (e: any) {
-    const msg = String(e?.message || "");
-    if (/response_format|json_object|unsupported|bad request/i.test(msg)) {
-      return await attempt(false);
-    }
-    throw e;
   }
+
+  // ---- Fallback: plain model (Chat Completions) ----
+  const attemptModel = async () =>
+    withRetries(async () => {
+      const r = await fetchWithTimeout(
+        `${OPENAI_BASE_URL.replace(/\/+$/,"")}/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: DEFAULT_MODEL,
+            response_format: { type: "json_object" },
+            temperature: 0,
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: userContent },
+            ],
+          }),
+        },
+        REQUEST_TIMEOUT_MS
+      );
+
+      if (isRetryableStatus(r.status)) {
+        const errText = await r.text().catch(() => "");
+        const e = new Error(`OpenAI Chat ${r.status}: ${errText || "retryable error"}`) as any;
+        e.__retryable = true;
+        throw e;
+      }
+      if (!r.ok) {
+        const errText = await r.text().catch(() => "");
+        throw new Error(`OpenAI Chat ${r.status}: ${errText}`);
+      }
+
+      const j = await r.json().catch(() => ({}));
+      const text = j?.choices?.[0]?.message?.content?.trim() ?? "";
+      return { text, model: DEFAULT_MODEL, via: "model" as const };
+    });
+
+  return await attemptModel();
 }
 
 /* ============================ Diff → atomic changes ============================ */
@@ -491,8 +531,7 @@ function buildSqlStructure(sql: string): SqlStructure {
     if (withRE.test(t)) inWith = true;
     if (inWith && asOpenRE.test(t)) {
       const startLine = n + 1;
-      let depth = 1,
-        j = i + 1;
+      let depth = 1, j = i + 1;
       while (j < lines.length && depth > 0) {
         const L = lines[j];
         depth += (L.match(/\(/g) || []).length;
@@ -505,7 +544,7 @@ function buildSqlStructure(sql: string): SqlStructure {
     if (inWith && /^\s*SELECT\b/i.test(t)) inWith = false;
   }
 
-  // Subqueries: '(' ... SELECT ... ')'
+  // Subqueries
   type StackItem = { openLine: number; isSubquery: boolean };
   const stack: StackItem[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -526,8 +565,7 @@ function buildSqlStructure(sql: string): SqlStructure {
 
     // BEGIN..END (PL/SQL)
     if (/^\s*BEGIN\b/i.test(line)) {
-      let j = i + 1,
-        opens = 1;
+      let j = i + 1, opens = 1;
       while (j < lines.length && opens > 0) {
         if (/^\s*BEGIN\b/i.test(lines[j])) opens++;
         if (/^\s*END\b/i.test(lines[j])) opens--;
@@ -601,8 +639,7 @@ function groupChangesSmart(
         const idx = struct.blocks.indexOf(b);
         counts.set(idx, (counts.get(idx) ?? 0) + 1);
       }
-      let bestIdx = -1,
-        best = 0;
+      let bestIdx = -1, best = 0;
       counts.forEach((v, key) => {
         if (v > best) {
           best = v;
@@ -677,7 +714,6 @@ function groupChangesSmart(
 
 const cache = new Map<string, any>();
 function hashPair(a: string, b: string) {
-  // tiny FNV-ish hash (demo-grade)
   let h = 2166136261;
   const s = a + "\u0000" + b;
   for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
@@ -695,7 +731,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: e.message }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
 
-    // URL params
     const url = new URL(req.url);
     const cursorParam = Number(url.searchParams.get("cursor") ?? 0);
     const limitParam = Number(url.searchParams.get("limit") ?? DEFAULT_PAGE_LIMIT);
@@ -703,17 +738,16 @@ export async function POST(req: Request) {
     const limit = clamp(isFinite(limitParam) ? limitParam : DEFAULT_PAGE_LIMIT, 10, MAX_PAGE_LIMIT);
 
     const mode = (url.searchParams.get("mode") || "").toLowerCase(); // "", "item"
-    const itemIndexParam = Number(url.searchParams.get("index") ?? NaN); // used when mode=item
+    const itemIndexParam = Number(url.searchParams.get("index") ?? NaN);
     const prepOnly = url.searchParams.get("prepOnly") === "1";
 
-    const detail: DetailMode = detailFromRequest(req, url); // <-- fast | expert
+    const detail: DetailMode = detailFromRequest(req, url); // always "single"
 
     const { oldQuery, newQuery } = body as { oldQuery: string; newQuery: string };
 
     const canonOld = canonicalizeSQL(oldQuery);
     const canonNew = canonicalizeSQL(newQuery);
 
-    // cache key only for prep/page responses; item responses are tiny, not cached
     const baseKey = hashPair(canonOld, canonNew);
 
     const diff = generateQueryDiff(canonOld, canonNew);
@@ -758,7 +792,6 @@ export async function POST(req: Request) {
 
     /* ========================== MODE: prepOnly (no LLM) ========================== */
     if (prepOnly) {
-      // Placeholder "Pending…" rows for the first page
       const pageItems = explainTargets.slice(cursor, cursor + limit);
       const nextCursor = cursor + pageItems.length < explainTargets.length ? cursor + pageItems.length : null;
 
@@ -791,9 +824,7 @@ export async function POST(req: Request) {
         page: { cursor, limit, nextCursor, total: explainTargets.length },
       };
 
-      // cache the prep page for quick reloads
       cache.set(`${baseKey}:prep:${cursor}:${limit}:${detail}`, responsePayload);
-
       return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } });
     }
 
@@ -801,47 +832,32 @@ export async function POST(req: Request) {
     if (mode === "item") {
       const total = explainTargets.length;
       const idx = Number.isFinite(itemIndexParam) ? clamp(itemIndexParam, 0, total - 1) : 0;
-
       const pageItems = [explainTargets[idx]];
 
       const systemPrompt = [
         "You are a senior Oracle SQL reviewer for a junior developer audience.",
         "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-        "Honor the length/tone policy provided in the user's payload 'guidance' for the requested detail mode (fast or expert).",
-        "Use 'hints' and 'verbosity' to bias depth within the allowed range.",
-        "If hints include 'transactional_change', explain transaction safety (row locks, partial commits, consistency, error recovery) and when COMMIT-in-loop is dangerous.",
-        "Avoid generic phrases like 'business-ready dataset', 'reasonably fresh', 'core tables', 'scope that matters for reporting', 'supports day-to-day monitoring'. Be concrete and reference the change.",
-        "Each item: index, text, clauses(subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
-        "change_kind, syntax('good'|'bad'), performance('good'|'bad'),",
-        "syntax_explanation if syntax='bad', performance_explanation if performance='bad'),",
-        "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
+        "Write 2–6 sentences per change (biased by 'verbosity').",
+        "Be concrete: clause semantics, join/predicate effects, null behavior, sargability, indexes, cardinality/row explosion, sort/limit.",
+        "If hints include 'transactional_change', cover lock scope, partial commits, and when COMMIT-in-loop is dangerous.",
+        "Avoid boilerplate and fluff; anchor advice to the provided description and local context.",
+        "Each item must include: index, text, clauses, change_kind, syntax, performance, syntax_explanation(if bad), performance_explanation(if bad), business_impact, risk, suggestions(0–2)."
       ].join(" ");
 
-      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems, detail));
-
-      const hasOpenAI = !!process.env.OPENAI_API_KEY;
+      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems));
 
       let explanationsText = "";
       let lastError: string | undefined;
-      let metaProvider: Provider = PROVIDER;
+      let usedModel = "";
+      let via: "agent" | "model" = "model";
 
-      const tryOrder: Provider[] = ["openai"];
-      const candidates = hasOpenAI ? tryOrder : [];
-
-      if (candidates.length === 0) {
-        lastError = "No LLM provider configured on this environment.";
-      } else {
-        for (const p of candidates) {
-          try {
-            const r = await callOpenAI(systemPrompt, userPayload);
-            explanationsText = r.text;
-            metaProvider = p;
-            lastError = undefined;
-            break;
-          } catch (e: any) {
-            lastError = String(e?.message || e);
-          }
-        }
+      try {
+        const r = await callLLM(systemPrompt, userPayload);
+        explanationsText = r.text;
+        usedModel = r.model;
+        via = r.via;
+      } catch (e: any) {
+        lastError = String(e?.message || e);
       }
 
       const parsed = (() => {
@@ -883,7 +899,7 @@ export async function POST(req: Request) {
       } else if (lastError) {
         const friendly =
           /AbortError|aborted|timeout/i.test(lastError)
-            ? "AI analysis temporarily unavailable: Network/egress timeout reaching LLM provider. Increase ANALYZE_REQUEST_TIMEOUT_MS or adjust network/proxy."
+            ? "AI analysis temporarily unavailable: Network timeout reaching LLM provider."
             : `AI analysis temporarily unavailable: ${lastError}`;
         explanation = friendly;
       } else {
@@ -911,7 +927,8 @@ export async function POST(req: Request) {
         ...(process.env.NODE_ENV !== "production" && {
           _debug: {
             providerPreferred: PROVIDER,
-            providerUsed: explanationsText ? metaProvider : "none",
+            via,
+            modelUsed: usedModel,
             usedExplanations: parsed.length,
             error: explanationsText ? undefined : lastError,
             timeoutMs: REQUEST_TIMEOUT_MS,
@@ -924,7 +941,7 @@ export async function POST(req: Request) {
       return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } });
     }
 
-    /* ======================== MODE: page (existing behavior) ======================== */
+    /* ======================== MODE: page (batch page) ======================== */
     const cacheKey = `${baseKey}:${cursor}:${limit}:page:${detail}`;
     if (cache.has(cacheKey)) {
       return NextResponse.json(cache.get(cacheKey), { headers: { "Cache-Control": "no-store" } });
@@ -933,46 +950,30 @@ export async function POST(req: Request) {
     const pageItems = explainTargets.slice(cursor, cursor + limit);
     const nextCursor = cursor + pageItems.length < explainTargets.length ? cursor + pageItems.length : null;
 
-    // ===== LLM call on the PAGE =====
     const systemPrompt = [
       "You are a senior Oracle SQL reviewer for a junior developer audience.",
       "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
-      "Honor the length/tone policy provided in the user's payload 'guidance' for the requested detail mode (fast or expert).",
-      "Use 'hints' and 'verbosity' to bias depth within the allowed range.",
-      "If hints include 'transactional_change', explain transaction safety (row locks, partial commits, consistency, error recovery) and when COMMIT-in-loop is dangerous.",
-      "Avoid generic phrases like 'business-ready dataset', 'reasonably fresh', 'core tables', 'scope that matters for reporting', 'supports day-to-day monitoring'. Be concrete and reference the change.",
-      "Each item: index, text, clauses(subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']),",
-      "change_kind, syntax('good'|'bad'), performance('good'|'bad'),",
-      "syntax_explanation if syntax='bad', performance_explanation if performance='bad'),",
-      "business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
+      "Write 2–6 sentences per change (biased by 'verbosity').",
+      "Be concrete: clause semantics, join/predicate effects, null behavior, sargability, indexes, cardinality/row explosion, sort/limit.",
+      "If hints include 'transactional_change', cover lock scope, partial commits, and when COMMIT-in-loop is dangerous.",
+      "Avoid boilerplate and fluff; anchor advice to the provided description and local context.",
+      "Each item must include: index, text, clauses, change_kind, syntax, performance, syntax_explanation(if bad), performance_explanation(if bad), business_impact, risk, suggestions(0–2)."
     ].join(" ");
 
-    const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems, detail));
+    const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems));
 
     let explanationsText = "";
     let modelUsed = "";
     let lastError: string | undefined;
-    let metaProvider: Provider = PROVIDER;
+    let via: "agent" | "model" = "model";
 
-    const hasOpenAI = !!process.env.OPENAI_API_KEY;
-    const tryOrder: Provider[] = ["openai"];
-    const candidates = hasOpenAI ? tryOrder : [];
-
-    if (candidates.length === 0) {
-      lastError = "No LLM provider configured on this environment.";
-    } else {
-      for (const p of candidates) {
-        try {
-          const r = await callOpenAI(systemPrompt, userPayload);
-          explanationsText = r.text;
-          modelUsed = r.model;
-          metaProvider = p;
-          lastError = undefined;
-          break;
-        } catch (e: any) {
-          lastError = String(e?.message || e);
-        }
-      }
+    try {
+      const r = await callLLM(systemPrompt, userPayload);
+      explanationsText = r.text;
+      modelUsed = r.model;
+      via = r.via;
+    } catch (e: any) {
+      lastError = String(e?.message || e);
     }
 
     const parsed = (() => {
@@ -1000,7 +1001,7 @@ export async function POST(req: Request) {
       } else if (lastError) {
         const friendly =
           /AbortError|aborted|timeout/i.test(lastError)
-            ? "AI analysis temporarily unavailable: Network/egress timeout reaching LLM provider. Increase ANALYZE_REQUEST_TIMEOUT_MS or adjust network/proxy."
+            ? "AI analysis temporarily unavailable: Network timeout reaching LLM provider."
             : `AI analysis temporarily unavailable: ${lastError}`;
         explanation = friendly;
       } else {
@@ -1058,12 +1059,12 @@ export async function POST(req: Request) {
       ...(process.env.NODE_ENV !== "production" && {
         _debug: {
           providerPreferred: PROVIDER,
-          providerUsed: explanationsText ? metaProvider : "none",
+          via,
+          modelUsed,
           usedExplanations: parsed.length,
           error: explanationsText ? undefined : lastError,
           timeoutMs: REQUEST_TIMEOUT_MS,
           retries: RETRIES,
-          modelUsed,
           detailMode: detail,
         },
       }),

@@ -25,6 +25,7 @@ import {
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ";
 import ChatPanel from "@/components/chatpanel";
+import AnalysisPanel from "@/components/analysis";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -95,7 +96,10 @@ function toMiniChanges(analysis: AnalysisResult | null) {
 
 /** === Single-query viewer: matches comparison pane feel; preserves indentation exactly === */
 function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }) {
-  const lines = useMemo(() => (query ? query.split("\n") : []), [query]);
+const lines = useMemo(() => {
+  const t = query.endsWith("\n") ? query.slice(0, -1) : query;
+  return t ? t.split("\n") : [];
+}, [query]);
   return (
     <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
       <Card
@@ -266,33 +270,29 @@ export default function ResultsPage() {
     );
 
 const totalOldLines = useMemo(() => {
-  // ✅ compare mode: count RAW lines (what the user sees)
-  if (mode === "compare") return (oldQuery ? oldQuery.split("\n").length : 0);
-  // single mode: count raw old if present
+  if (mode === "compare") return (canonicalOld ? canonicalOld.split("\n").length : 0);
   return (oldQuery ? oldQuery.split("\n").length : 0);
-}, [mode, oldQuery]);
+}, [mode, canonicalOld, oldQuery]);
 
 const totalNewLines = useMemo(() => {
-  // ✅ compare mode: count RAW lines (what the user sees)
-  if (mode === "compare") return (newQuery ? newQuery.split("\n").length : 0);
-  // single mode: count raw new
+  if (mode === "compare") return (canonicalNew ? canonicalNew.split("\n").length : 0);
   return (newQuery ? newQuery.split("\n").length : 0);
-}, [mode, newQuery]);
+}, [mode, canonicalNew, newQuery]);
 
   const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis]);
-  const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old"), [allMiniChanges]);
-  const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side !== "old"), [allMiniChanges]);
+  const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old" || c.side === "both"),[allMiniChanges]);
+  const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side === "new" || c.side === "both"),[allMiniChanges]);
 
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null);
   const summarizeAbortRef = useRef<AbortController | null>(null);
 
   const [soundOn, setSoundOn] = useState(true);
-  const [lightUI, setLightUI] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    const saved = localStorage.getItem("qa:lightUI");
-    return saved === "1";
-  });
+const [lightUI, setLightUI] = useState<boolean>(() => {
+  if (typeof window === "undefined") return false; 
+  const saved = window.localStorage.getItem("qa:lightUI");
+  return saved === "1";
+});
   const analysisDoneSoundPlayedRef = useRef(false);
 
   // small helpers
@@ -1144,7 +1144,7 @@ const totalNewLines = useMemo(() => {
                                     <span>Generating {audience} summary…</span>
                                   </div>
                                   <div className="space-y-2">
-                                    <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
+                                    <div className="h-3 w/full bg-gray-200 rounded animate-pulse" />
                                     <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
                                     <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
                                     <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
@@ -1165,124 +1165,11 @@ const totalNewLines = useMemo(() => {
 
                   {/* RIGHT: AI Analysis + Chat */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                    {/* AI Analysis (streamed explanations of diffs) */}
-                    <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-                      <CardContent className="p-5">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-slate-900 font-semibold">
-                            AI Analysis {streaming && <span className="text-xs text-gray-500 ml-2">• In Progress..</span>}
-                          </h3>
-
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={runAnalysis}
-                              disabled={streaming || !canonicalNew}
-                              title="Generate analysis"
-                              className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                            >
-                              {streaming ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                              <span className="text-sm">Generate Analysis</span>
-                            </button>
-
-                            <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setAnalysisMode("fast");
-                                  playSfx(switchAudioRef);
-                                }}
-                                className={`px-3 h-8 rounded-full text-sm transition ${
-                                  analysisMode === "fast" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                                }`}
-                                title="Fast mode (quick pass)"
-                              >
-                                Fast
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setAnalysisMode("expert");
-                                  playSfx(switchAudioRef);
-                                }}
-                                className={`px-3 h-8 rounded-full text-sm transition ${
-                                  analysisMode === "expert" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                                }`}
-                                title="Expert mode (deeper pass)"
-                              >
-                                Expert
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="h-[27.6rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
-                          <div className="space-y-4">
-                            {displayChanges.length > 0 ? (
-                              displayChanges.map((chg, index) => (
-                                <div key={index} className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                                  <div className="flex items-start gap-4">
-                                    <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                                      <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                                        Line {chg.lineNumber}
-                                      </span>
-                                      <span
-                                        className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                                          chg.type === "addition"
-                                            ? "bg-emerald-100 text-emerald-700"
-                                            : chg.type === "deletion"
-                                            ? "bg-rose-100 text-rose-700"
-                                            : "bg-amber-100 text-amber-700"
-                                        }`}
-                                      >
-                                        {chg.type}
-                                      </span>
-                                      <div className="flex flex-col gap-1 pt-1">
-                                        <span
-                                          className={
-                                            "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                            (chg.syntax === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-                                          }
-                                        >
-                                          Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
-                                        </span>
-                                        <span
-                                          className={
-                                            "px-2 py-0.5 rounded text-[10px] font-medium " +
-                                            (chg.performance === "good" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700")
-                                          }
-                                        >
-                                          Performance: {chg.performance === "good" ? "Good" : "Bad"}
-                                        </span>
-                                      </div>
-                                    </div>
-
-                                    <div className="flex-1">
-                                      {!analysisStarted ? (
-                                        <p className="text-gray-700 text-sm">Generate Analysis for further details on this change.</p>
-                                      ) : chg.explanation === "Pending…" ? (
-                                        <div className="space-y-2" aria-busy="true" aria-live="polite">
-                                          <div className="h-3 w-[95%] bg-gray-200 rounded animate-pulse" />
-                                          <div className="h-3 w-[90%] bg-gray-200 rounded animate-pulse" />
-                                          <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                                          <div className="h-3 w-[82%] bg-gray-200 rounded animate-pulse" />
-                                        </div>
-                                      ) : (
-                                        <p className="text-gray-800 text-sm leading-relaxed">{chg.explanation}</p>
-                                      )}
-                                    </div>
-                                  </div>
-                                </div>
-                              ))
-                            ) : (
-                              <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 text-sm text-gray-700">
-                                <p className="leading-relaxed">{analysis.summary}</p>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
+                   <AnalysisPanel
+                    isLight={isLight}
+                    canonicalOld={canonicalOld}
+                    canonicalNew={canonicalNew}
+                    />
 
                     {/* Chat */}
                     <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">

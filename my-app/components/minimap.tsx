@@ -20,19 +20,19 @@ interface MiniMapProps {
   className?: string
   soundSrc?: string
   soundEnabled?: boolean
-
   mapHeightPx?: number
   minBlockPx?: number
-
-  /** Optional override: force all jumps to go to this side */
   forceSide?: Side
+  maxStackRows?: number
 }
 
-const SOLID_COLOR: Record<ChangeType, string> = {
+const COLOR: Record<ChangeType, string> = {
   addition: "#10b981",     // green
-  modification: "#f59e0b", // yellow
+  modification: "#f59e0b", // amber
   deletion: "#ef4444",     // red
 }
+
+const ROW_OFFSET_PX = 3
 
 export function MiniMap({
   totalLines,
@@ -44,8 +44,32 @@ export function MiniMap({
   mapHeightPx = 220,
   minBlockPx = 6,
   forceSide,
+  maxStackRows = 3,
 }: MiniMapProps) {
+  const rootRef = React.useRef<HTMLDivElement | null>(null)
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null)
+  const [measuredH, setMeasuredH] = React.useState<number>(mapHeightPx)
+
+  React.useEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+    const ro = new ResizeObserver((entries) => {
+      const h = entries[0]?.contentRect?.height
+      if (typeof h === "number" && h > 0) setMeasuredH(h)
+    })
+    ro.observe(el)
+    if (el.clientHeight > 0) setMeasuredH(el.clientHeight)
+    return () => ro.disconnect()
+  }, [])
+
+  React.useEffect(() => {
+    const el = clickAudioRef.current
+    if (!el) return
+    el.muted = !soundEnabled
+    if (!soundEnabled) {
+      try { el.pause(); el.currentTime = 0 } catch {}
+    }
+  }, [soundEnabled])
 
   const playClick = () => {
     if (!soundEnabled) return
@@ -60,23 +84,79 @@ export function MiniMap({
     } catch {}
   }
 
-  React.useEffect(() => {
-    const el = clickAudioRef.current
-    if (!el) return
-    el.muted = !soundEnabled
-    if (!soundEnabled) {
-      try {
-        el.pause()
-        el.currentTime = 0
-      } catch {}
+  const blocks = React.useMemo(() => {
+    const H = Math.max(1, measuredH)
+    const L = Math.max(1, totalLines)
+
+    type Block = {
+      key: string
+      type: ChangeType
+      side: Side
+      line: number
+      span: number
+      label?: string
+      topPx: number
+      heightPx: number
     }
-  }, [soundEnabled])
+
+    const result: Block[] = []
+    const sorted = [...changes].sort((a, b) => a.lineNumber - b.lineNumber)
+
+    // track the last bottom per stacked row to avoid overlaps
+    const rowBottoms: number[] = []
+
+    for (let i = 0; i < sorted.length; i++) {
+      const c = sorted[i]
+      const span = Math.max(1, c.span ?? 1)
+      const start = Math.max(1, Math.min(c.lineNumber, L))
+
+      // map the *start* of the span to the minimap (not the center)
+      const heightPx = Math.max(minBlockPx, (span / L) * H)
+      let top = ((start - 1) / L) * H
+      top = Math.min(Math.max(0, top), H - heightPx)
+
+      // pick a stacking row where we don't collide
+      let row = 0
+      for (; row < rowBottoms.length; row++) {
+        if (top >= rowBottoms[row] + ROW_OFFSET_PX) break
+      }
+      if (row === rowBottoms.length) {
+        if (rowBottoms.length < maxStackRows) {
+          rowBottoms.push(-Infinity)
+        } else {
+          // choose earliest-free row and nudge
+          let best = 0
+          for (let r = 1; r < rowBottoms.length; r++)
+            if (rowBottoms[r] < rowBottoms[best]) best = r
+          row = best
+          top = Math.min(H - heightPx, Math.max(0, rowBottoms[row] + ROW_OFFSET_PX))
+        }
+      }
+
+      const topWithOffset = Math.min(H - heightPx, Math.max(0, top + row * ROW_OFFSET_PX))
+      rowBottoms[row] = topWithOffset + heightPx
+
+      result.push({
+        key: `${i}-${start}-${span}-${c.type}-${c.side}`,
+        type: c.type,
+        side: c.side,
+        line: start,
+        span,
+        label: c.label,
+        topPx: topWithOffset,
+        heightPx,
+      })
+    }
+
+    return result
+  }, [changes, measuredH, minBlockPx, totalLines, maxStackRows])
 
   return (
     <div
+      ref={rootRef}
       className={[
-        "relative w-5 rounded-md bg-white/5 border border-white/10 overflow-hidden",
-        "cursor-pointer hover:border-white/20",
+        "relative rounded-md overflow-hidden cursor-pointer",
+        "bg-white/5 border border-white/10 hover:border-white/20",
         className || "",
       ].join(" ")}
       role="navigation"
@@ -84,40 +164,26 @@ export function MiniMap({
     >
       <audio ref={clickAudioRef} src={soundSrc} preload="auto" muted={!soundEnabled} />
 
-      {changes.map((c, i) => {
-        const span = Math.max(1, c.span ?? 1)
-        const centerLine = c.lineNumber + (span - 1) / 2
-        const topPct = (centerLine / Math.max(1, totalLines)) * 100
-
-        const hPx = Math.max(
-            minBlockPx,
-            (span / Math.max(1, totalLines)) * mapHeightPx
-          )
-
-        return (
-          <button
-            key={i}
-            title={`${c.label || c.type} @ lines ${c.lineNumber}-${c.lineNumber + span - 1}`}
-            onClick={(e) => {
-              e.preventDefault()
-              playClick()
-              onJump({
-                side: forceSide ?? (c.side as Side),
-                line: c.lineNumber,
-              })
-            }}
-            className="absolute left-0 right-0 transition-[filter,transform] hover:brightness-110 active:brightness-125"
-            style={{
-              top: `calc(${topPct}% - ${hPx / 2}px)`,
-              height: `${hPx}px`,
-              backgroundColor: SOLID_COLOR[c.type],
-              opacity: 1,
-              mixBlendMode: "normal",
-            }}
-            aria-label={`Jump to ${c.type} at lines ${c.lineNumber}-${c.lineNumber + span - 1}`}
-          />
-        )
-      })}
+      {blocks.map((b) => (
+        <button
+          key={b.key}
+          title={`${b.label || b.type} @ lines ${b.line}-${b.line + b.span - 1}`}
+          onClick={(e) => {
+            e.preventDefault()
+            playClick()
+            onJump({ side: forceSide ?? b.side, line: b.line })
+          }}
+          className="absolute left-0 right-0 transition-[filter,transform] hover:brightness-110 active:brightness-125"
+          style={{
+            top: `${b.topPx}px`,
+            height: `${b.heightPx}px`,
+            backgroundColor: COLOR[b.type],
+            opacity: 1,
+            mixBlendMode: "normal",
+          }}
+          aria-label={`Jump to ${b.type} at lines ${b.line}-${b.line + b.span - 1}`}
+        />
+      ))}
     </div>
   )
 }

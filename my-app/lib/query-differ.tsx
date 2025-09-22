@@ -168,7 +168,8 @@ export function generateQueryDiff(
   newQueryRaw: string,
   opts?: { basis?: "canonical" | "raw" }
 ): ComparisonResult {
-  const basis = opts?.basis ?? "canonical"
+  // DEFAULT TO RAW so line numbers/grouping match the viewer; callers can opt into 'canonical'
+  const basis = opts?.basis ?? "raw"
   const oldQuery = basis === "canonical" ? canonicalizeSQL(oldQueryRaw) : normalizeEOL(oldQueryRaw)
   const newQuery = basis === "canonical" ? canonicalizeSQL(newQueryRaw) : normalizeEOL(newQueryRaw)
 

@@ -40,11 +40,15 @@ function QueryComparisonInner(
   }: QueryComparisonProps,
   ref: Ref<QueryComparisonHandle>
 ) {
+  // We render canonicalized text in both panes:
   const canonicalOld = useMemo(() => canonicalizeSQL(oldQuery), [oldQuery])
   const canonicalNew = useMemo(() => canonicalizeSQL(newQuery), [newQuery])
+
+  // ❗ Build the diff on the EXACT strings we render, and tell the differ not to
+  // canonicalize again (basis: "raw"). This keeps line numbers perfectly aligned.
   const comparison: ComparisonResult = useMemo(
-    () => generateQueryDiff(oldQuery, newQuery),
-    [oldQuery, newQuery]
+    () => generateQueryDiff(canonicalOld, canonicalNew, { basis: "raw" }),
+    [canonicalOld, canonicalNew]
   )
 
   const oldMap = useMemo(() => {
@@ -72,14 +76,14 @@ function QueryComparisonInner(
   }, [comparison])
 
   const theme = {
-    baseRow: "group flex items-start gap-3 px-3 py-1.5 rounded-md",
-    added: "bg-emerald-50 border-l-4 border-emerald-500",
-    removed: "bg-rose-50 border-l-4 border-rose-500",
-    modified: "bg-amber-50 border-l-4 border-amber-500",
-    code: "text-slate-800",
-    num: "text-slate-400",
-    header: "text-slate-700",
-  } as const
+  baseRow: "group flex items-start gap-3 px-3 py-1.5 rounded-md",
+  added: "bg-emerald-100 border-l-4 border-emerald-600",
+  removed: "bg-rose-100 border-l-4 border-rose-600",
+  modified: "bg-amber-100 border-l-4 border-amber-600",
+  code: "text-slate-800",
+  num: "text-slate-500",
+  header: "text-slate-700",
+} as const
 
   const heightStyle = { height: typeof paneHeight === "number" ? `${paneHeight}px` : paneHeight } as const
 
@@ -112,9 +116,7 @@ function QueryComparisonInner(
     const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`)
     if (!el) return
 
-    // Ensure the CSS class matches your globals.css: .flash-highlight
     el.classList.remove("flash-highlight")
-    // force reflow to restart the animation
     void el.offsetWidth
     el.classList.add("flash-highlight")
     window.setTimeout(() => el.classList.remove("flash-highlight"), 1500)
@@ -160,7 +162,7 @@ function QueryComparisonInner(
       if (target) {
         primary.scrollTop = target.offsetTop - primary.clientHeight / 2
       } else {
-        // fallback: proportional scroll
+        // fallback: proportional scroll against the same canonical text we render
         const total = (side === "old" ? canonicalOld : canonicalNew).split("\n").length
         const ratio = Math.max(0, Math.min(1, (line - 1) / Math.max(1, total - 1)))
         primary.scrollTop = ratio * Math.max(1, primary.scrollHeight - primary.clientHeight)
@@ -176,8 +178,9 @@ function QueryComparisonInner(
     ariaLabel: string,
     side: "old" | "new"
   ) => {
-    const lines = text.split("\n")
-    const refDiv = side === "old" ? leftRef : rightRef
+const displayText = text.endsWith("\n") ? text.slice(0, -1) : text
+const lines = displayText ? displayText.split("\n") : []   
+const refDiv = side === "old" ? leftRef : rightRef
 
     return (
       <div
@@ -209,10 +212,10 @@ function QueryComparisonInner(
                 className={`${theme.baseRow} ${rowBg} relative`}
               >
                 <span
-                  className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-slate-50 dark:bg-neutral-900`}
-                >
-                  {n}
-                </span>
+                className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-transparent`}
+              >
+                {n}
+              </span>
                 <code className="block whitespace-pre pr-4">{renderHighlightedSQL(line)}</code>
               </div>
             )
@@ -256,18 +259,16 @@ function QueryComparisonInner(
           height: 10px;
         }
         .hover-scroll::-webkit-scrollbar-track {
-          background: #f8fafc; /* light gray track */
+          background: #f8fafc;
         }
         .hover-scroll::-webkit-scrollbar-thumb {
-          background-color: #cbd5e1; /* slate-300 thumb */
+          background-color: #cbd5e1;
           border-radius: 6px;
-          border: 2px solid #f8fafc; /* padding effect */
+          border: 2px solid #f8fafc;
         }
         .hover-scroll::-webkit-scrollbar-thumb:hover {
-          background-color: #94a3b8; /* slate-400 on hover */
+          background-color: #94a3b8;
         }
-
-        /* Firefox support */
         .hover-scroll {
           scrollbar-width: thin;
           scrollbar-color: #cbd5e1 #f8fafc;
