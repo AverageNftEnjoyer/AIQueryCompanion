@@ -41,24 +41,22 @@ export default function Page() {
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // --- Speech bubble state ---
   const lines = useMemo(
     () => [
   "Welcome! Pick a mode to begin.",
   "Compare Mode: for results at a glance.",
   "Analysis Mode: for deep insights.",
   "Want diffs and color-coded changes? Choose Compare.",
-  "Click a card to continue—I'll meet you there.",
-  "Tip: Theme toggle lives in the top-right.",
+  "Click a card to get started.",
+  "Tip: Theme toggle lives in the top right.",
   "Mute or unmute sounds with the bell up top.",
   "Not sure where to start? Compare is a great first step.",
-  "After you pick a mode, I’ll highlight what matters.",
+  "After you pick a mode, I highlight what matters.",
   "Compare shows additions, modifications, and deletions.",
   "Analysis explains performance risks and best practices.",
   "Ready for a summary later? I can write one for you.",
   "Large queries? Analysis can flag bottlenecks.",
-  "In Compare, you’ll get minimaps to jump around fast.",
-  "Okay, let’s dive in—choose your adventure!",
+  "Ready to dive in?",
     ],
     []
   );
@@ -118,7 +116,6 @@ export default function Page() {
       el.pause();
       el.currentTime = 0;
       el.volume = 0.5;
-      // @ts-ignore
       el.play()?.catch(() => {});
     } catch {}
   };
@@ -131,7 +128,6 @@ export default function Page() {
       el.pause();
       el.currentTime = 0;
       el.volume = 0.6;
-      // @ts-ignore
       el.play()?.catch(() => {});
     } catch {}
   };
@@ -186,7 +182,6 @@ export default function Page() {
     if (bubbleTimerRef.current) {
       window.clearTimeout(bubbleTimerRef.current);
     }
-    // Auto-hide after 2.6s (tweak as you like)
     bubbleTimerRef.current = window.setTimeout(() => {
       setShowBubble(false);
     }, 2600);
@@ -335,7 +330,7 @@ export default function Page() {
                     </div>
                   </div>
                   <div className="mt-auto">
-\                    <Button
+                   <Button
                       type="button"
                       className="w-full bg-gradient-to-r from-slate-600 to-slate-700 text-white hover:from-slate-500 hover:to-slate-600 transition-all font-medium glow-slate group-hover:scale-105"
                     >
@@ -407,13 +402,14 @@ export default function Page() {
         {/* Floating mascot + speech bubble (bottom-right) */}
 <div
   className="
+    mascot-wrap
     fixed
-    bottom-2 sm:bottom-3 md:bottom-4           /* slightly higher on larger screens */
-    right-[-8px] sm:right-[-12px] md:right-[-18px] lg:right-[-24px]  /* nudge off-screen to the right */
+    bottom-2 sm:bottom-3 md:bottom-4
+    right-[-8px] sm:right-[-12px] md:right-[-18px] lg:right-[-24px]
     z-[60]
     select-none
   "
->        {showBubble && (
+>       {showBubble && (
   <div
     key={bubbleKey}
     className={`pointer-events-none absolute right-28 bottom-[calc(90%)]
@@ -495,6 +491,20 @@ export default function Page() {
           100% { opacity: 1; transform: translateY(0) scale(1); }
         }
         .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
+          @media (max-width: 1536px) and (min-width: 1024px) {
+            html { zoom: .90; }
+          }
+          @media (max-width: 1366px) and (min-width: 1024px) {
+            html { zoom: .85; } /* tweak to taste, e.g. .88 or .9 */
+          }
+
+          @media (max-width: 1536px) {
+            .mascot-wrap { right: -24px !important; bottom: 6px !important; }
+          }
+          @media (max-width: 1366px) {
+            .mascot-wrap { right: -32px !important; bottom: 6px !important; }
+          }
+
       `}</style>
     </div>
   );
