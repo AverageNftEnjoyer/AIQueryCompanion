@@ -405,8 +405,15 @@ export default function Page() {
         </section>
 
         {/* Floating mascot + speech bubble (bottom-right) */}
-        <div className="fixed bottom-1 right-0 md:bottom-0 md:right-0 z-[60] select-none">
-        {showBubble && (
+<div
+  className="
+    fixed
+    bottom-2 sm:bottom-3 md:bottom-4           /* slightly higher on larger screens */
+    right-[-8px] sm:right-[-12px] md:right-[-18px] lg:right-[-24px]  /* nudge off-screen to the right */
+    z-[60]
+    select-none
+  "
+>        {showBubble && (
   <div
     key={bubbleKey}
     className={`pointer-events-none absolute right-28 bottom-[calc(90%)]
