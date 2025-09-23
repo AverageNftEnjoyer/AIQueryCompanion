@@ -1,9 +1,8 @@
-
 // /app/landingpage.tsx
 "use client";
 
 import type React from "react";
-import { Suspense, useMemo, useRef, useState } from "react";
+import { Suspense, useMemo, useRef, useState, useEffect } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
@@ -263,18 +262,99 @@ function QueryAnalyzer() {
     setBusyMode("compare");
     setAnalysisError(null);
 
-    // ⬇️ Preserve indentation: normalize only line endings, no reformatting
     const rawOld = oldQuery.replace(/\r\n/g, "\n");
     const rawNew = newQuery.replace(/\r\n/g, "\n");
 
-    // Results page expects { mode: "compare", oldQuery, newQuery }
     sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare", oldQuery: rawOld, newQuery: rawNew }));
     sessionStorage.setItem("qa:allowSound", "1");
     window.location.href = "/results";
   };
 
+  /* ---------------- Floating Mascot (copied from Home) ---------------- */
+  const botAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const lines = useMemo(
+    () => [
+  "Welcome back. Drop your SQL here.",
+  "Paste your query in the box!",
+  "Upload your SQL file and lets go through the results.",
+  "If you have two queries, I can compare them side by side.",
+  "Not sure what changed? I’ll point it out!",
+  "Attach a .sql or .txt file and I’ll handle the rest.",
+  "Tip: Keep each query under 120,000 characters for the best experience.",
+  "Did you know? You can drag and drop files directly into the box.",
+  "I’ll highlight risky areas and suggest improvements.",
+  "Paste your query and let’s see what we can learn.",
+  "You can switch between light and dark themes anytime using the toggle above.",
+  "Mute or unmute sounds with the bell icon in the header.",
+    ],
+    []
+  );
+  const [bubbleText, setBubbleText] = useState<string>("");
+  const [showBubble, setShowBubble] = useState<boolean>(false);
+  const [bubbleKey, setBubbleKey] = useState<number>(0);
+  const bubbleTimerRef = useRef<number | null>(null);
+  const bubbleDims = useMemo(() => {
+    const len = (bubbleText || "").length;
+
+    if (len <= 24) {
+      return { minW: 140, maxW: 260 };
+    } else if (len <= 70) {
+      return { minW: 180, maxW: 480 };
+    }
+    return { minW: 220, maxW: 720 };
+  }, [bubbleText]);
+
+  useEffect(() => {
+    const a = botAudioRef.current;
+    if (!a) return;
+    a.muted = !soundOn;
+    if (!soundOn) {
+      try {
+        a.pause();
+        a.currentTime = 0;
+      } catch {}
+    }
+  }, [soundOn]);
+
+  useEffect(() => {
+    return () => {
+      if (bubbleTimerRef.current) {
+        window.clearTimeout(bubbleTimerRef.current);
+        bubbleTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const playBot = () => {
+    if (!soundOn) return;
+    const el = botAudioRef.current;
+    if (!el) return;
+    try {
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.6;
+      el.play()?.catch(() => {});
+    } catch {}
+  };
+
+  const handleMascotClick = () => {
+    playBot();
+    const next = lines[Math.floor(Math.random() * lines.length)];
+    setBubbleText(next);
+    setShowBubble(true);
+    setBubbleKey((k) => k + 1);
+    if (bubbleTimerRef.current) {
+      window.clearTimeout(bubbleTimerRef.current);
+    }
+    bubbleTimerRef.current = window.setTimeout(() => {
+      setShowBubble(false);
+    }, 2600);
+  };
+  /* ---------------- End Floating Mascot ---------------- */
+
   return (
-    <div className={`min-h-screen relative ${pageBgClass}`}>
+    <div className={`min-h-screen relative ${pageBgClass} home-page`}>
       {isLight ? gridBgLight : gridBg}
 
       {/* ---------- Header replicated from Results/Home ---------- */}
@@ -324,7 +404,7 @@ function QueryAnalyzer() {
               <button
                 type="button"
                 onClick={toggleLightUI}
-                title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
+                title={isLight ? "Switch to Light Background" : "Switch to Dark Background"}
                 className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
               >
                 {isLight ? <Sun className="h-5 w-5 text-gray-700" /> : <Moon className="h-5 w-5 text-white" />}
@@ -354,6 +434,8 @@ function QueryAnalyzer() {
       {/* ---------- Body ---------- */}
       <main className="relative z-10">
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
+        {/* Mascot SFX */}
+        <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
         <div className="container mx-auto px-6 py-10">
           {uploadStatus.status && (
@@ -411,7 +493,7 @@ function QueryAnalyzer() {
                     className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadOld ? "ring-2 ring-red-400" : ""}`}
                     style={{ height: CARD_HEIGHT }}
                   >
-                    <CardContent className="p-5 flex-1 flex flex-col min-h-0">
+                    <CardContent className="p-5 flex-1 flex flex-col min_h-0 min-h-0">
                       <div className="flex-1 min-h-0">
                         <Textarea
                           placeholder="Paste your original Oracle SQL query here..."
@@ -685,6 +767,113 @@ function QueryAnalyzer() {
             </>
           )}
         </div>
+
+        {/* Floating mascot + speech bubble (bottom-right) - same as Home */}
+        <div
+          className="
+            mascot-wrap
+            fixed
+            bottom-2 sm:bottom-3 md:bottom-4
+            right-[-8px] sm:right-[-12px] md:right-[-18px] lg:right-[-24px]
+            z-[60]
+            select-none
+          "
+        >
+          {showBubble && (
+            <div
+              key={bubbleKey}
+              className={`pointer-events-none absolute right-28 bottom-[calc(90%)]
+                inline-block w-auto
+                ${isLight ? "bg-white text-slate-900 border-slate-200" : "bg-neutral-900/90 text-white border-white/10"}
+                border shadow-xl rounded-xl px-4 py-3 animate-speech-pop`}
+              style={{
+                filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.35))",
+                minWidth: `${bubbleDims.minW}px`,
+                maxWidth: `${bubbleDims.maxW}px`,
+              }}
+              aria-live="polite"
+            >
+              <span
+                className="block text-sm md:text-[0.95rem] leading-normal break-words whitespace-normal [text-wrap:pretty]"
+                style={{ hyphens: "auto", wordBreak: "break-word" }}
+              >
+                {bubbleText}
+              </span>
+
+              {/* Arrow */}
+              <span
+                className={`absolute -bottom-1.5 right-8 w-3 h-3 rotate-45 
+                  ${isLight ? "bg-white border-r border-b border-slate-200" : "bg-neutral-900/90 border-r border-b border-white/10"}`}
+              />
+            </div>
+          )}
+
+          {/* Mascot button */}
+          <button
+            type="button"
+            onClick={handleMascotClick}
+            aria-label="Play bot sound"
+            className="block"
+          >
+            <img
+              src="/icon.png"
+              width={256}
+              height={256}
+              alt="Query Companion"
+              className="
+                block
+                w-56 h-56 md:w-64 md:h-64
+                rounded-2xl
+                animate-mascot-float
+              "
+              style={{
+                filter: "drop-shadow(0 0 6px rgba(0,0,0,0.45))",
+                outline: "none",
+              }}
+              draggable={false}
+            />
+          </button>
+        </div>
+
+        <style>{`
+          @keyframes slide-up { 0%{opacity:0; transform:translateY(30px);} 100%{opacity:1; transform:translateY(0);} }
+          @keyframes bounce-subtle { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-5px);} }
+          @keyframes glow-pulse { 0%,100%{ box-shadow:0 0 20px rgba(0,255,255,.2);} 50%{ box-shadow:0 0 40px rgba(0,255,255,.4);} }
+          .animate-glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
+          .animate-bounce-subtle { animation: bounce-subtle 2s ease-in-out infinite; }
+          .animate-slide-up { animation: slide-up .8s ease-out; }
+          .glow-slate { box-shadow: 0 0 20px rgba(100,116,139,.3); }
+          .glow-teal { box-shadow: 0 0 20px rgba(20,184,166,.3); }
+
+          /* Floating icon subtle idle motion */
+          @keyframes mascot-float {
+            0%, 100% { transform: translateY(0); }
+            50%      { transform: translateY(-6px); }
+          }
+          .animate-mascot-float { animation: mascot-float 3s ease-in-out infinite; }
+
+          /* Speech bubble pop animation */
+          @keyframes speech-pop {
+            0%   { opacity: 0; transform: translateY(8px) scale(.95); }
+            60%  { opacity: 1; transform: translateY(-2px) scale(1.02); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+          }
+          .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
+
+          @media (max-width: 1536px) and (min-width: 1024px) {
+            html { zoom: .90; }
+          }
+          @media (max-width: 1366px) and (min-width: 1024px) {
+            html { zoom: .85; }
+          }
+
+          @media (max-width: 1536px) {
+            .mascot-wrap { right: -24px !important; bottom: 6px !important; }
+          }
+          @media (max-width: 1366px) {
+            .mascot-wrap { right: -32px !important; bottom: 6px !important; }
+          }
+        `}</style>
       </main>
     </div>
   );
