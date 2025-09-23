@@ -39,6 +39,43 @@ export default function Page() {
   const mode: "single" | "dual" = "dual";
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
+  const botAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // --- Speech bubble state ---
+  const lines = useMemo(
+    () => [
+  "Welcome! Pick a mode to begin.",
+  "Compare Mode: for results at a glance.",
+  "Analysis Mode: for deep insights.",
+  "Want diffs and color-coded changes? Choose Compare.",
+  "Click a card to continue—I'll meet you there.",
+  "Tip: Theme toggle lives in the top-right.",
+  "Mute or unmute sounds with the bell up top.",
+  "Not sure where to start? Compare is a great first step.",
+  "After you pick a mode, I’ll highlight what matters.",
+  "Compare shows additions, modifications, and deletions.",
+  "Analysis explains performance risks and best practices.",
+  "Ready for a summary later? I can write one for you.",
+  "Large queries? Analysis can flag bottlenecks.",
+  "In Compare, you’ll get minimaps to jump around fast.",
+  "Okay, let’s dive in—choose your adventure!",
+    ],
+    []
+  );
+  const [bubbleText, setBubbleText] = useState<string>("");
+  const [showBubble, setShowBubble] = useState<boolean>(false);
+  const [bubbleKey, setBubbleKey] = useState<number>(0); 
+  const bubbleTimerRef = useRef<number | null>(null);
+  const bubbleDims = useMemo(() => {
+  const len = (bubbleText || "").length;
+
+  if (len <= 24) {
+    return { minW: 140, maxW: 260 };    
+  } else if (len <= 70) {
+    return { minW: 180, maxW: 480 };    
+  }
+  return { minW: 220, maxW: 720 };      
+}, [bubbleText]);
 
   useEffect(() => {
     const a = switchAudioRef.current;
@@ -52,6 +89,27 @@ export default function Page() {
     }
   }, [soundOn]);
 
+  useEffect(() => {
+    const a = botAudioRef.current;
+    if (!a) return;
+    a.muted = !soundOn;
+    if (!soundOn) {
+      try {
+        a.pause();
+        a.currentTime = 0;
+      } catch {}
+    }
+  }, [soundOn]);
+
+  useEffect(() => {
+    return () => {
+      if (bubbleTimerRef.current) {
+        window.clearTimeout(bubbleTimerRef.current);
+        bubbleTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const playSwitch = () => {
     if (!soundOn) return;
     const el = switchAudioRef.current;
@@ -60,6 +118,19 @@ export default function Page() {
       el.pause();
       el.currentTime = 0;
       el.volume = 0.5;
+      // @ts-ignore
+      el.play()?.catch(() => {});
+    } catch {}
+  };
+
+  const playBot = () => {
+    if (!soundOn) return;
+    const el = botAudioRef.current;
+    if (!el) return;
+    try {
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.6;
       // @ts-ignore
       el.play()?.catch(() => {});
     } catch {}
@@ -105,6 +176,21 @@ export default function Page() {
     : "text-muted-foreground group-hover:text-slate-200";
 
   const descriptionTextClass = isLight ? "text-slate-300" : "text-muted-foreground";
+
+  const handleMascotClick = () => {
+    playBot();
+    const next = lines[Math.floor(Math.random() * lines.length)];
+    setBubbleText(next);
+    setShowBubble(true);
+    setBubbleKey((k) => k + 1); 
+    if (bubbleTimerRef.current) {
+      window.clearTimeout(bubbleTimerRef.current);
+    }
+    // Auto-hide after 2.6s (tweak as you like)
+    bubbleTimerRef.current = window.setTimeout(() => {
+      setShowBubble(false);
+    }, 2600);
+  };
 
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
@@ -183,7 +269,9 @@ export default function Page() {
 
       {/* Main */}
       <main className="relative z-10">
+        {/* SFX elements */}
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
+        <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
         <section className="container mx-auto px-4 py-12">
           <div className="max-w-6xl mx-auto">
@@ -247,8 +335,7 @@ export default function Page() {
                     </div>
                   </div>
                   <div className="mt-auto">
-                    {/* Visual CTA (kept as button for styling; overlay link above handles navigation) */}
-                    <Button
+\                    <Button
                       type="button"
                       className="w-full bg-gradient-to-r from-slate-600 to-slate-700 text-white hover:from-slate-500 hover:to-slate-600 transition-all font-medium glow-slate group-hover:scale-105"
                     >
@@ -303,7 +390,6 @@ export default function Page() {
                     </div>
                   </div>
                   <div className="mt-auto">
-                    {/* Visual CTA (button only for looks; overlay link captures click) */}
                     <Button
                       type="button"
                       className="w-full bg-gradient-to-r from-teal-600 to-teal-700 text-white hover:from-teal-500 hover:to-teal-600 transition-all font-medium glow-teal group-hover:scale-105"
@@ -317,6 +403,63 @@ export default function Page() {
             </div>
           </div>
         </section>
+
+        {/* Floating mascot + speech bubble (bottom-right) */}
+        <div className="fixed bottom-1 right-0 md:bottom-0 md:right-0 z-[60] select-none">
+        {showBubble && (
+  <div
+    key={bubbleKey}
+    className={`pointer-events-none absolute right-28 bottom-[calc(90%)]
+      inline-block w-auto
+      ${isLight ? "bg-white text-slate-900 border-slate-200" : "bg-neutral-900/90 text-white border-white/10"}
+      border shadow-xl rounded-xl px-4 py-3 animate-speech-pop`}
+    style={{
+      filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.35))",
+      minWidth: `${bubbleDims.minW}px`,
+      maxWidth: `${bubbleDims.maxW}px`,
+    }}
+    aria-live="polite"
+  >
+    <span
+      className="block text-sm md:text-[0.95rem] leading-normal break-words whitespace-normal [text-wrap:pretty]"
+      style={{ hyphens: "auto", wordBreak: "break-word" }}
+    >
+      {bubbleText}
+    </span>
+
+    {/* Arrow */}
+    <span
+      className={`absolute -bottom-1.5 right-8 w-3 h-3 rotate-45 
+        ${isLight ? "bg-white border-r border-b border-slate-200" : "bg-neutral-900/90 border-r border-b border-white/10"}`}
+    />
+  </div>
+)}
+          {/* Mascot button */}
+          <button
+            type="button"
+            onClick={handleMascotClick}
+            aria-label="Play bot sound"
+            className="block"
+          >
+            <img
+              src="/icon.png"
+              width={256}
+              height={256}
+              alt="Query Companion"
+              className="
+                block
+                w-56 h-56 md:w-64 md:h-64
+                rounded-2xl
+                animate-mascot-float
+              "
+              style={{
+                filter: "drop-shadow(0 0 6px rgba(0,0,0,0.45))",
+                outline: "none",
+              }}
+              draggable={false}
+            />
+          </button>
+        </div>
       </main>
 
       <style>{`
@@ -330,10 +473,22 @@ export default function Page() {
         .glow-teal { box-shadow: 0 0 20px rgba(20,184,166,.3); }
         .card-animate-1 { animation: slide-up .8s ease-out .2s both; }
         .card-animate-2 { animation: slide-up .8s ease-out .4s both; }
-      `}</style>
 
-      {/* switch sfx */}
-      <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
+        /* Floating icon subtle idle motion */
+        @keyframes mascot-float {
+          0%, 100% { transform: translateY(0); }
+          50%      { transform: translateY(-6px); }
+        }
+        .animate-mascot-float { animation: mascot-float 3s ease-in-out infinite; }
+
+        /* Speech bubble pop animation */
+        @keyframes speech-pop {
+          0%   { opacity: 0; transform: translateY(8px) scale(.95); }
+          60%  { opacity: 1; transform: translateY(-2px) scale(1.02); }
+          100% { opacity: 1; transform: translateY(0) scale(1); }
+        }
+        .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
+      `}</style>
     </div>
   );
 }
