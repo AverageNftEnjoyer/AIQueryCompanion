@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useUserPrefs } from "@/hooks/user-prefs";
 
 const gridBg = (
   <div className="pointer-events-none absolute inset-0 opacity-90">
@@ -33,48 +34,77 @@ const gridBgLight = (
 );
 
 export default function Page() {
-  const [isLight, setIsLight] = useState(false);
-  const [soundOn, setSoundOn] = useState(true);
-  const [syncEnabled, setSyncEnabled] = useState(true);
+  const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
   const mode: "single" | "dual" = "dual";
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
+  const bgAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // ---- Autoplay helper (handles browser autoplay policies)
+  const resumeHandlerRef = useRef<(() => void) | null>(null);
+  const clearResumeHandlers = () => {
+    if (resumeHandlerRef.current) {
+      window.removeEventListener("pointerdown", resumeHandlerRef.current);
+      window.removeEventListener("keydown", resumeHandlerRef.current);
+      resumeHandlerRef.current = null;
+    }
+  };
+  const tryAutoplay = async (el: HTMLAudioElement, volume = 0.25) => {
+    try {
+      el.pause();
+      el.currentTime = 0;
+      el.volume = volume;
+      await el.play();
+    } catch {
+      // Defer until first interaction
+      const resume = () => {
+        el
+          .play()
+          .catch(() => {})
+          .finally(() => clearResumeHandlers());
+      };
+      resumeHandlerRef.current = resume;
+      window.addEventListener("pointerdown", resume, { once: true });
+      window.addEventListener("keydown", resume, { once: true });
+    }
+  };
 
   const lines = useMemo(
     () => [
-  "Welcome! Pick a mode to begin.",
-  "Compare Mode: for results at a glance.",
-  "Analysis Mode: for deep insights.",
-  "Want diffs and color-coded changes? Choose Compare.",
-  "Click a card to get started.",
-  "Tip: Theme toggle lives in the top right.",
-  "Mute or unmute sounds with the bell up top.",
-  "Not sure where to start? Compare is a great first step.",
-  "After you pick a mode, I highlight what matters.",
-  "Compare shows additions, modifications, and deletions.",
-  "Analysis explains performance risks and best practices.",
-  "Ready for a summary later? I can write one for you.",
-  "Large queries? Analysis can flag bottlenecks.",
-  "Ready to dive in?",
+      "Welcome! Pick a mode to begin.",
+      "Compare Mode: for results at a glance.",
+      "Analysis Mode: for deep insights.",
+      "Want diffs and color-coded changes? Choose Compare.",
+      "Click a card to get started.",
+      "Tip: Theme toggle lives in the top right.",
+      "Mute or unmute sounds with the bell up top.",
+      "Not sure where to start? Compare is a great first step.",
+      "After you pick a mode, I highlight what matters.",
+      "Compare shows additions, modifications, and deletions.",
+      "Analysis explains performance risks and best practices.",
+      "Ready for a summary later? I can write one for you.",
+      "Large queries? Analysis can flag bottlenecks.",
+      "Ready to dive in?",
     ],
     []
   );
   const [bubbleText, setBubbleText] = useState<string>("");
   const [showBubble, setShowBubble] = useState<boolean>(false);
-  const [bubbleKey, setBubbleKey] = useState<number>(0); 
+  const [bubbleKey, setBubbleKey] = useState<number>(0);
   const bubbleTimerRef = useRef<number | null>(null);
   const bubbleDims = useMemo(() => {
-  const len = (bubbleText || "").length;
+    const len = (bubbleText || "").length;
 
-  if (len <= 24) {
-    return { minW: 140, maxW: 260 };    
-  } else if (len <= 70) {
-    return { minW: 180, maxW: 480 };    
-  }
-  return { minW: 220, maxW: 720 };      
-}, [bubbleText]);
+    if (len <= 24) {
+      return { minW: 140, maxW: 260 };
+    } else if (len <= 70) {
+      return { minW: 180, maxW: 480 };
+    }
+    return { minW: 220, maxW: 720 };
+  }, [bubbleText]);
 
+  // Keep effect: switch sound
   useEffect(() => {
     const a = switchAudioRef.current;
     if (!a) return;
@@ -87,6 +117,7 @@ export default function Page() {
     }
   }, [soundOn]);
 
+  // Keep effect: bot sound
   useEffect(() => {
     const a = botAudioRef.current;
     if (!a) return;
@@ -99,12 +130,39 @@ export default function Page() {
     }
   }, [soundOn]);
 
+  // NEW: background music — tie to mute button and autoplay on mount
+  useEffect(() => {
+    const a = bgAudioRef.current;
+    if (!a) return;
+    a.loop = true;
+    a.muted = !soundOn; // Bell controls muting
+    // If unmuting, ensure it's playing
+    if (soundOn) {
+      tryAutoplay(a, 0.25);
+    } else {
+      // Either keep it playing muted or pause; we'll pause to be safe
+      try {
+        a.pause();
+        a.currentTime = 0;
+      } catch {}
+    }
+  }, [soundOn]);
+
+  // Start background music on mount (handles autoplay restrictions)
+  useEffect(() => {
+    const a = bgAudioRef.current;
+    if (!a) return;
+    tryAutoplay(a, 0.25);
+    return () => clearResumeHandlers();
+  }, []);
+
   useEffect(() => {
     return () => {
       if (bubbleTimerRef.current) {
         window.clearTimeout(bubbleTimerRef.current);
         bubbleTimerRef.current = null;
       }
+      clearResumeHandlers();
     };
   }, []);
 
@@ -135,7 +193,7 @@ export default function Page() {
   const toggleLightUI = useCallback(() => {
     setIsLight((v) => !v);
     playSwitch();
-  }, []);
+  }, [setIsLight]);
 
   const handleToggleSound = useCallback(() => {
     setSoundOn((v) => {
@@ -143,12 +201,12 @@ export default function Page() {
       if (!v) setTimeout(playSwitch, 0);
       return next;
     });
-  }, []);
+  }, [setSoundOn]);
 
   const handleToggleSync = useCallback(() => {
     setSyncEnabled((v) => !v);
     playSwitch();
-  }, []);
+  }, [setSyncEnabled]);
 
   const headerBgClass = useMemo(
     () =>
@@ -178,7 +236,7 @@ export default function Page() {
     const next = lines[Math.floor(Math.random() * lines.length)];
     setBubbleText(next);
     setShowBubble(true);
-    setBubbleKey((k) => k + 1); 
+    setBubbleKey((k) => k + 1);
     if (bubbleTimerRef.current) {
       window.clearTimeout(bubbleTimerRef.current);
     }
@@ -268,6 +326,9 @@ export default function Page() {
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
+        {/* NEW: Background music (auto-plays, loops, muted by Bell) */}
+        <audio ref={bgAudioRef} src="/background.mp3" preload="auto" muted={!soundOn} loop />
+
         <section className="container mx-auto px-4 py-12">
           <div className="max-w-6xl mx-auto">
             <h2
@@ -299,9 +360,7 @@ export default function Page() {
                   >
                     <GitCompare className="w-8 h-8 text-white" />
                   </div>
-                  <CardTitle className="text-2xl mb-3 transition-colors font-medium text-white">
-                    Query Compare
-                  </CardTitle>
+                  <CardTitle className="text-2xl mb-3 transition-colors font-medium text-white">Query Compare</CardTitle>
                   <CardDescription className={`text-base leading-relaxed font-light ${descriptionTextClass}`}>
                     Advanced side-by-side query analysis with AI-powered performance insights, optimization
                     recommendations and interactive support.
@@ -323,7 +382,7 @@ export default function Page() {
                     </div>
                   </div>
                   <div className="mt-auto">
-                   <Button
+                    <Button
                       type="button"
                       className="w-full bg-gradient-to-r from-slate-600 to-slate-700 text-white hover:from-slate-500 hover:to-slate-600 transition-all font-medium glow-slate group-hover:scale-105"
                     >
@@ -354,9 +413,7 @@ export default function Page() {
                   >
                     <BarChart3 className="w-8 h-8 text-white" />
                   </div>
-                  <CardTitle className="text-2xl mb-3 transition-colors font-medium text-white">
-                    Query Analysis
-                  </CardTitle>
+                  <CardTitle className="text-2xl mb-3 transition-colors font-medium text-white">Query Analysis</CardTitle>
                   <CardDescription className={`text-base leading-relaxed font-light ${descriptionTextClass}`}>
                     Deep-dive query examination with comprehensive metrics, bottleneck detection, and intelligent
                     recommendations.
@@ -393,8 +450,8 @@ export default function Page() {
         </section>
 
         {/* Floating mascot + speech bubble (bottom-right) */}
-<div
-  className="
+        <div
+          className="
     mascot-wrap
     fixed
     bottom-2 sm:bottom-3 md:bottom-4
@@ -402,41 +459,37 @@ export default function Page() {
     z-[60]
     select-none
   "
->       {showBubble && (
-  <div
-    key={bubbleKey}
-    className={`pointer-events-none absolute right-28 bottom-[calc(90%)]
+        >
+          {showBubble && (
+            <div
+              key={bubbleKey}
+              className={`pointer-events-none absolute right-28 bottom-[calc(90%)]
       inline-block w-auto
       ${isLight ? "bg-white text-slate-900 border-slate-200" : "bg-neutral-900/90 text-white border-white/10"}
       border shadow-xl rounded-xl px-4 py-3 animate-speech-pop`}
-    style={{
-      filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.35))",
-      minWidth: `${bubbleDims.minW}px`,
-      maxWidth: `${bubbleDims.maxW}px`,
-    }}
-    aria-live="polite"
-  >
-    <span
-      className="block text-sm md:text-[0.95rem] leading-normal break-words whitespace-normal [text-wrap:pretty]"
-      style={{ hyphens: "auto", wordBreak: "break-word" }}
-    >
-      {bubbleText}
-    </span>
+              style={{
+                filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.35))",
+                minWidth: `${bubbleDims.minW}px`,
+                maxWidth: `${bubbleDims.maxW}px`,
+              }}
+              aria-live="polite"
+            >
+              <span
+                className="block text-sm md:text-[0.95rem] leading-normal break-words whitespace-normal [text-wrap:pretty]"
+                style={{ hyphens: "auto", wordBreak: "break-word" }}
+              >
+                {bubbleText}
+              </span>
 
-    {/* Arrow */}
-    <span
-      className={`absolute -bottom-1.5 right-8 w-3 h-3 rotate-45 
+              {/* Arrow */}
+              <span
+                className={`absolute -bottom-1.5 right-8 w-3 h-3 rotate-45 
         ${isLight ? "bg-white border-r border-b border-slate-200" : "bg-neutral-900/90 border-r border-b border-white/10"}`}
-    />
-  </div>
-)}
+              />
+            </div>
+          )}
           {/* Mascot button */}
-          <button
-            type="button"
-            onClick={handleMascotClick}
-            aria-label="Play bot sound"
-            className="block"
-          >
+          <button type="button" onClick={handleMascotClick} aria-label="Play bot sound" className="block">
             <img
               src="/icon.png"
               width={256}

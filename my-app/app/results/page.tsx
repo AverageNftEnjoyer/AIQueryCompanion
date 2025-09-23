@@ -1,7 +1,7 @@
-// /app/results.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Script from "next/script";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,6 +26,7 @@ import { QueryComparison, type QueryComparisonHandle } from "@/components/query-
 import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ";
 import ChatPanel from "@/components/chatpanel";
 import AnalysisPanel from "@/components/analysis";
+import { useUserPrefs } from "@/hooks/user-prefs";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -96,10 +97,10 @@ function toMiniChanges(analysis: AnalysisResult | null) {
 
 /** === Single-query viewer: matches comparison pane feel; preserves indentation exactly === */
 function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }) {
-const lines = useMemo(() => {
-  const t = query.endsWith("\n") ? query.slice(0, -1) : query;
-  return t ? t.split("\n") : [];
-}, [query]);
+  const lines = useMemo(() => {
+    const t = query.endsWith("\n") ? query.slice(0, -1) : query;
+    return t ? t.split("\n") : [];
+  }, [query]);
   return (
     <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
       <Card
@@ -241,17 +242,18 @@ export default function ResultsPage() {
   const chatbotAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
-  const [typeFilter, setTypeFilter] = useState<ChangeType | "all">(
-    (typeof window !== "undefined" && (localStorage.getItem("qa:typeFilter") as any)) || "all"
-  );
-  const [sideFilter, setSideFilter] = useState<Side | "all">(
-    (typeof window !== "undefined" && (localStorage.getItem("qa:sideFilter") as any)) || "all"
-  );
+  const [typeFilter, setTypeFilter] = useState<ChangeType | "all">("all");
+const [sideFilter, setSideFilter] = useState<Side | "all">("all");
 
-  const [syncEnabled, setSyncEnabled] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
-    return localStorage.getItem("qa:syncScroll") !== "0";
-  });
+useEffect(() => {
+  try {
+    const tf = localStorage.getItem("qa:typeFilter");
+    if (tf) setTypeFilter(tf as any);
+    const sf = localStorage.getItem("qa:sideFilter");
+    if (sf) setSideFilter(sf as any);
+  } catch {}
+}, []);
+  const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
   const [audience, setAudience] = useState<Audience>("stakeholder");
   const [summaryStakeholder, setSummaryStakeholder] = useState<string>("");
@@ -260,39 +262,33 @@ export default function ResultsPage() {
   const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null);
 
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert");
-    const canonicalOld = useMemo(
-      () => (mode === "compare" && oldQuery ? canonicalizeSQL(oldQuery) : ""),
-      [mode, oldQuery]
-    );
-    const canonicalNew = useMemo(
-      () => (newQuery ? canonicalizeSQL(newQuery) : ""),
-      [newQuery]
-    );
+  const canonicalOld = useMemo(
+    () => (mode === "compare" && oldQuery ? canonicalizeSQL(oldQuery) : ""),
+    [mode, oldQuery]
+  );
+  const canonicalNew = useMemo(
+    () => (newQuery ? canonicalizeSQL(newQuery) : ""),
+    [newQuery]
+  );
 
-const totalOldLines = useMemo(() => {
-  if (mode === "compare") return (canonicalOld ? canonicalOld.split("\n").length : 0);
-  return (oldQuery ? oldQuery.split("\n").length : 0);
-}, [mode, canonicalOld, oldQuery]);
+  const totalOldLines = useMemo(() => {
+    if (mode === "compare") return (canonicalOld ? canonicalOld.split("\n").length : 0);
+    return (oldQuery ? oldQuery.split("\n").length : 0);
+  }, [mode, canonicalOld, oldQuery]);
 
-const totalNewLines = useMemo(() => {
-  if (mode === "compare") return (canonicalNew ? canonicalNew.split("\n").length : 0);
-  return (newQuery ? newQuery.split("\n").length : 0);
-}, [mode, canonicalNew, newQuery]);
+  const totalNewLines = useMemo(() => {
+    if (mode === "compare") return (canonicalNew ? canonicalNew.split("\n").length : 0);
+    return (newQuery ? newQuery.split("\n").length : 0);
+  }, [mode, canonicalNew, newQuery]);
 
   const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis]);
-  const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old" || c.side === "both"),[allMiniChanges]);
-  const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side === "new" || c.side === "both"),[allMiniChanges]);
+  const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old" || c.side === "both"), [allMiniChanges]);
+  const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side === "new" || c.side === "both"), [allMiniChanges]);
 
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null);
   const summarizeAbortRef = useRef<AbortController | null>(null);
 
-  const [soundOn, setSoundOn] = useState(true);
-const [lightUI, setLightUI] = useState<boolean>(() => {
-  if (typeof window === "undefined") return false; 
-  const saved = window.localStorage.getItem("qa:lightUI");
-  return saved === "1";
-});
   const analysisDoneSoundPlayedRef = useRef(false);
 
   // small helpers
@@ -460,7 +456,7 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
     })();
   }, [router]);
 
-  // Sound toggles & persistence
+  // Sound toggles & persistence to actual audio elements
   useEffect(() => {
     const audios = [
       doneAudioRef.current,
@@ -481,11 +477,6 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
   }, [soundOn]);
 
   useEffect(() => {
-    const saved = typeof window !== "undefined" ? localStorage.getItem("qa:soundOn") : null;
-    if (saved === "0") setSoundOn(false);
-  }, []);
-
-  useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("qa:typeFilter", typeFilter);
   }, [typeFilter]);
   useEffect(() => {
@@ -494,7 +485,6 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
   useEffect(() => {
     if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience);
   }, [audience]);
-
 
   const stats = useMemo(() => {
     if (mode !== "compare") return null;
@@ -575,27 +565,18 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
   };
 
   const handleToggleSync = () => {
-    setSyncEnabled((v) => {
-      const next = !v;
-      if (typeof window !== "undefined") localStorage.setItem("qa:syncScroll", next ? "1" : "0");
-      playSfx(switchAudioRef);
-      return next;
-    });
+    setSyncEnabled((v) => !v);
+    playSfx(switchAudioRef);
   };
 
   const toggleLightUI = () => {
-    setLightUI((v) => {
-      const next = !v;
-      if (typeof window !== "undefined") localStorage.setItem("qa:lightUI", next ? "1" : "0");
-      return next;
-    });
+    setIsLight((v) => !v);
     playSfx(switchAudioRef);
   };
 
   const handleToggleSound = () => {
     setSoundOn((prev) => {
       const next = !prev;
-      if (typeof window !== "undefined") localStorage.setItem("qa:soundOn", next ? "1" : "0");
       if (next) {
         const el = switchAudioRef.current;
         if (el) {
@@ -622,7 +603,6 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
     });
   };
 
-  const isLight = lightUI;
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
   const headerBgClass = isLight
     ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
@@ -732,10 +712,8 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
       return res;
     };
 
-    // @ts-ignore
     window.fetch = wrappedFetch;
     return () => {
-      // @ts-ignore
       window.fetch = originalFetch;
     };
   }, [soundOn]);
@@ -879,74 +857,75 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
               {/* TOP PANE(S) — same height for both modes */}
               <section className="mt-1">
                 <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
-                  {mode === "single" ? (<>
-                        {/* Left: Single query (2/3 width) */}
-                        <div className="flex-[2] min-w-0 h-full">
-                          <SingleQueryView query={singleQuery} isLight={isLight} />
-                        </div>
+                  {mode === "single" ? (
+                    <>
+                      {/* Left: Single query (2/3 width) */}
+                      <div className="flex-[2] min-w-0 h-full">
+                        <SingleQueryView query={singleQuery} isLight={isLight} />
+                      </div>
 
-                        {/* Right: Chat only — full height to match the query box */}
-                        <div className="flex-[1] min-w-0 h-full">
-                          <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
-                            <CardContent className="p-0 h-full flex flex-col min-h-0">
-                              {/* Force ChatPanel to fill the entire card height */}
-                              <div className="chatpanel-fit h-full min-h-0">
-                                <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
-                              </div>
-                            </CardContent>
-                          </Card>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        {/* Query Comparison */}
-                        <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-                          <QueryComparison
-                            ref={cmpRef}
-                            oldQuery={mode === "compare" ? oldQuery : oldQuery}
-                            newQuery={mode === "compare" ? newQuery : newQuery}
-                            showTitle={false}
-                            syncScrollEnabled={syncEnabled}
-                          />
-                        </div>
+                      {/* Right: Chat only — full height to match the query box */}
+                      <div className="flex-[1] min-w-0 h-full">
+                        <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
+                          <CardContent className="p-0 h-full flex flex-col min-h-0">
+                            {/* Force ChatPanel to fill the entire card height */}
+                            <div className="chatpanel-fit h-full min-h-0">
+                              <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {/* Query Comparison */}
+                      <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
+                        <QueryComparison
+                          ref={cmpRef}
+                          oldQuery={mode === "compare" ? oldQuery : oldQuery}
+                          newQuery={mode === "compare" ? newQuery : newQuery}
+                          showTitle={false}
+                          syncScrollEnabled={syncEnabled}
+                        />
+                      </div>
 
-                        {/* Dual minimaps */}
-                        <div className="hidden lg:flex h-full items-stretch gap-2">
-                          <MiniMap
-                            totalLines={totalOldLines}
-                            changes={miniOld}
-                            forceSide="old"
-                            onJump={({ line }) => {
-                              playMiniClick();
-                              cmpRef.current?.scrollTo({ side: "old", line });
-                            }}
-                            className={`w-6 h-full rounded-md ${
-                              isLight
-                                ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                                : "bg-white/5 border border-white/10 hover:border-white/20"
-                            }`}
-                            soundEnabled={soundOn}
-                          />
-                          <MiniMap
-                            totalLines={totalNewLines}
-                            changes={miniNew}
-                            forceSide="new"
-                            onJump={({ line }) => {
-                              playMiniClick();
-                              cmpRef.current?.scrollTo({ side: "new", line });
-                            }}
-                            className={`w-6 h-full rounded-md ${
-                              isLight
-                                ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                                : "bg-white/5 border border-white/10 hover:border-white/20"
-                            }`}
-                            soundEnabled={soundOn}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                  <div
+                      {/* Dual minimaps */}
+                      <div className="hidden lg:flex h-full items-stretch gap-2">
+                        <MiniMap
+                          totalLines={totalOldLines}
+                          changes={miniOld}
+                          forceSide="old"
+                          onJump={({ line }) => {
+                            playMiniClick();
+                            cmpRef.current?.scrollTo({ side: "old", line });
+                          }}
+                          className={`w-6 h-full rounded-md ${
+                            isLight
+                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                              : "bg-white/5 border border-white/10 hover:border-white/20"
+                          }`}
+                          soundEnabled={soundOn}
+                        />
+                        <MiniMap
+                          totalLines={totalNewLines}
+                          changes={miniNew}
+                          forceSide="new"
+                          onJump={({ line }) => {
+                            playMiniClick();
+                            cmpRef.current?.scrollTo({ side: "new", line });
+                          }}
+                          className={`w-6 h-full rounded-md ${
+                            isLight
+                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
+                              : "bg-white/5 border border-white/10 hover:border-white/20"
+                          }`}
+                          soundEnabled={soundOn}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+                <div
                   className={`relative z-20 flex items-center justify-center text-xs mt-3 ${
                     isLight ? "text-gray-500" : "text-white/60"
                   }`}
@@ -954,7 +933,7 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   {mode === "single" ? "Use the right panel to chat" : "Scroll for Changes & AI Analysis"}
                 </div>
-                </section>
+              </section>
 
               {/* LOWER PANELS */}
               {mode === "compare" ? (
@@ -1165,18 +1144,18 @@ const [lightUI, setLightUI] = useState<boolean>(() => {
 
                   {/* RIGHT: AI Analysis + Chat */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                   <AnalysisPanel
-                    isLight={isLight}
-                    canonicalOld={canonicalOld}
-                    canonicalNew={canonicalNew}
+                    <AnalysisPanel
+                      isLight={isLight}
+                      canonicalOld={canonicalOld}
+                      canonicalNew={canonicalNew}
                     />
 
                     {/* Chat */}
                     <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                       <CardContent className="p-0">
                         <ChatPanel
-                          rawOld={oldQuery}   // raw (preserved)
-                          rawNew={newQuery}   // raw (preserved)
+                          rawOld={oldQuery}   
+                          rawNew={newQuery}   
                           changeCount={analysis?.changes?.length ?? 0}
                           stats={stats ?? null}
                         />

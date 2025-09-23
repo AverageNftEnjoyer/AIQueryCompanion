@@ -2,7 +2,7 @@
 "use client";
 
 import type React from "react";
-import { Suspense, useMemo, useRef, useState, useEffect } from "react";
+import { Suspense, useMemo, useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,6 +26,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useUserPrefs } from "@/hooks/user-prefs";
 
 export const dynamic = "force-dynamic";
 
@@ -49,9 +50,8 @@ function QueryAnalyzer() {
   const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode;
   const [landingMode] = useState<LandingMode>(initialMode);
 
-  const [lightUI, setLightUI] = useState<boolean>(false);
-  const [soundOn, setSoundOn] = useState(true);
-  const [syncEnabled, setSyncEnabled] = useState(true); 
+  // ===== Shared user prefs (persisted across pages) =====
+  const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const playSwitch = () => {
@@ -66,23 +66,24 @@ function QueryAnalyzer() {
     } catch {}
   };
 
-  const handleToggleSound = () => {
+  const handleToggleSound = useCallback(() => {
     setSoundOn((v) => {
       const next = !v;
       if (!v) setTimeout(playSwitch, 0);
       return next;
     });
-  };
-  const handleToggleSync = () => {
+  }, [setSoundOn]);
+
+  const handleToggleSync = useCallback(() => {
     setSyncEnabled((v) => !v);
     playSwitch();
-  };
-  const toggleLightUI = () => {
-    setLightUI((v) => !v);
-    playSwitch();
-  };
+  }, [setSyncEnabled]);
 
-  const isLight = lightUI;
+  const toggleLightUI = useCallback(() => {
+    setIsLight((v) => !v);
+    playSwitch();
+  }, [setIsLight]);
+
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
   const headerBgClass = isLight
     ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
@@ -275,18 +276,18 @@ function QueryAnalyzer() {
 
   const lines = useMemo(
     () => [
-  "Welcome back. Drop your SQL here.",
-  "Paste your query in the box!",
-  "Upload your SQL file and lets go through the results.",
-  "If you have two queries, I can compare them side by side.",
-  "Not sure what changed? I’ll point it out!",
-  "Attach a .sql or .txt file and I’ll handle the rest.",
-  "Tip: Keep each query under 120,000 characters for the best experience.",
-  "Did you know? You can drag and drop files directly into the box.",
-  "I’ll highlight risky areas and suggest improvements.",
-  "Paste your query and let’s see what we can learn.",
-  "You can switch between light and dark themes anytime using the toggle above.",
-  "Mute or unmute sounds with the bell icon in the header.",
+      "Welcome back. Drop your SQL here.",
+      "Paste your query in the box!",
+      "Upload your SQL file and lets go through the results.",
+      "If you have two queries, I can compare them side by side.",
+      "Not sure what changed? I’ll point it out!",
+      "Attach a .sql or .txt file and I’ll handle the rest.",
+      "Tip: Keep each query under 120,000 characters for the best experience.",
+      "Did you know? You can drag and drop files directly into the box.",
+      "I’ll highlight risky areas and suggest improvements.",
+      "Paste your query and let’s see what we can learn.",
+      "You can switch between light and dark themes anytime using the toggle above.",
+      "Mute or unmute sounds with the bell icon in the header.",
     ],
     []
   );
@@ -486,9 +487,7 @@ function QueryAnalyzer() {
               <div className="grid lg:grid-cols-2 gap-8 mb-10">
                 {/* Original Query */}
                 <div>
-                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>
-                    Original Query
-                  </h3>
+                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>Original Query</h3>
                   <Card
                     className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadOld ? "ring-2 ring-red-400" : ""}`}
                     style={{ height: CARD_HEIGHT }}
@@ -552,9 +551,7 @@ function QueryAnalyzer() {
 
                 {/* Updated Query */}
                 <div>
-                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>
-                    Updated Query
-                  </h3>
+                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>Updated Query</h3>
                   <Card
                     className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadNew ? "ring-2 ring-red-400" : ""}`}
                     style={{ height: CARD_HEIGHT }}
@@ -809,12 +806,7 @@ function QueryAnalyzer() {
           )}
 
           {/* Mascot button */}
-          <button
-            type="button"
-            onClick={handleMascotClick}
-            aria-label="Play bot sound"
-            className="block"
-          >
+          <button type="button" onClick={handleMascotClick} aria-label="Play bot sound" className="block">
             <img
               src="/icon.png"
               width={256}
