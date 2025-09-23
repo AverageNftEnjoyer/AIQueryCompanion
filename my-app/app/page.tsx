@@ -277,13 +277,6 @@ export default function Page() {
             >
               Choose Your Analysis Mode
             </h2>
-            <p
-              className={`text-lg text-center mb-16 text-pretty font-light animate-slide-up ${
-                isLight ? "text-slate-600" : "text-muted-foreground"
-              }`}
-            >
-              Select the AI-powered tool that matches your analytical needs
-            </p>
 
             <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
               {/* Query Compare */}

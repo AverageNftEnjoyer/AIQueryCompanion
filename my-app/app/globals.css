@@ -308,3 +308,9 @@ html.dark { color-scheme: dark; }
   scrollbar-width: thin;
   scrollbar-color: #e5e7eb #ffffff !important;
 }
+@media (max-width: 1536px) and (min-width: 1024px) {
+            html { zoom: .90; }
+          }
+@media (max-width: 1366px) and (min-width: 1024px) {
+            html { zoom: .85; } 
+          }
