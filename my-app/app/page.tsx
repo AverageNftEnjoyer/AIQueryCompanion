@@ -130,7 +130,6 @@ export default function Page() {
     }
   }, [soundOn]);
 
-
   const playSwitch = () => {
     if (!soundOn) return;
     const el = switchAudioRef.current;
@@ -182,19 +181,21 @@ export default function Page() {
   );
 
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
+
+  // ---- LIGHT MODE: very light grey / white cards + dark text
   const compareCardClass = isLight
-    ? "bg-slate-800 border-slate-700 hover:border-slate-500/80"
+    ? "bg-white border-slate-200 hover:border-slate-300"
     : "bg-white/5 border-slate-500/20 hover:border-slate-400/40";
 
   const analysisCardClass = isLight
-    ? "bg-slate-800 border-slate-700 hover:border-teal-400/60"
+    ? "bg-white border-teal-200 hover:border-teal-300"
     : "bg-white/5 border-teal-500/20 hover:border-teal-400/40";
 
   const featureTextClass = isLight
-    ? "text-slate-200 group-hover:text-slate-100"
+    ? "text-slate-700 group-hover:text-slate-900"
     : "text-muted-foreground group-hover:text-slate-200";
 
-  const descriptionTextClass = isLight ? "text-slate-300" : "text-muted-foreground";
+  const descriptionTextClass = isLight ? "text-slate-600" : "text-muted-foreground";
 
   const handleMascotClick = () => {
     playBot();
@@ -320,12 +321,20 @@ export default function Page() {
                 <CardHeader className="relative z-10 p-8 pb-4">
                   <div
                     className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-slate ${
-                      isLight ? "bg-slate-700" : "bg-gradient-to-br from-slate-600 to-slate-800"
+                      isLight
+                        ? "bg-slate-100 border border-slate-200"
+                        : "bg-gradient-to-br from-slate-600 to-slate-800"
                     }`}
                   >
-                    <GitCompare className="w-8 h-8 text-white" />
+                    <GitCompare className={`w-8 h-8 ${isLight ? "text-slate-700" : "text-white"}`} />
                   </div>
-                  <CardTitle className="text-2xl mb-3 transition-colors font-medium text-white">Query Compare</CardTitle>
+                  <CardTitle
+                    className={`text-2xl mb-3 transition-colors font-medium ${
+                      isLight ? "text-slate-900" : "text-white"
+                    }`}
+                  >
+                    Query Compare
+                  </CardTitle>
                   <CardDescription className={`text-base leading-relaxed font-light ${descriptionTextClass}`}>
                     Advanced side-by-side query analysis with AI-powered performance insights, optimization
                     recommendations and interactive support.
@@ -373,12 +382,20 @@ export default function Page() {
                 <CardHeader className="relative z-10 p-8 pb-4">
                   <div
                     className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-teal ${
-                      isLight ? "bg-teal-700" : "bg-gradient-to-br from-teal-600 to-teal-800"
+                      isLight
+                        ? "bg-teal-50 border border-teal-200"
+                        : "bg-gradient-to-br from-teal-600 to-teal-800"
                     }`}
                   >
-                    <BarChart3 className="w-8 h-8 text-white" />
+                    <BarChart3 className={`w-8 h-8 ${isLight ? "text-teal-700" : "text-white"}`} />
                   </div>
-                  <CardTitle className="text-2xl mb-3 transition-colors font-medium text-white">Query Analysis</CardTitle>
+                  <CardTitle
+                    className={`text-2xl mb-3 transition-colors font-medium ${
+                      isLight ? "text-slate-900" : "text-white"
+                    }`}
+                  >
+                    Query Analysis
+                  </CardTitle>
                   <CardDescription className={`text-base leading-relaxed font-light ${descriptionTextClass}`}>
                     Deep-dive query examination with comprehensive metrics, bottleneck detection, and intelligent
                     recommendations.
@@ -502,20 +519,20 @@ export default function Page() {
           100% { opacity: 1; transform: translateY(0) scale(1); }
         }
         .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
-          @media (max-width: 1536px) and (min-width: 1024px) {
-            html { zoom: .90; }
-          }
-          @media (max-width: 1366px) and (min-width: 1024px) {
-            html { zoom: .85; } /* tweak to taste, e.g. .88 or .9 */
-          }
 
-          @media (max-width: 1536px) {
-            .mascot-wrap { right: -24px !important; bottom: 6px !important; }
-          }
-          @media (max-width: 1366px) {
-            .mascot-wrap { right: -32px !important; bottom: 6px !important; }
-          }
+        @media (max-width: 1536px) and (min-width: 1024px) {
+          html { zoom: .90; }
+        }
+        @media (max-width: 1366px) and (min-width: 1024px) {
+          html { zoom: .85; }
+        }
 
+        @media (max-width: 1536px) {
+          .mascot-wrap { right: -24px !important; bottom: 6px !important; }
+        }
+        @media (max-width: 1366px) {
+          .mascot-wrap { right: -32px !important; bottom: 6px !important; }
+        }
       `}</style>
     </div>
   );
