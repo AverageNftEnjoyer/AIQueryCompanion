@@ -130,35 +130,6 @@ export default function Page() {
     }
   }, [soundOn]);
 
- useEffect(() => {
-  const a = bgAudioRef.current;
-  if (!a) return;
-  a.loop = true;
-  a.muted = !soundOn;
-  if (!soundOn) {
-    try {
-      a.pause();
-      a.currentTime = 0;
-    } catch {}
-  }
-}, [soundOn]);
-
-  useEffect(() => {
-    const a = bgAudioRef.current;
-    if (!a) return;
-    tryAutoplay(a, 0.25);
-    return () => clearResumeHandlers();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      if (bubbleTimerRef.current) {
-        window.clearTimeout(bubbleTimerRef.current);
-        bubbleTimerRef.current = null;
-      }
-      clearResumeHandlers();
-    };
-  }, []);
 
   const playSwitch = () => {
     if (!soundOn) return;
