@@ -75,7 +75,7 @@ export default function Page() {
       "Welcome! Pick a mode to begin.",
       "Compare Mode: for results at a glance.",
       "Analysis Mode: for deep insights.",
-      "Want diffs and color-coded changes? Choose Compare.",
+      "Compare mode has many features.",
       "Click a card to get started.",
       "Tip: Theme toggle lives in the top right.",
       "Mute or unmute sounds with the bell up top.",
@@ -130,25 +130,19 @@ export default function Page() {
     }
   }, [soundOn]);
 
-  // NEW: background music — tie to mute button and autoplay on mount
-  useEffect(() => {
-    const a = bgAudioRef.current;
-    if (!a) return;
-    a.loop = true;
-    a.muted = !soundOn; // Bell controls muting
-    // If unmuting, ensure it's playing
-    if (soundOn) {
-      tryAutoplay(a, 0.25);
-    } else {
-      // Either keep it playing muted or pause; we'll pause to be safe
-      try {
-        a.pause();
-        a.currentTime = 0;
-      } catch {}
-    }
-  }, [soundOn]);
+ useEffect(() => {
+  const a = bgAudioRef.current;
+  if (!a) return;
+  a.loop = true;
+  a.muted = !soundOn;
+  if (!soundOn) {
+    try {
+      a.pause();
+      a.currentTime = 0;
+    } catch {}
+  }
+}, [soundOn]);
 
-  // Start background music on mount (handles autoplay restrictions)
   useEffect(() => {
     const a = bgAudioRef.current;
     if (!a) return;
