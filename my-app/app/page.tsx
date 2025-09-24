@@ -182,20 +182,26 @@ export default function Page() {
 
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
 
-  // ---- LIGHT MODE: very light grey / white cards + dark text
+  /**
+   * CARD COLOR SCHEME (matches mascot purple/blue/pink)
+   * Compare = violet/indigo accent
+   * Analysis = fuchsia/sky accent
+   */
+
+  // Light mode: clean white cards with colored borders; Dark mode: subtle neon-tinted gradients
   const compareCardClass = isLight
-    ? "bg-white border-slate-200 hover:border-slate-300"
-    : "bg-white/5 border-slate-500/20 hover:border-slate-400/40";
+    ? "bg-white border-violet-200 hover:border-violet-300"
+    : "bg-gradient-to-b from-violet-950/40 to-indigo-900/20 border-violet-700/40 hover:border-violet-400/50";
 
   const analysisCardClass = isLight
-    ? "bg-white border-teal-200 hover:border-teal-300"
-    : "bg-white/5 border-teal-500/20 hover:border-teal-400/40";
+    ? "bg-white border-fuchsia-200 hover:border-fuchsia-300"
+    : "bg-gradient-to-b from-fuchsia-950/40 to-sky-900/20 border-fuchsia-700/40 hover:border-fuchsia-400/50";
 
   const featureTextClass = isLight
     ? "text-slate-700 group-hover:text-slate-900"
-    : "text-muted-foreground group-hover:text-slate-200";
+    : "text-slate-300 group-hover:text-white";
 
-  const descriptionTextClass = isLight ? "text-slate-600" : "text-muted-foreground";
+  const descriptionTextClass = isLight ? "text-slate-600" : "text-slate-300";
 
   const handleMascotClick = () => {
     playBot();
@@ -306,9 +312,9 @@ export default function Page() {
             </h2>
 
             <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
-              {/* Query Compare */}
+              {/* Query Compare (violet/indigo) */}
               <Card
-                className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-white/5 cursor-pointer backdrop-blur-sm card-animate-1 animate-glow-pulse min-h-[480px] flex flex-col border ${compareCardClass}`}
+                className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-fuchsia-400/10 cursor-pointer backdrop-blur-sm card-animate-1 animate-glow-pulse min-h-[480px] flex flex-col border ${compareCardClass}`}
               >
                 {/* Full-card clickable overlay */}
                 <Link
@@ -317,16 +323,17 @@ export default function Page() {
                   className="absolute inset-0 z-20"
                   aria-label="Enter Compare Mode"
                 />
-                <div className="absolute inset-0 bg-gradient-to-br from-slate-600/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                {/* Overlay tint on hover */}
+                <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 via-fuchsia-500/10 to-sky-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <CardHeader className="relative z-10 p-8 pb-4">
                   <div
-                    className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-slate ${
+                    className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-violet ${
                       isLight
-                        ? "bg-slate-100 border border-slate-200"
-                        : "bg-gradient-to-br from-slate-600 to-slate-800"
+                        ? "bg-violet-50 border border-violet-200"
+                        : "bg-gradient-to-br from-violet-600 to-indigo-700"
                     }`}
                   >
-                    <GitCompare className={`w-8 h-8 ${isLight ? "text-slate-700" : "text-white"}`} />
+                    <GitCompare className={`w-8 h-8 ${isLight ? "text-violet-700" : "text-white"}`} />
                   </div>
                   <CardTitle
                     className={`text-2xl mb-3 transition-colors font-medium ${
@@ -358,7 +365,7 @@ export default function Page() {
                   <div className="mt-auto">
                     <Button
                       type="button"
-                      className="w-full bg-gradient-to-r from-slate-600 to-slate-700 text-white hover:from-slate-500 hover:to-slate-600 transition-all font-medium glow-slate group-hover:scale-105"
+                      className="w-full bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white hover:brightness-110 transition-all font-medium glow-violet group-hover:scale-105"
                     >
                       Enter Compare Mode
                       <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-2 transition-transform" />
@@ -367,9 +374,9 @@ export default function Page() {
                 </CardContent>
               </Card>
 
-              {/* Query Analysis */}
+              {/* Query Analysis (fuchsia/sky) */}
               <Card
-                className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-white/5 cursor-pointer backdrop-blur-sm card-animate-2 min-h-[480px] flex flex-col border ${analysisCardClass}`}
+                className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-fuchsia-400/10 cursor-pointer backdrop-blur-sm card-animate-2 min-h-[480px] flex flex-col border ${analysisCardClass}`}
               >
                 {/* Full-card clickable overlay */}
                 <Link
@@ -378,16 +385,16 @@ export default function Page() {
                   className="absolute inset-0 z-20"
                   aria-label="Enter Analysis Mode"
                 />
-                <div className="absolute inset-0 bg-gradient-to-br from-teal-500/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                <div className="absolute inset-0 bg-gradient-to-br from-fuchsia-500/10 via-violet-500/10 to-sky-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <CardHeader className="relative z-10 p-8 pb-4">
                   <div
-                    className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-teal ${
+                    className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-neon ${
                       isLight
-                        ? "bg-teal-50 border border-teal-200"
-                        : "bg-gradient-to-br from-teal-600 to-teal-800"
+                        ? "bg-fuchsia-50 border border-fuchsia-200"
+                        : "bg-gradient-to-br from-fuchsia-600 to-sky-600"
                     }`}
                   >
-                    <BarChart3 className={`w-8 h-8 ${isLight ? "text-teal-700" : "text-white"}`} />
+                    <BarChart3 className={`w-8 h-8 ${isLight ? "text-fuchsia-700" : "text-white"}`} />
                   </div>
                   <CardTitle
                     className={`text-2xl mb-3 transition-colors font-medium ${
@@ -419,7 +426,7 @@ export default function Page() {
                   <div className="mt-auto">
                     <Button
                       type="button"
-                      className="w-full bg-gradient-to-r from-teal-600 to-teal-700 text-white hover:from-teal-500 hover:to-teal-600 transition-all font-medium glow-teal group-hover:scale-105"
+                      className="w-full bg-gradient-to-r from-fuchsia-600 via-violet-600 to-sky-600 text-white hover:brightness-110 transition-all font-medium glow-neon group-hover:scale-105"
                     >
                       Enter Analysis Mode
                       <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-2 transition-transform" />
@@ -496,12 +503,15 @@ export default function Page() {
       <style>{`
         @keyframes slide-up { 0%{opacity:0; transform:translateY(30px);} 100%{opacity:1; transform:translateY(0);} }
         @keyframes bounce-subtle { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-5px);} }
-        @keyframes glow-pulse { 0%,100%{ box-shadow:0 0 20px rgba(0,255,255,.2);} 50%{ box-shadow:0 0 40px rgba(0,255,255,.4);} }
+        @keyframes glow-pulse { 0%,100%{ box-shadow:0 0 24px rgba(236,72,153,.28);} 50%{ box-shadow:0 0 48px rgba(99,102,241,.38);} }
         .animate-glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
         .animate-bounce-subtle { animation: bounce-subtle 2s ease-in-out infinite; }
         .animate-slide-up { animation: slide-up .8s ease-out; }
-        .glow-slate { box-shadow: 0 0 20px rgba(100,116,139,.3); }
-        .glow-teal { box-shadow: 0 0 20px rgba(20,184,166,.3); }
+
+        /* Updated glows to match neon palette */
+        .glow-violet { box-shadow: 0 0 22px rgba(139,92,246,.45), 0 0 12px rgba(56,189,248,.25); }
+        .glow-neon { box-shadow: 0 0 22px rgba(236,72,153,.45), 0 0 12px rgba(56,189,248,.25); }
+
         .card-animate-1 { animation: slide-up .8s ease-out .2s both; }
         .card-animate-2 { animation: slide-up .8s ease-out .4s both; }
 
