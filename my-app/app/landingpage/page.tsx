@@ -1,10 +1,10 @@
-// /app/landingpage.tsx
 "use client";
 
 import type React from "react";
 import { Suspense, useMemo, useRef, useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+import Image from "next/image";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -30,7 +30,7 @@ import { useUserPrefs } from "@/hooks/user-prefs";
 
 export const dynamic = "force-dynamic";
 
-const CARD_HEIGHT = 580;
+// NOTE: Height is now controlled via CSS media queries for better fit on laptops.
 const MAX_QUERY_CHARS = 120_000;
 
 type BusyMode = "analyze" | "compare" | null;
@@ -84,6 +84,7 @@ function QueryAnalyzer() {
     playSwitch();
   }, [setIsLight]);
 
+  // ===== Theme-aligned surfaces (match home page) =====
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
   const headerBgClass = isLight
     ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
@@ -102,6 +103,23 @@ function QueryAnalyzer() {
     </div>
   );
 
+  // Panel & control classes to mirror home
+  const panelCardClass = isLight
+    ? "bg-white border-slate-200 shadow-lg"
+    : "bg-white/5 border-white/10 backdrop-blur-sm hover:border-white/20 transition";
+  const textareaClass = isLight
+    ? "h-full border-0 bg-white text-slate-900 placeholder:text-slate-500 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight"
+    : "h-full border-0 bg-white/0 text-white placeholder:text-white/60 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight";
+  const footerBarClass = isLight ? "border-t border-slate-200" : "border-t border-white/10";
+  const footerBtnGhost = isLight
+    ? "text-slate-700 hover:text-slate-900 hover:bg-black/5 rounded-lg px-3 py-1 text-sm"
+    : "text-white/80 hover:text-white hover:bg-white/10 rounded-lg px-3 py-1 text-sm";
+
+  const primaryBtnClass =
+    "px-6 md:px-8 py-3 font-heading font-medium text-base rounded-md text-white border border-white/10 shadow-md transition-all";
+  const primaryAnalyze = "bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 glow-teal";
+  const primaryCompare = "bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 glow-slate";
+
   // ---- State ----
   const [oldQuery, setOldQuery] = useState("");
   const [newQuery, setNewQuery] = useState("");
@@ -117,7 +135,6 @@ function QueryAnalyzer() {
   const oldFileInputRef = useRef<HTMLInputElement>(null);
   const newFileInputRef = useRef<HTMLInputElement>(null);
 
-  // Only count chars for the fields relevant to the current mode
   const charCountBadOld = useMemo(() => oldQuery.length > MAX_QUERY_CHARS, [oldQuery]);
   const charCountBadNew = useMemo(() => newQuery.length > MAX_QUERY_CHARS, [newQuery]);
 
@@ -271,7 +288,7 @@ function QueryAnalyzer() {
     window.location.href = "/results";
   };
 
-  /* ---------------- Floating Mascot (copied from Home) ---------------- */
+  /* ---------------- Floating Mascot (same vibe as Home) ---------------- */
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const lines = useMemo(
@@ -437,10 +454,10 @@ function QueryAnalyzer() {
         {/* Mascot SFX */}
         <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
-        <div className="container mx-auto px-6 py-10">
+        <div className="container mx-auto px-4 md:px-6 lg:px-8 py-8 md:py-10">
           {uploadStatus.status && (
             <Alert
-              className={`mb-8 ${isLight ? "bg-white" : "bg-black/40"} backdrop-blur border-white/15 ${
+              className={`mb-6 md:mb-8 ${isLight ? "bg-white" : "bg-black/40"} backdrop-blur border-white/15 ${
                 uploadStatus.status === "error" ? "border-red-500/40" : "border-emerald-500/40"
               }`}
             >
@@ -464,7 +481,7 @@ function QueryAnalyzer() {
           )}
 
           {analysisError && (
-            <Alert className={`mb-8 ${isLight ? "bg-white border-red-500/40" : "bg-black/40 border-red-500/40"} backdrop-blur`}>
+            <Alert className={`mb-6 md:mb-8 ${isLight ? "bg-white border-red-500/40" : "bg-black/40 border-red-500/40"} backdrop-blur`}>
               <AlertCircle className="w-5 h-5 text-red-500" />
               <AlertDescription className={`${isLight ? "text-gray-800" : "text-gray-200"} flex-1`}>
                 <strong>Analysis Error:</strong> {analysisError}
@@ -483,106 +500,213 @@ function QueryAnalyzer() {
           {/* ====== BODY VARIANTS ====== */}
           {landingMode === "compare" ? (
             <>
-              <div className="grid lg:grid-cols-2 gap-8 mb-10">
-                {/* Original Query */}
-                <div>
-                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>Original Query</h3>
-                  <Card
-                    className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadOld ? "ring-2 ring-red-400" : ""}`}
-                    style={{ height: CARD_HEIGHT }}
-                  >
-                    <CardContent className="p-5 flex-1 flex flex-col min_h-0 min-h-0">
-                      <div className="flex-1 min-h-0">
-                        <Textarea
-                          placeholder="Paste your original Oracle SQL query here..."
-                          value={oldQuery}
-                          onChange={(e) => setOldQuery(e.target.value)}
-                          spellCheck={false}
-                          className="h-full border-0 bg-white text-gray-800 placeholder:text-gray-500 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight"
-                          onDragEnter={(e) => handleDragEnter(e, "old")}
-                          onDragOver={handleDragOver}
-                          onDragLeave={(e) => handleDragLeave(e, "old")}
-                          onDrop={(e) => handleDrop(e, "old")}
-                        />
-                      </div>
-                      <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => oldFileInputRef.current?.click()}
-                          className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
-                        >
-                          <Upload className="w-4 h-4" /> Attach
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
-                        >
-                          <FileText className="w-4 h-4" /> SQL
-                        </Button>
-                        {oldQuery && (
+              <div className="max-w-6xl mx-auto">
+                <h2 className={`text-3xl md:text-4xl font-light text-center mb-6 md:mb-8 ${isLight ? "text-slate-900" : "text-white"}`}>
+                  Compare Queries
+                </h2>
+
+                <div className="grid lg:grid-cols-2 gap-6 md:gap-8 mb-6 md:mb-8">
+                  {/* Original Query */}
+                  <div>
+                    <h3 className={`${isLight ? "text-slate-800" : "text-white/85"} text-sm font-medium mb-2 md:mb-3`}>Original Query</h3>
+                    <Card className={`${panelCardClass} flex flex-col ${charCountBadOld ? "ring-2 ring-red-400/70" : ""} card-dyn`}>
+                      <CardContent className="p-4 md:p-5 flex-1 flex flex-col min_h-0 min-h-0">
+                        <div className="flex-1 min-h-0">
+                          <Textarea
+                            placeholder="Paste your original Oracle SQL query here..."
+                            value={oldQuery}
+                            onChange={(e) => setOldQuery(e.target.value)}
+                            spellCheck={false}
+                            className={textareaClass}
+                            onDragEnter={(e) => handleDragEnter(e, "old")}
+                            onDragOver={handleDragOver}
+                            onDragLeave={(e) => handleDragLeave(e, "old")}
+                            onDrop={(e) => handleDrop(e, "old")}
+                          />
+                        </div>
+                        <div className={`flex items-center justify-center gap-3 pt-3 mt-4 ${footerBarClass}`}>
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={() => clearQuery("old")}
-                            className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0"
+                            onClick={() => oldFileInputRef.current?.click()}
+                            className={footerBtnGhost + " flex items-center gap-2"}
                           >
-                            <X className="w-4 h-4" />
+                            <Upload className="w-4 h-4" /> Attach
                           </Button>
+                          <Button variant="ghost" size="sm" className={footerBtnGhost + " flex items-center gap-2"}>
+                            <FileText className="w-4 h-4" /> SQL
+                          </Button>
+                          {oldQuery && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => clearQuery("old")}
+                              className={
+                                isLight
+                                  ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0"
+                                  : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"
+                              }
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
+                        <input
+                          ref={oldFileInputRef}
+                          type="file"
+                          accept=".txt,.sql"
+                          onChange={(e) => handleFileInputChange(e, "old")}
+                          className="hidden"
+                        />
+                        {charCountBadOld && (
+                          <p className="mt-2 text-xs text-red-400">
+                            {oldQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                          </p>
                         )}
-                      </div>
-                      <input
-                        ref={oldFileInputRef}
-                        type="file"
-                        accept=".txt,.sql"
-                        onChange={(e) => handleFileInputChange(e, "old")}
-                        className="hidden"
-                      />
-                      {charCountBadOld && (
-                        <p className="mt-2 text-xs text-red-600">
-                          {oldQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
-                        </p>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
+                      </CardContent>
+                    </Card>
+                  </div>
 
-                {/* Updated Query */}
-                <div>
-                  <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>Updated Query</h3>
-                  <Card
-                    className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadNew ? "ring-2 ring-red-400" : ""}`}
-                    style={{ height: CARD_HEIGHT }}
+                  {/* Updated Query */}
+                  <div>
+                    <h3 className={`${isLight ? "text-slate-800" : "text-white/85"} text-sm font-medium mb-2 md:mb-3`}>Updated Query</h3>
+                    <Card className={`${panelCardClass} flex flex-col ${charCountBadNew ? "ring-2 ring-red-400/70" : ""} card-dyn`}>
+                      <CardContent className="p-4 md:p-5 flex-1 flex flex-col min-h-0">
+                        <div className="flex-1 min-h-0">
+                          <Textarea
+                            placeholder="Paste your updated Oracle SQL query here..."
+                            value={newQuery}
+                            onChange={(e) => setNewQuery(e.target.value)}
+                            spellCheck={false}
+                            className={textareaClass}
+                            onDragEnter={(e) => handleDragEnter(e, "new")}
+                            onDragOver={handleDragOver}
+                            onDragLeave={(e) => handleDragLeave(e, "new")}
+                            onDrop={(e) => handleDrop(e, "new")}
+                          />
+                        </div>
+                        <div className={`flex items-center justify-center gap-3 pt-3 mt-4 ${footerBarClass}`}>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => newFileInputRef.current?.click()}
+                            className={footerBtnGhost + " flex items-center gap-2"}
+                          >
+                            <Upload className="w-4 h-4" /> Attach
+                          </Button>
+                          <Button variant="ghost" size="sm" className={footerBtnGhost + " flex items-center gap-2"}>
+                            <FileText className="w-4 h-4" /> SQL
+                          </Button>
+                          {newQuery && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => clearQuery("new")}
+                              className={
+                                isLight
+                                  ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0"
+                                  : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"
+                              }
+                            >
+                              <X className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
+                        <input
+                          ref={newFileInputRef}
+                          type="file"
+                          accept=".txt,.sql"
+                          onChange={(e) => handleFileInputChange(e, "new")}
+                          className="hidden"
+                        />
+                        {charCountBadNew && (
+                          <p className="mt-2 text-xs text-red-400">
+                            {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                          </p>
+                        )}
+                      </CardContent>
+                    </Card>
+                  </div>
+                </div>
+              </div>
+
+              {/* Compare Button ONLY (sticky so it's always reachable) */}
+              <div className="sticky-buttons">
+                <div className="flex items-center justify-center gap-3">
+                  <Button
+                    onClick={handleCompare}
+                    disabled={busyMode !== null || !oldQuery.trim() || !newQuery.trim() || charCountBadOld || charCountBadNew}
+                    size="lg"
+                    className={`${primaryBtnClass} ${primaryCompare}`}
+                    title={!oldQuery.trim() || !newQuery.trim() ? "Paste both queries to enable" : undefined}
                   >
-                    <CardContent className="p-5 flex-1 flex flex-col min-h-0">
+                    {busyMode === "compare" ? (
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-end gap-0.5 mr-1">
+                          <span className="w-1.5 h-3 bg-white/90 rounded-sm animate-bounce" />
+                          <span className="w-1.5 h-4 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
+                          <span className="w-1.5 h-5 bg-white/70 rounded-sm animate-bounce" style={{ animationDelay: "240ms" }} />
+                        </div>
+                        <span className="relative">
+                          <span className="opacity-90">Comparing</span>
+                          <span className="absolute inset-0 bg-white/10 blur-sm rounded-sm animate-pulse" />
+                        </span>
+                      </div>
+                    ) : (
+                      <>
+                        <GitCompare className="w-5 h-5 mr-2" /> Compare
+                      </>
+                    )}
+                  </Button>
+
+                  {(oldQuery || newQuery) && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={resetAll}
+                      className={isLight ? "border-slate-200 text-slate-800 hover:bg-black/5" : "border-white/15 text-white/90 hover:bg-white/10"}
+                      title="Start a new comparison"
+                    >
+                      <X className="w-5 h-5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="max-w-3xl mx-auto">
+                <h2 className={`text-3xl md:text-4xl font-light text-center mb-6 md:mb-8 ${isLight ? "text-slate-900" : "text-white"}`}>
+                  Analyze a Single Query
+                </h2>
+
+                <div className="mb-6 md:mb-8">
+                  <h3 className={`${isLight ? "text-slate-800" : "text-white/85"} text-sm font-medium mb-2 md:mb-3`}>Upload Query</h3>
+                  <Card className={`${panelCardClass} flex flex-col ${charCountBadNew ? "ring-2 ring-red-400/70" : ""} card-dyn`}>
+                    <CardContent className="p-4 md:p-5 flex-1 flex flex-col min-h-0">
                       <div className="flex-1 min-h-0">
                         <Textarea
-                          placeholder="Paste your updated Oracle SQL query here..."
+                          placeholder="Paste your Oracle SQL query here..."
                           value={newQuery}
                           onChange={(e) => setNewQuery(e.target.value)}
                           spellCheck={false}
-                          className="h-full border-0 bg-white text-gray-800 placeholder:text-gray-500 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight"
+                          className={textareaClass}
                           onDragEnter={(e) => handleDragEnter(e, "new")}
                           onDragOver={handleDragOver}
                           onDragLeave={(e) => handleDragLeave(e, "new")}
                           onDrop={(e) => handleDrop(e, "new")}
                         />
                       </div>
-                      <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
+                      <div className={`flex items-center justify-center gap-3 pt-3 mt-4 ${footerBarClass}`}>
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => newFileInputRef.current?.click()}
-                          className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
+                          className={footerBtnGhost + " flex items-center gap-2"}
                         >
                           <Upload className="w-4 h-4" /> Attach
                         </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
-                        >
+                        <Button variant="ghost" size="sm" className={footerBtnGhost + " flex items-center gap-2"}>
                           <FileText className="w-4 h-4" /> SQL
                         </Button>
                         {newQuery && (
@@ -590,7 +714,11 @@ function QueryAnalyzer() {
                             variant="ghost"
                             size="sm"
                             onClick={() => clearQuery("new")}
-                            className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0"
+                            className={
+                              isLight
+                                ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0"
+                                : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"
+                            }
                           >
                             <X className="w-4 h-4" />
                           </Button>
@@ -604,7 +732,7 @@ function QueryAnalyzer() {
                         className="hidden"
                       />
                       {charCountBadNew && (
-                        <p className="mt-2 text-xs text-red-600">
+                        <p className="mt-2 text-xs text-red-400">
                           {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
                         </p>
                       )}
@@ -613,152 +741,47 @@ function QueryAnalyzer() {
                 </div>
               </div>
 
-              {/* Compare Button ONLY */}
-              <div className="flex items-center justify-center gap-3 mb-8">
-                <Button
-                  onClick={handleCompare}
-                  disabled={busyMode !== null || !oldQuery.trim() || !newQuery.trim() || charCountBadOld || charCountBadNew}
-                  size="lg"
-                  className="px-8 py-3 font-heading font-medium text-base rounded-md bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 text-white border border-white/10 shadow-md transition-all"
-                  title={!oldQuery.trim() || !newQuery.trim() ? "Paste both queries to enable" : undefined}
-                >
-                  {busyMode === "compare" ? (
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-end gap-0.5 mr-1">
-                        <span className="w-1.5 h-3 bg-white/90 rounded-sm animate-bounce" />
-                        <span className="w-1.5 h-4 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
-                        <span className="w-1.5 h-5 bg-white/70 rounded-sm animate-bounce" style={{ animationDelay: "240ms" }} />
-                      </div>
-                      <span className="relative">
-                        <span className="opacity-90">Comparing</span>
-                        <span className="absolute inset-0 bg-white/10 blur-sm rounded-sm animate-pulse" />
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      <GitCompare className="w-5 h-5 mr-2" /> Compare
-                    </>
-                  )}
-                </Button>
-
-                {(oldQuery || newQuery) && (
+              {/* Analyze Button ONLY (sticky) */}
+              <div className="sticky-buttons">
+                <div className="flex items-center justify-center gap-3">
                   <Button
-                    type="button"
-                    variant="outline"
-                    onClick={resetAll}
-                    className="border-white/15 text-white/90 hover:bg-white/10"
-                    title="Start a new comparison"
+                    onClick={handleAnalyze}
+                    disabled={busyMode !== null || !newQuery.trim() || charCountBadNew}
+                    size="lg"
+                    className={`${primaryBtnClass} ${primaryAnalyze}`}
+                    title={!newQuery.trim() ? "Paste a query to enable" : undefined}
                   >
-                    <X className="w-5 h-5" />
-                  </Button>
-                )}
-              </div>
-            </>
-          ) : (
-            <>
-              {/* Analyze SINGLE: one upload box labeled "Upload Query" */}
-              <div className="mb-10 mx-auto lg:w-1/2">
-                <h3 className={`${isLight ? "text-slate-800" : "text-white/80"} text-sm font-medium mb-3`}>Upload Query</h3>
-                <Card
-                  className={`bg-white border-gray-200 shadow-lg flex flex-col ${charCountBadNew ? "ring-2 ring-red-400" : ""}`}
-                  style={{ height: CARD_HEIGHT }}
-                >
-                  <CardContent className="p-5 flex-1 flex flex-col min-h-0">
-                    <div className="flex-1 min-h-0">
-                      <Textarea
-                        placeholder="Paste your Oracle SQL query here..."
-                        value={newQuery}
-                        onChange={(e) => setNewQuery(e.target.value)}
-                        spellCheck={false}
-                        className="h-full border-0 bg-white text-gray-800 placeholder:text-gray-500 font-mono text-sm resize-none focus:ring-0 focus:outline-none overflow-y-auto pt-2 pb-1 leading-tight"
-                        onDragEnter={(e) => handleDragEnter(e, "new")}
-                        onDragOver={handleDragOver}
-                        onDragLeave={(e) => handleDragLeave(e, "new")}
-                        onDrop={(e) => handleDrop(e, "new")}
-                      />
-                    </div>
-                    <div className="flex items-center justify-center gap-3 pt-3 mt-4 border-t border-gray-200">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => newFileInputRef.current?.click()}
-                        className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
-                      >
-                        <Upload className="w-4 h-4" /> Attach
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded-lg px-3 py-1 text-sm flex items-center gap-2"
-                      >
-                        <FileText className="w-4 h-4" /> SQL
-                      </Button>
-                      {newQuery && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => clearQuery("new")}
-                          className="text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-full w-8 h-8 p-0"
-                        >
-                          <X className="w-4 h-4" />
-                        </Button>
-                      )}
-                    </div>
-                    <input
-                      ref={newFileInputRef}
-                      type="file"
-                      accept=".txt,.sql"
-                      onChange={(e) => handleFileInputChange(e, "new")}
-                      className="hidden"
-                    />
-                    {charCountBadNew && (
-                      <p className="mt-2 text-xs text-red-600">
-                        {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
-                      </p>
+                    {busyMode === "analyze" ? (
+                      <div className="flex items-center gap-3">
+                        <div className="flex items-end gap-0.5 mr-1">
+                          <span className="w-1.5 h-3 bg-white/90 rounded-sm animate-bounce" />
+                          <span className="w-1.5 h-4 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
+                          <span className="w-1.5 h-5 bg-white/70 rounded-sm animate-bounce" style={{ animationDelay: "240ms" }} />
+                        </div>
+                        <span className="relative">
+                          <span className="opacity-90">Analyzing</span>
+                          <span className="absolute inset-0 bg-white/10 blur-sm rounded-sm animate-pulse" />
+                        </span>
+                      </div>
+                    ) : (
+                      <>
+                        <Zap className="w-5 h-5 mr-2" /> Analyze
+                      </>
                     )}
-                  </CardContent>
-                </Card>
-              </div>
-
-              {/* Analyze Button ONLY */}
-              <div className="flex items-center justify-center gap-3 mb-8">
-                <Button
-                  onClick={handleAnalyze}
-                  disabled={busyMode !== null || !newQuery.trim() || charCountBadNew}
-                  size="lg"
-                  className="px-8 py-3 font-heading font-medium text-base rounded-md bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 text-white border border-white/10 shadow-md transition-all"
-                  title={!newQuery.trim() ? "Paste a query to enable" : undefined}
-                >
-                  {busyMode === "analyze" ? (
-                    <div className="flex items-center gap-3">
-                      <div className="flex items-end gap-0.5 mr-1">
-                        <span className="w-1.5 h-3 bg-white/90 rounded-sm animate-bounce" />
-                        <span className="w-1.5 h-4 bg-white/80 rounded-sm animate-bounce" style={{ animationDelay: "120ms" }} />
-                        <span className="w-1.5 h-5 bg-white/70 rounded-sm animate-bounce" style={{ animationDelay: "240ms" }} />
-                      </div>
-                      <span className="relative">
-                        <span className="opacity-90">Analyzing</span>
-                        <span className="absolute inset-0 bg-white/10 blur-sm rounded-sm animate-pulse" />
-                      </span>
-                    </div>
-                  ) : (
-                    <>
-                      <Zap className="w-5 h-5 mr-2" /> Analyze
-                    </>
-                  )}
-                </Button>
-
-                {newQuery && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={resetAll}
-                    className="border-white/15 text-white/90 hover:bg-white/10"
-                    title="Start a new analysis"
-                  >
-                    <X className="w-5 h-5" />
                   </Button>
-                )}
+
+                  {newQuery && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={resetAll}
+                      className={isLight ? "border-slate-200 text-slate-800 hover:bg-black/5" : "border-white/15 text-white/90 hover:bg-white/10"}
+                      title="Start a new analysis"
+                    >
+                      <X className="w-5 h-5" />
+                    </Button>
+                  )}
+                </div>
               </div>
             </>
           )}
@@ -806,11 +829,13 @@ function QueryAnalyzer() {
 
           {/* Mascot button */}
           <button type="button" onClick={handleMascotClick} aria-label="Play bot sound" className="block">
-            <img
+            <Image
               src="/icon.png"
+              alt="Query Companion"
               width={256}
               height={256}
-              alt="Query Companion"
+              priority
+              draggable={false}
               className="
                 block
                 w-56 h-56 md:w-64 md:h-64
@@ -821,7 +846,7 @@ function QueryAnalyzer() {
                 filter: "drop-shadow(0 0 6px rgba(0,0,0,0.45))",
                 outline: "none",
               }}
-              draggable={false}
+              sizes="(min-width: 768px) 16rem, 14rem"
             />
           </button>
         </div>
@@ -850,6 +875,39 @@ function QueryAnalyzer() {
             100% { opacity: 1; transform: translateY(0) scale(1); }
           }
           .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
+
+          /* Responsive card height so buttons remain visible on laptops/short screens */
+          .card-dyn { height: 580px; }
+          @media (max-height: 900px) {
+            .card-dyn { height: 520px; }
+          }
+          @media (max-height: 800px) {
+            .card-dyn { height: 460px; }
+          }
+          @media (max-height: 720px) {
+            .card-dyn { height: 420px; }
+          }
+
+          /* Sticky action bar near the bottom for easy access */
+          .sticky-buttons {
+            position: sticky;
+            bottom: 14px;
+            z-index: 30;
+            padding: 8px 0;
+            backdrop-filter: blur(6px);
+          }
+          .sticky-buttons:before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 12px;
+            pointer-events: none;
+            ${/* subtle backdrop tint depending on theme */""}
+          }
+
+          @media (max-width: 1024px) {
+            .sticky-buttons { bottom: 10px; }
+          }
 
           @media (max-width: 1536px) and (min-width: 1024px) {
             html { zoom: .90; }

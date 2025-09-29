@@ -19,6 +19,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useUserPrefs } from "@/hooks/user-prefs";
+import Image from "next/image";
 
 const gridBg = (
   <div className="pointer-events-none absolute inset-0 opacity-90">
@@ -242,7 +243,6 @@ export default function Page() {
             {/* Center: Title */}
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
-                <BarChart3 className="w-5 h-5" />
                 <span className="font-heading font-semibold text-lg">AI-Powered Query Companion</span>
               </span>
             </div>
@@ -479,11 +479,13 @@ export default function Page() {
           )}
           {/* Mascot button */}
           <button type="button" onClick={handleMascotClick} aria-label="Play bot sound" className="block">
-            <img
+           <Image
               src="/icon.png"
+              alt="Query Companion"
               width={256}
               height={256}
-              alt="Query Companion"
+              priority
+              draggable={false}
               className="
                 block
                 w-56 h-56 md:w-64 md:h-64
@@ -494,7 +496,7 @@ export default function Page() {
                 filter: "drop-shadow(0 0 6px rgba(0,0,0,0.45))",
                 outline: "none",
               }}
-              draggable={false}
+              sizes="(min-width: 768px) 16rem, 14rem"
             />
           </button>
         </div>

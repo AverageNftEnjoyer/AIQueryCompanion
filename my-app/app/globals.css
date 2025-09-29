@@ -314,3 +314,5 @@ html.dark { color-scheme: dark; }
 @media (max-width: 1366px) and (min-width: 1024px) {
             html { zoom: .85; } 
           }
+
+          

@@ -420,7 +420,6 @@ useEffect(() => {
         const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          // Use canonicalized for analysis backend if needed; does not affect display
           body: JSON.stringify({ oldQuery: canonicalizeSQL(o), newQuery: canonicalizeSQL(n) }),
         });
         const prepData = await prepRes.json().catch(() => ({}));
@@ -742,7 +741,6 @@ useEffect(() => {
             {/* Center: Title */}
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
-                <BarChart3 className="w-5 h-5" />
                 <span className="font-heading font-semibold text-lg">
                   {mode === "single" ? "AI-Powered Query Companion — Single Query" : "AI-Powered Query Companion"}
                 </span>

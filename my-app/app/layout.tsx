@@ -1,4 +1,3 @@
-// app/layout.tsx
 import React from "react";
 import type { Metadata } from "next";
 import { Space_Grotesk, DM_Sans } from "next/font/google";
@@ -45,12 +44,24 @@ export default function RootLayout({
       className={`${spaceGrotesk.variable} ${dmSans.variable} antialiased`}
     >
       <head>
-        {/* === THEME BOOTSTRAP: runs before first paint === */}
+        <meta name="color-scheme" content="light dark" />
+        <meta id="theme-color" name="theme-color" content="#0a0a0a" />
+
         <script
           dangerouslySetInnerHTML={{
             __html: `(function(){
   var KEY = "qa:prefs:v1";
   var root = document.documentElement;
+  var themeMeta = document.querySelector('meta[name="theme-color"]');
+  function setTheme(isLight){
+    if (isLight) {
+      root.classList.add("qa-light"); root.classList.remove("qa-dark");
+      if (themeMeta) themeMeta.setAttribute("content", "#f1f5f9"); // light address bar
+    } else {
+      root.classList.add("qa-dark"); root.classList.remove("qa-light");
+      if (themeMeta) themeMeta.setAttribute("content", "#0a0a0a"); // dark address bar
+    }
+  }
   try {
     var raw = localStorage.getItem(KEY);
     var isLight = false;
@@ -59,20 +70,29 @@ export default function RootLayout({
       if (parsed && typeof parsed.isLight === "boolean") isLight = parsed.isLight;
       if (parsed && parsed.state && typeof parsed.state.isLight === "boolean") isLight = parsed.state.isLight;
     }
-    if (isLight) { root.classList.add("qa-light"); root.classList.remove("qa-dark"); }
-    else { root.classList.add("qa-dark"); root.classList.remove("qa-light"); }
+    setTheme(isLight);
   } catch(_) {
-    root.classList.add("qa-dark"); root.classList.remove("qa-light");
+    setTheme(false);
   }
 })();`,
           }}
         />
+
         <style
           dangerouslySetInnerHTML={{
             __html: `
 :root.qa-light, .qa-light body { background-color: #f1f5f9; color-scheme: light; }
 :root.qa-dark,  .qa-dark body  { background-color: #0a0a0a; color-scheme: dark; }
 html, body { min-height: 100%; }
+
+/* Respect users who prefer reduced motion (kills large animations) */
+@media (prefers-reduced-motion: reduce) {
+  .animate-bounce-subtle,
+  .animate-glow-pulse,
+  .animate-mascot-float {
+    animation: none !important;
+  }
+}
 `,
           }}
         />
