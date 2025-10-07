@@ -854,19 +854,18 @@ useEffect(() => {
 
               {/* TOP PANE(S) — same height for both modes */}
               <section className="mt-1">
-                <div className="flex items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
+                <div className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
                   {mode === "single" ? (
                     <>
                       {/* Left: Single query (2/3 width) */}
-                      <div className="flex-[2] min-w-0 h-full">
+                      <div className="md:flex-[2] min-w-0 h-full">
                         <SingleQueryView query={singleQuery} isLight={isLight} />
                       </div>
 
                       {/* Right: Chat only — full height to match the query box */}
-                      <div className="flex-[1] min-w-0 h-full">
+                      <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
                         <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
                           <CardContent className="p-0 h-full flex flex-col min-h-0">
-                            {/* Force ChatPanel to fill the entire card height */}
                             <div className="chatpanel-fit h-full min-h-0">
                               <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
                             </div>

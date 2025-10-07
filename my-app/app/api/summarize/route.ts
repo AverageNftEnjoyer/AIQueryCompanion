@@ -725,7 +725,6 @@ function formatEntities(arr: any): string {
   return `${list.slice(0, -1).join(", ")}, and ${list[list.length - 1]}`
 }
 
-/* ---------- JSON parsing & misc ---------- */
 
 function tryParseLastJson(text: string): any {
   if (!text) return {}
