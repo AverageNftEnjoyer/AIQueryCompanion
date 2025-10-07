@@ -168,7 +168,7 @@ export function MiniMap({
         "bg-white/5 border border-white/10 hover:border-white/20",
         className || "",
       ].join(" ")}
-      style={{ height: "100%" }} // ensure it fills the column for perfect alignment
+      style={{ height: "100%" }}
       role="navigation"
       aria-label="Change minimap"
     >
