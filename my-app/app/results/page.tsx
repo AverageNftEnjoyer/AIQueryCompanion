@@ -35,6 +35,7 @@ type Audience = "stakeholder" | "developer";
 type AnalysisMode = "fast" | "expert";
 type Mode = "single" | "compare";
 
+
 interface AnalysisResult {
   summary: string;
   changes: Array<{
@@ -95,7 +96,6 @@ function toMiniChanges(analysis: AnalysisResult | null) {
   }));
 }
 
-/** === Single-query viewer: matches comparison pane feel; preserves indentation exactly === */
 function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }) {
   const lines = useMemo(() => {
     const t = query.endsWith("\n") ? query.slice(0, -1) : query;
@@ -216,7 +216,6 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
 export default function ResultsPage() {
   const router = useRouter();
 
-  // NEW: mode and single-query state
   const [mode, setMode] = useState<Mode>("compare");
   const [singleQuery, setSingleQuery] = useState<string>("");
 
@@ -291,7 +290,6 @@ useEffect(() => {
 
   const analysisDoneSoundPlayedRef = useRef(false);
 
-  // small helpers
   const clearResumeHandler = (() => {
     let handler: ((e?: any) => void) | null = null;
     return () => {
@@ -361,7 +359,6 @@ useEffect(() => {
     await primeAutoplay(el);
   };
 
-  // ===== INITIAL LOAD: preserve raw indentation from payload =====
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -607,7 +604,6 @@ useEffect(() => {
     ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
     : "bg-black/30 border-white/10 text-white";
 
-  // ===== Generate Analysis (compare-mode only—single mode has no diff stream) =====
   const runAnalysis = async () => {
     if (mode !== "compare") return;
     if (streaming) return;
