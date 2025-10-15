@@ -11,7 +11,7 @@ type Prefs = {
 };
 
 const DEFAULT: Prefs = {
-  isLight: false, // dark by default
+  isLight: false, 
   soundOn: true,
   syncEnabled: true,
 };

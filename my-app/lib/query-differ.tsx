@@ -28,13 +28,11 @@ function rtrim(s: string) {
 }
 
 /**
- * Canonicalize SQL:
+ * Canonicalize SQL (compact display):
  * - Normalize whitespace (outside strings/comments)
- * - Add clause line breaks for stable diffs
- * - Collapse excessive blank lines
- * - Compact punctuation-only lines (except ');') onto previous
- * - Keep ');' on its own line
- * - Merge standalone numbers (and number+trailing , / ) / ,)) into previous line
+ * - Clause line breaks for stable diffs (no extra blank line)
+ * - Collapse excessive blank lines more aggressively
+ * - Compact punctuation-only/number-only lines onto previous where safe
  */
 export function canonicalizeSQL(input: string): string {
   const lf = normalizeEOL(input).replace(/\t/g, "  ")
@@ -74,7 +72,7 @@ export function canonicalizeSQL(input: string): string {
       normalized += code[j++]
     }
 
-    // clause breaks for stability
+    // clause breaks for stability (no extra blank line)
     normalized = normalized
       .replace(/,\s*/g, ", ")
       .replace(/, /g, ",\n  ")
@@ -90,10 +88,11 @@ export function canonicalizeSQL(input: string): string {
       .replace(/\bHAVING\b/gi, "\nHAVING")
       .replace(/\bUNION\b/gi, "\nUNION")
 
-  // visual spacing before major clauses
+    // 🔻 previously we inserted an extra blank line before major clauses.
+    // Make it a single newline to reduce empty space:
     normalized = normalized.replace(
       /\n(SELECT\b|FROM\b|WHERE\b|GROUP BY\b|ORDER BY\b|HAVING\b|UNION\b|INNER JOIN\b|LEFT JOIN\b|RIGHT JOIN\b|FULL JOIN\b)/gi,
-      "\n\n$1"
+      "\n$1"
     )
 
     normalized = normalized.replace(/\s+$/g, "")
@@ -102,7 +101,8 @@ export function canonicalizeSQL(input: string): string {
     i = nl === -1 ? lf.length : nl + 1
   }
 
-  let cleaned = out.replace(/\n{3,}/g, "\n\n")
+  // collapse 3+ blank lines down to 1 (was to 2)
+  let cleaned = out.replace(/\n{3,}/g, "\n")
 
   // ---- Punctuation/number compaction pass ----
   const lines = cleaned.split("\n")

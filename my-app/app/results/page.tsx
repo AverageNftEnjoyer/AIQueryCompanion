@@ -23,7 +23,7 @@ import {
   Send,
 } from "lucide-react";
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
-import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ";
+import { generateQueryDiff, canonicalizeSQL, renderHighlightedSQL, type ComparisonResult } from "@/lib/query-differ";
 import ChatPanel from "@/components/chatpanel";
 import AnalysisPanel from "@/components/analysis";
 import { useUserPrefs } from "@/hooks/user-prefs";
@@ -101,21 +101,28 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
     const t = query.endsWith("\n") ? query.slice(0, -1) : query;
     return t ? t.split("\n") : [];
   }, [query]);
+
   return (
     <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
       <Card
         className={`h-full ${isLight ? "bg-white border-slate-200" : "bg-white border-slate-200"} ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)]`}
       >
-        <CardContent className="p-5 h-full">
+        <CardContent className="p-5 h-full min-h-0 flex flex-col">
           <div
-            className="h-full rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
+            className="flex-1 min-h-0 rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
             style={{ scrollbarGutter: "stable" }}
           >
             <div
-              className="relative w-max min-w-full p-3 font-mono text-[11px] leading-snug text-slate-800"
+              className="
+                relative w-max min-w-full
+                p-2
+                font-mono
+                text-[12px]
+                leading-[1.22]
+                text-slate-800
+              "
               style={{
                 fontVariantLigatures: "none",
-                // ensure tabs render with width and do not collapse
                 MozTabSize: 4 as unknown as string,
                 OTabSize: 4 as unknown as string,
                 tabSize: 4 as unknown as string,
@@ -123,16 +130,23 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
             >
               {lines.length ? (
                 lines.map((line, idx) => (
-                  <div key={idx} className="group flex items-start gap-3 px-3 py-1.5 rounded-md relative">
-                    <span className="sticky left-0 z-10 w-12 pr-2 text-right select-none text-slate-400 bg-slate-50">
+                  <div
+                    key={idx}
+                    className="group flex items-start gap-2 px-2 py-[2px] rounded"
+                  >
+                    <span
+                      className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent"
+                    >
                       {idx + 1}
                     </span>
-                    {/* preserve exact indentation: */}
-                    <code className="block whitespace-pre pr-4">{line}</code>
+                    {/* compact, highlighted SQL like compare mode */}
+                    <code className="block whitespace-pre pr-2 leading-[1.22]">
+                      {renderHighlightedSQL(line)}
+                    </code>
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-slate-500 p-3">No query provided.</div>
+                <div className="text-sm text-slate-500 p-2">No query provided.</div>
               )}
             </div>
           </div>
@@ -141,6 +155,7 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
     </div>
   );
 }
+
 
 function FancyLoader({ isLight }: { isLight: boolean }) {
   const messages = [

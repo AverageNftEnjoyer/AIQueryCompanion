@@ -34,6 +34,7 @@ function QueryComparisonInner(
     newQuery,
     className,
     showTitle = true,
+    // Fill parent so it aligns with minimaps on any screen size
     paneHeight = "100%",
     syncScrollEnabled = true,
   }: QueryComparisonProps,
@@ -71,8 +72,9 @@ function QueryComparisonInner(
     return map
   }, [comparison])
 
+  // ⬇️ tighter row/number/line-height styles
   const theme = {
-    baseRow: "group flex items-start gap-3 px-3 py-1.5 rounded-md",
+    baseRow: "group flex items-start gap-2 px-2 py-0.5 rounded-md",
     added: "bg-emerald-100 border-l-4 border-emerald-600",
     removed: "bg-rose-100 border-l-4 border-rose-600",
     modified: "bg-amber-100 border-l-4 border-amber-600",
@@ -186,7 +188,8 @@ function QueryComparisonInner(
         aria-label={ariaLabel}
         tabIndex={0}
       >
-        <div className="relative w-max p-3 font-mono text-[11px] leading-snug text-slate-800">
+        {/* ⬇️ smaller padding, font size, and tighter leading */}
+        <div className="relative w-max p-2 font-mono text-[10px] md:text-[11px] leading-tight text-slate-800">
           {lines.map((line, idx) => {
             const n = idx + 1
             const tag = tags.get(n)
@@ -201,10 +204,10 @@ function QueryComparisonInner(
 
             return (
               <div key={n} data-side={side} data-line={n} className={`${theme.baseRow} ${rowBg} relative`}>
-                <span className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-transparent`}>
+                <span className={`sticky left-0 z-10 w-10 pr-1.5 text-right select-none ${theme.num} bg-transparent`}>
                   {n}
                 </span>
-                <code className="block whitespace-pre pr-4">{renderHighlightedSQL(line)}</code>
+                <code className="block whitespace-pre pr-3">{renderHighlightedSQL(line)}</code>
               </div>
             )
           })}
@@ -228,11 +231,11 @@ function QueryComparisonInner(
           <CardContent className="pt-2 h-full min-h-0 flex flex-col">
             <div className="grid lg:grid-cols-2 gap-6 h-full min-h-0">
               <div className="flex flex-col h-full min-h-0">
-                <h3 className={`font-semibold mb-3 ${theme.header}`}>Original Query</h3>
+                <h3 className={`font-semibold mb-2 ${theme.header}`}>Original Query</h3>
                 {renderSide(canonicalOld, oldMap, "Original query", "old")}
               </div>
               <div className="flex flex-col h-full min-h-0">
-                <h3 className={`font-semibold mb-3 ${theme.header}`}>Updated Query</h3>
+                <h3 className={`font-semibold mb-2 ${theme.header}`}>Updated Query</h3>
                 {renderSide(canonicalNew, newMap, "Updated query", "new")}
               </div>
             </div>
@@ -241,7 +244,6 @@ function QueryComparisonInner(
       </div>
 
       <style jsx global>{`
-        /* === Light scrollbar overrides (keep) === */
         .hover-scroll::-webkit-scrollbar {
           width: 10px;
           height: 10px;
@@ -261,7 +263,6 @@ function QueryComparisonInner(
           scrollbar-width: thin;
           scrollbar-color: #cbd5e1 #f8fafc;
         }
-        /* Optional: brief flash on jump */
         .flash-highlight {
           animation: qc-flash 1.1s ease-out;
         }
