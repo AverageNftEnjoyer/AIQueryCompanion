@@ -4,7 +4,12 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 import { NextResponse } from "next/server";
-import { generateQueryDiff, canonicalizeSQL, type ComparisonResult } from "@/lib/query-differ";
+import {
+  generateQueryDiff,
+  buildAlignedRows,
+  type ComparisonResult,
+  type AlignedRow,
+} from "@/lib/query-differ";
 
 /* ============================== Types & Config ============================== */
 
@@ -21,6 +26,7 @@ type ChangeItem = {
   side: Side;
   span?: number;
   jumpLine?: number;
+  index?: number; // added here so we can set it later without re-shaping
 };
 
 type ChangeExplanation = {
@@ -28,7 +34,7 @@ type ChangeExplanation = {
   explanation: string;
   syntax?: GoodBad;
   performance?: GoodBad;
-  // optional diagnostics for UI enrichment (not required by UI)
+  // optional diagnostics (not required by UI)
   // eslint-disable-next-line @typescript-eslint/ban-ts-comment
   // @ts-ignore
   _syntax_explanation?: string;
@@ -59,14 +65,10 @@ const PROVIDER: Provider = "openai";
 /** Prefer your Agent, else use your cheap model */
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
-const ANALYSIS_AGENT_ID = process.env.ANALYSIS_AGENT_ID || ""; 
+const ANALYSIS_AGENT_ID = process.env.ANALYSIS_AGENT_ID || "";
 const DEFAULT_MODEL = process.env.ANALYSIS_AGENT_MODEL || "gpt-4.1-nano";
 
 const MAX_QUERY_CHARS = 120_000;
-
-// —— Grouping knobs —— //
-const GROUP_THRESHOLD = Math.max(2, Number(process.env.CHANGE_GROUP_THRESHOLD ?? 2));
-const MAX_GROUP_LINES = Math.max(30, Number(process.env.CHANGE_GROUP_MAX_LINES ?? 80));
 
 // —— Networking knobs —— //
 const FUNCTION_MAX_MS = (typeof maxDuration === "number" ? maxDuration : 60) * 1000;
@@ -102,16 +104,6 @@ function validateInput(body: any) {
 
 function clamp(n: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, n));
-}
-
-function groupingFromHeaders(req: Request) {
-  const h = new Headers(req.headers);
-  const thr = Number(h.get("x-group-threshold") ?? GROUP_THRESHOLD);
-  const max = Number(h.get("x-group-max-lines") ?? MAX_GROUP_LINES);
-  return {
-    threshold: clamp(isFinite(thr) ? thr : GROUP_THRESHOLD, 2, 50),
-    maxLines: clamp(isFinite(max) ? max : MAX_GROUP_LINES, 20, 200),
-  };
 }
 
 /** Always single mode */
@@ -163,48 +155,11 @@ async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 4
 
 /* --------------------------------- Helpers -------------------------------- */
 
-function tokenFromDescription(desc: string): string {
-  const m = desc.match(/:\s(?:added|removed|changed.*to)\s"([^"]*)"/i) ?? desc.match(/"([^"]*)"$/);
-  return (m?.[1] ?? "").trim();
-}
-
-function shouldSuppressServer(desc: string): boolean {
-  const tok = tokenFromDescription(desc);
-  if (!tok) return true;
-  if (/^[(),;]+$/.test(tok)) return true;
-  return false;
-}
-
 function asGoodBad(v: any): GoodBad | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim().toLowerCase();
   if (t === "good" || t === "bad") return t;
   return undefined;
-}
-
-function spanFromDescription(desc: string): number {
-  const m = desc.match(/\b(added|removed|modified)\s+(\d+)\s+lines?\b/i);
-  if (m) return Math.max(1, Number(m[2]));
-  return 1;
-}
-
-const CRITICAL_TOKENS = /\b(COMMIT|ROLLBACK|SAVEPOINT|AUTONOMOUS_TRANSACTION|SET\s+TRANSACTION|ISOLATION\s+LEVEL|LOCK\s+TABLE)\b/i;
-function isCriticalChange(desc: string): boolean {
-  return CRITICAL_TOKENS.test(desc);
-}
-
-function verbosityForSpan(span: number, critical = false): "short" | "medium" | "long" {
-  if (critical) return "long";
-  if (span <= 2) return "short";
-  if (span <= 10) return "medium";
-  return "long";
-}
-
-function extractLineWindow(sql: string, line: number, window = 8): string {
-  const lines = (sql || "").split("\n");
-  const a = Math.max(0, line - 1 - window);
-  const b = Math.min(lines.length - 1, line - 1 + window);
-  return lines.slice(a, b + 1).join("\n");
 }
 
 function coerceExplanations(content: string): ChangeExplanation[] {
@@ -243,18 +198,192 @@ function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): strin
   return `${head}\n/* ...clipped for model... */\n${tail}`;
 }
 
+/* ================== Derive groups EXACTLY like <Changes /> ================== */
+
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
+/** Server version of deriveGroups(rows) — mirrors your Changes.tsx */
+function deriveGroupsServer(rows: AlignedRow[]): ChangeItem[] {
+  type ModRun = {
+    kind: "modification";
+    startNew?: number;
+    endNew?: number;
+    startOld?: number;
+    endOld?: number;
+    prevPreviewNew?: string;
+    prevPreviewOld?: string;
+  };
+  type AddRun = { kind: "addition"; startNew: number; endNew: number; preview?: string };
+  type DelRun = { kind: "deletion"; startOld: number; endOld: number; preview?: string };
+
+  const groups: ChangeItem[] = [];
+  let run: ModRun | AddRun | DelRun | null = null;
+
+  const flush = () => {
+    if (!run) return;
+
+    if (run.kind === "addition") {
+      const start = run.startNew;
+      const end = run.endNew;
+      const span = end - start + 1;
+      const base = span > 1 ? `Lines ${start}-${end}: added ${span} lines` : `Line ${start}: added 1 line`;
+      groups.push({
+        type: "addition",
+        side: "new",
+        lineNumber: start,
+        span,
+        description: run.preview ? `${base}. Preview "${run.preview}"` : base,
+      });
+    } else if (run.kind === "deletion") {
+      const start = run.startOld;
+      const end = run.endOld;
+      const span = end - start + 1;
+      const base = span > 1 ? `Lines ${start}-${end}: removed ${span} lines` : `Line ${start}: removed 1 line`;
+      groups.push({
+        type: "deletion",
+        side: "old",
+        lineNumber: start,
+        span,
+        description: run.preview ? `${base}. Preview "${run.preview}"` : base,
+      });
+    } else {
+      // modification
+      const anchorStart = isNum(run.startNew) ? run.startNew : (run.startOld as number);
+      const anchorEnd = isNum(run.endNew) ? run.endNew! : (run.endOld as number);
+      const span = Math.max(1, anchorEnd - anchorStart + 1);
+
+      const base =
+        span > 1 ? `Lines ${anchorStart}-${anchorEnd}: modified ${span} lines` : `Line ${anchorStart}: modified 1 line`;
+
+      const pOld = (run.prevPreviewOld || "").trim();
+      const pNew = (run.prevPreviewNew || "").trim();
+      const preview =
+        pOld && pNew ? `Preview "${pOld}" → "${pNew}"` : pNew ? `Preview "${pNew}"` : pOld ? `Preview "${pOld}"` : "";
+
+      groups.push({
+        type: "modification",
+        side: "both",
+        lineNumber: anchorStart,
+        span,
+        description: preview ? `${base}. ${preview}` : base,
+      });
+    }
+
+    run = null;
+  };
+
+  const consecutive = (prev: number | undefined, next: number | undefined) =>
+    isNum(prev) && isNum(next) && next === prev + 1;
+
+  for (const row of rows) {
+    if (row.kind === "unchanged") {
+      flush();
+      continue;
+    }
+
+    if (row.kind === "addition") {
+      const lnNew = row.new.lineNumber;
+      if (!isNum(lnNew)) {
+        flush();
+        continue;
+      }
+      const preview = (row.new.text || "").trim();
+      if (run && run.kind === "addition" && consecutive(run.endNew, lnNew)) {
+        run.endNew = lnNew;
+        if (!run.preview && preview) run.preview = preview;
+      } else {
+        flush();
+        run = { kind: "addition", startNew: lnNew, endNew: lnNew, preview };
+      }
+      continue;
+    }
+
+    if (row.kind === "deletion") {
+      const lnOld = row.old.lineNumber;
+      if (!isNum(lnOld)) {
+        flush();
+        continue;
+      }
+      const preview = (row.old.text || "").trim();
+      if (run && run.kind === "deletion" && consecutive(run.endOld, lnOld)) {
+        run.endOld = lnOld;
+        if (!run.preview && preview) run.preview = preview;
+      } else {
+        flush();
+        run = { kind: "deletion", startOld: lnOld, endOld: lnOld, preview };
+      }
+      continue;
+    }
+
+    // modification
+    const lnNew = row.new?.lineNumber;
+    const lnOld = row.old?.lineNumber;
+    if (!isNum(lnNew) && !isNum(lnOld)) {
+      flush();
+      continue;
+    }
+
+    const pNew = (row.new?.text || "").trim();
+    const pOld = (row.old?.text || "").trim();
+
+    if (run && run.kind === "modification") {
+      const okNew = !isNum(lnNew) || consecutive(run.endNew, lnNew);
+      const okOld = !isNum(lnOld) || consecutive(run.endOld, lnOld);
+      if (okNew && okOld) {
+        if (isNum(lnNew)) run.endNew = lnNew;
+        if (isNum(lnOld)) run.endOld = lnOld;
+        if (!run.prevPreviewNew && pNew) run.prevPreviewNew = pNew;
+        if (!run.prevPreviewOld && pOld) run.prevPreviewOld = pOld;
+      } else {
+        flush();
+        run = {
+          kind: "modification",
+          startNew: isNum(lnNew) ? lnNew : undefined,
+          endNew: isNum(lnNew) ? lnNew : undefined,
+          startOld: isNum(lnOld) ? lnOld : undefined,
+          endOld: isNum(lnOld) ? lnOld : undefined,
+          prevPreviewNew: pNew,
+          prevPreviewOld: pOld,
+        };
+      }
+    } else {
+      flush();
+      run = {
+        kind: "modification",
+        startNew: isNum(lnNew) ? lnNew : undefined,
+        endNew: isNum(lnNew) ? lnNew : undefined,
+        startOld: isNum(lnOld) ? lnOld : undefined,
+        endOld: isNum(lnOld) ? lnOld : undefined,
+        prevPreviewNew: pNew,
+        prevPreviewOld: pOld,
+      };
+    }
+  }
+
+  flush();
+  groups.sort((a, b) => a.lineNumber - b.lineNumber);
+  return groups;
+}
+
 /* ========================== Payload builder (single) ========================== */
+
+function extractLineWindow(sql: string, line: number, window = 8): string {
+  const lines = (sql || "").split("\n");
+  const a = Math.max(0, line - 1 - window);
+  const b = Math.min(lines.length - 1, line - 1 + window);
+  return lines.slice(a, b + 1).join("\n");
+}
+
+function verbosityForSpan(span: number): "short" | "medium" | "long" {
+  if (span <= 2) return "short";
+  if (span <= 10) return "medium";
+  return "long";
+}
 
 function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeItem[]) {
   const enriched = changes.map((c, i) => {
-    const span = spanFromDescription(c.description);
-    const critical = isCriticalChange(c.description);
-    const verbosity = verbosityForSpan(span, critical); // short≈2–3, medium≈4–5, long≈6
-    const hints: string[] = [];
-    if (critical) hints.push("transactional_change");
-    if (/\bJOIN\b/i.test(c.description)) hints.push("join_change");
-    if (/\bWHERE\b/i.test(c.description)) hints.push("predicate_change");
-
+    const span = Math.max(1, c.span ?? 1);
+    const verbosity = verbosityForSpan(span);
     const oldCtx = extractLineWindow(oldQuery, c.side === "old" ? c.lineNumber : Math.max(1, c.lineNumber - 1)).slice(0, 800);
     const newCtx = extractLineWindow(newQuery, c.side !== "old" ? c.lineNumber : Math.max(1, c.lineNumber - 1)).slice(0, 800);
 
@@ -266,7 +395,7 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
       description: c.description,
       span,
       verbosity,
-      hints,
+      hints: [],
       context: { old: oldCtx, newer: newCtx },
     };
   });
@@ -279,9 +408,8 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
     guidance: [
       "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
       lengthPolicy,
-      "If 'transactional_change', discuss locks/consistency and why COMMIT-in-loop is risky.",
       "Avoid boilerplate; tie advice to the provided context snippets.",
-      "Each item must include: index, text (2–6 sentences), clauses (subset), change_kind, syntax('good'|'bad'), performance('good'|'bad'), syntax_explanation if syntax='bad', performance_explanation if performance='bad', business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2)."
+      "Each item must include: index, text (2–6 sentences), clauses (subset), change_kind, syntax('good'|'bad'), performance('good'|'bad'), syntax_explanation if syntax='bad', performance_explanation if performance='bad', business_impact('clear'|'weak'|'none'), risk('low'|'medium'|'high'), suggestions (0–2).",
     ],
     dialect: "Oracle SQL",
     oldQuery: clipSqlForModel(oldQuery),
@@ -292,7 +420,8 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
         {
           index: "number (echo input index)",
           text: "string (2–6 sentences)",
-          clauses: "array subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
+          clauses:
+            "array subset of ['SELECT','FROM','JOIN','WHERE','GROUP BY','HAVING','ORDER BY','LIMIT/OFFSET','WINDOW']",
           change_kind: "string",
           syntax: "good|bad",
           performance: "good|bad",
@@ -300,10 +429,10 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
           performance_explanation: "string if performance='bad'",
           business_impact: "clear|weak|none",
           risk: "low|medium|high",
-          suggestions: "array (0–2)"
-        }
-      ]
-    }
+          suggestions: "array (0–2)",
+        },
+      ],
+    },
   };
 }
 
@@ -330,10 +459,9 @@ async function callLLM(systemPrompt: string, userContent: string): Promise<{ tex
                 { role: "system", content: systemPrompt },
                 { role: "user", content: userContent },
               ],
-              // Ask for strict JSON back:
               response_format: { type: "json_object" },
               temperature: 0,
-              max_output_tokens: 300, // plenty for 2–6 sentences
+              max_output_tokens: 300,
             }),
           },
           REQUEST_TIMEOUT_MS
@@ -417,299 +545,6 @@ async function callLLM(systemPrompt: string, userContent: string): Promise<{ tex
   return await attemptModel();
 }
 
-/* ============================ Diff → atomic changes ============================ */
-
-function buildChanges(diff: ComparisonResult): ChangeItem[] {
-  const out: ChangeItem[] = [];
-  for (let i = 0; i < diff.diffs.length; i++) {
-    const d = diff.diffs[i];
-
-    if (d.type === "deletion" && d.oldLineNumber) {
-      const next = diff.diffs[i + 1];
-      if (next && next.type === "addition" && next.newLineNumber) {
-        const desc = `Line ${next.newLineNumber}: changed from "${d.content.trim()}" to "${next.content.trim()}"`;
-        if (!shouldSuppressServer(desc)) {
-          out.push({ type: "modification", description: desc, lineNumber: next.newLineNumber, side: "both" });
-        }
-        i++;
-      } else {
-        const desc = `Line ${d.oldLineNumber}: removed "${d.content.trim()}"`;
-        if (!shouldSuppressServer(desc)) {
-          out.push({ type: "deletion", description: desc, lineNumber: d.oldLineNumber, side: "old" });
-        }
-      }
-    } else if (d.type === "addition" && d.newLineNumber) {
-      const prev = diff.diffs[i - 1];
-      if (!(prev && prev.type === "deletion")) {
-        const desc = `Line ${d.newLineNumber}: added "${d.content.trim()}"`;
-        if (!shouldSuppressServer(desc)) {
-          out.push({ type: "addition", description: desc, lineNumber: d.newLineNumber, side: "new" });
-        }
-      }
-    }
-  }
-
-  out.sort((a, b) => a.lineNumber - b.lineNumber);
-  return out;
-}
-
-/* --------------------- Subquery/CTE-aware structural analysis --------------------- */
-
-type SqlBlockKind = "CTE" | "SUBQUERY" | "BEGIN_END" | "CLAUSE";
-type SqlBlock = { kind: SqlBlockKind; start: number; end: number; label: string };
-
-type SqlStructure = {
-  boundaries: Set<number>;
-  labels: Map<number, string>;
-  blocks: SqlBlock[];
-  byLine: Map<number, number>;
-};
-
-function buildSqlStructure(sql: string): SqlStructure {
-  const lines = sql.split("\n");
-  const boundaries = new Set<number>();
-  const labels = new Map<number, string>();
-  const blocks: SqlBlock[] = [];
-  const byLine = new Map<number, number>();
-
-  const clauseRules: Array<[RegExp, string]> = [
-    [/^\s*(CREATE(\s+OR\s+REPLACE)?\s+)?(PROCEDURE|FUNCTION|TRIGGER|PACKAGE|VIEW|TABLE)\b/i, "CREATE"],
-    [/^\s*WITH\b/i, "WITH"],
-    [/^\s*SELECT\b/i, "SELECT"],
-    [/^\s*FROM\b/i, "FROM"],
-    [/^\s*(INNER|LEFT|RIGHT|FULL)?\s*JOIN\b/i, "JOIN"],
-    [/^\s*WHERE\b/i, "WHERE"],
-    [/^\s*CONNECT\s+BY\b/i, "CONNECT BY"],
-    [/^\s*START\s+WITH\b/i, "START WITH"],
-    [/^\s*GROUP BY\b/i, "GROUP BY"],
-    [/^\s*HAVING\b/i, "HAVING"],
-    [/^\s*MODEL\b/i, "MODEL"],
-    [/^\s*ORDER BY\b/i, "ORDER BY"],
-    [/^\s*UNION(\s+ALL)?\b/i, "UNION"],
-    [/^\s*INSERT\b/i, "INSERT"],
-    [/^\s*UPDATE\b/i, "UPDATE"],
-    [/^\s*DELETE\b/i, "DELETE"],
-    [/^\s*MERGE\b/i, "MERGE"],
-    [/^\s*BEGIN\b/i, "BEGIN"],
-    [/^\s*EXCEPTION\b/i, "EXCEPTION"],
-    [/^\s*END\b/i, "END"],
-    [/^\s*CURSOR\b/i, "CURSOR"],
-    [/^\s*(FOR|WHILE)\b.*\bLOOP\b/i, "LOOP"],
-    [/^\s*IF\b/i, "IF"],
-  ];
-
-  for (let idx = 0; idx < lines.length; idx++) {
-    const n = idx + 1;
-    const t = lines[idx].trim();
-    if (!t) {
-      boundaries.add(n);
-      continue;
-    }
-    for (const [re, label] of clauseRules) {
-      if (re.test(t)) {
-        boundaries.add(n);
-        if (!labels.has(n)) labels.set(n, label);
-        break;
-      }
-    }
-  }
-
-  const pushBlock = (start: number, end: number, kind: SqlBlockKind, label: string) => {
-    if (end < start) return;
-    const b: SqlBlock = { kind, start, end, label };
-    const idx = blocks.push(b) - 1;
-    for (let ln = start; ln <= end; ln++) if (!byLine.has(ln)) byLine.set(ln, idx);
-  };
-
-  // WITH .. AS ( ... )
-  const withRE = /^\s*WITH\b/i;
-  const asOpenRE = /\bAS\s*\(\s*$/i;
-  let inWith = false;
-  for (let i = 0; i < lines.length; i++) {
-    const n = i + 1;
-    const t = lines[i].trim();
-    if (withRE.test(t)) inWith = true;
-    if (inWith && asOpenRE.test(t)) {
-      const startLine = n + 1;
-      let depth = 1, j = i + 1;
-      while (j < lines.length && depth > 0) {
-        const L = lines[j];
-        depth += (L.match(/\(/g) || []).length;
-        depth -= (L.match(/\)/g) || []).length;
-        j++;
-      }
-      const endLine = Math.max(startLine, j);
-      pushBlock(startLine, endLine, "CTE", "CTE");
-    }
-    if (inWith && /^\s*SELECT\b/i.test(t)) inWith = false;
-  }
-
-  // Subqueries
-  type StackItem = { openLine: number; isSubquery: boolean };
-  const stack: StackItem[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const n = i + 1;
-    const line = lines[i];
-
-    for (const ch of line) {
-      if (ch === "(") stack.push({ openLine: n, isSubquery: false });
-      else if (ch === ")") {
-        const itm = stack.pop();
-        if (itm && itm.isSubquery) pushBlock(itm.openLine, n, "SUBQUERY", "SUBQUERY");
-      }
-    }
-    if (/\bSELECT\b/i.test(line) && stack.length > 0) {
-      const top = stack[stack.length - 1];
-      if (top && !top.isSubquery) top.isSubquery = true;
-    }
-
-    // BEGIN..END (PL/SQL)
-    if (/^\s*BEGIN\b/i.test(line)) {
-      let j = i + 1, opens = 1;
-      while (j < lines.length && opens > 0) {
-        if (/^\s*BEGIN\b/i.test(lines[j])) opens++;
-        if (/^\s*END\b/i.test(lines[j])) opens--;
-        j++;
-      }
-      const endLine = Math.max(n, j);
-      pushBlock(n, endLine, "BEGIN_END", "BEGIN…END");
-    }
-  }
-
-  // Clause blocks (fallback grouping)
-  labels.forEach((lab, ln) => {
-    const next = [...labels.keys()].filter((k) => k > ln).sort((a, b) => a - b)[0] ?? lines.length + 1;
-    pushBlock(ln, next - 1, "CLAUSE", lab);
-  });
-
-  return { boundaries, labels, blocks, byLine };
-}
-
-function blockContaining(struct: SqlStructure, line: number): SqlBlock | undefined {
-  const idx = struct.byLine.get(line);
-  return typeof idx === "number" ? struct.blocks[idx] : undefined;
-}
-
-function findLabelInRange(struct: SqlStructure, start: number, end: number): string | undefined {
-  const b = blockContaining(struct, start);
-  if (b && start >= b.start && end <= b.end) return b.label;
-  for (let n = start; n <= end; n++) {
-    const l = struct.labels.get(n);
-    if (l) return l;
-  }
-  return undefined;
-}
-
-/** Grouping that understands subqueries/CTEs/blocks. */
-function groupChangesSmart(
-  items: ChangeItem[],
-  structNew: SqlStructure,
-  structOld: SqlStructure,
-  threshold = GROUP_THRESHOLD,
-  maxBlock = MAX_GROUP_LINES
-): ChangeItem[] {
-  if (items.length === 0) return items;
-
-  const grouped: ChangeItem[] = [];
-  let i = 0;
-
-  while (i < items.length) {
-    const base = items[i];
-    let end = i;
-
-    while (
-      end + 1 < items.length &&
-      items[end + 1].type === base.type &&
-      items[end + 1].side === base.side &&
-      items[end + 1].lineNumber === items[end].lineNumber + 1
-    )
-      end++;
-
-    const runStart = items[i].lineNumber;
-    const runEnd = items[end].lineNumber;
-    const runLen = end - i + 1;
-
-    const struct = base.side === "old" ? structOld : structNew;
-
-    const majorityBlock = (() => {
-      const counts = new Map<number, number>();
-      for (let k = i; k <= end; k++) {
-        const b = blockContaining(struct, items[k].lineNumber);
-        if (!b) continue;
-        const idx = struct.blocks.indexOf(b);
-        counts.set(idx, (counts.get(idx) ?? 0) + 1);
-      }
-      let bestIdx = -1, best = 0;
-      counts.forEach((v, key) => {
-        if (v > best) {
-          best = v;
-          bestIdx = key;
-        }
-      });
-      return bestIdx >= 0 && best >= Math.ceil(runLen * 0.6) ? struct.blocks[bestIdx] : undefined;
-    })();
-
-    const pushBlock = (aLine: number, bLine: number, labelHint?: string) => {
-      const spanLen = bLine - aLine + 1;
-      const preview = tokenFromDescription(items[i].description);
-      const label = labelHint ?? findLabelInRange(struct, aLine, bLine);
-      const rangeText = aLine === bLine ? `Line ${aLine}` : `Lines ${aLine}-${bLine}`;
-      const scope = label ? ` (${label} block)` : "";
-      const desc =
-        base.type === "addition"
-          ? `${rangeText}${scope}: added ${spanLen} lines. Preview "${preview}"`
-          : base.type === "deletion"
-          ? `${rangeText}${scope}: removed ${spanLen} lines. Preview "${preview}"`
-          : `${rangeText}${scope}: modified ${spanLen} lines. Preview "${preview}"`;
-
-      grouped.push({ type: base.type, description: desc, lineNumber: aLine, side: base.side, span: spanLen });
-    };
-
-    if (majorityBlock && runLen >= threshold) {
-      let a = majorityBlock.start;
-      let b = Math.min(majorityBlock.end, a + maxBlock - 1);
-      while (a <= majorityBlock.end) {
-        pushBlock(a, b, majorityBlock.label);
-        a = b + 1;
-        b = Math.min(majorityBlock.end, a + maxBlock - 1);
-      }
-      i = end + 1;
-      continue;
-    }
-
-    if (runLen >= threshold) {
-      let segStart = runStart;
-      for (let n = runStart + 1; n <= runEnd; n++) {
-        if (struct.boundaries.has(n)) {
-          const segEnd = n - 1;
-          if (segEnd >= segStart) {
-            if (segEnd - segStart + 1 >= threshold) pushBlock(segStart, segEnd);
-            else {
-              const off0 = segStart - runStart;
-              for (let k = 0; k < segEnd - segStart + 1; k++) grouped.push(items[i + off0 + k]);
-            }
-            segStart = n;
-          }
-        }
-      }
-      if (segStart <= runEnd) {
-        if (runEnd - segStart + 1 >= threshold) pushBlock(segStart, runEnd);
-        else {
-          const off0 = segStart - runStart;
-          for (let k = 0; k < runEnd - segStart + 1; k++) grouped.push(items[i + off0 + k]);
-        }
-      }
-      i = end + 1;
-      continue;
-    }
-
-    for (let k = i; k <= end; k++) grouped.push(items[k]);
-    i = end + 1;
-  }
-
-  return grouped;
-}
-
 /* =============================== In-memory cache =============================== */
 
 const cache = new Map<string, any>();
@@ -744,20 +579,14 @@ export async function POST(req: Request) {
     const detail: DetailMode = detailFromRequest(req, url); // always "single"
 
     const { oldQuery, newQuery } = body as { oldQuery: string; newQuery: string };
+    const baseKey = hashPair(oldQuery, newQuery);
 
-    const canonOld = canonicalizeSQL(oldQuery);
-    const canonNew = canonicalizeSQL(newQuery);
+    // IMPORTANT: diff on RAW so line numbers match the on-screen comparison
+    const diff: ComparisonResult = generateQueryDiff(oldQuery, newQuery, { basis: "raw" });
 
-    const baseKey = hashPair(canonOld, canonNew);
-
-    const diff = generateQueryDiff(canonOld, canonNew);
-    const rawChanges = buildChanges(diff);
-
-    const structNew = buildSqlStructure(canonNew);
-    const structOld = buildSqlStructure(canonOld);
-
-    const { threshold, maxLines } = groupingFromHeaders(req);
-    const grouped = groupChangesSmart(rawChanges, structNew, structOld, threshold, maxLines);
+    // Build aligned rows exactly like the UI, then derive groups the exact same way
+    const rows: AlignedRow[] = buildAlignedRows(diff);
+    const grouped: ChangeItem[] = deriveGroupsServer(rows);
 
     if (grouped.length === 0) {
       const payload = {
@@ -800,7 +629,7 @@ export async function POST(req: Request) {
         return {
           ...c,
           index: globalIdx,
-          explanation: "Pending…",
+          explanation: "Pending…" as const,
           syntax: "good" as GoodBad,
           performance: "good" as GoodBad,
           meta: {
@@ -839,12 +668,11 @@ export async function POST(req: Request) {
         "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
         "Write 2–6 sentences per change (biased by 'verbosity').",
         "Be concrete: clause semantics, join/predicate effects, null behavior, sargability, indexes, cardinality/row explosion, sort/limit.",
-        "If hints include 'transactional_change', cover lock scope, partial commits, and when COMMIT-in-loop is dangerous.",
         "Avoid boilerplate and fluff; anchor advice to the provided description and local context.",
-        "Each item must include: index, text, clauses, change_kind, syntax, performance, syntax_explanation(if bad), performance_explanation(if bad), business_impact, risk, suggestions(0–2)."
+        "Each item must include: index, text, clauses, change_kind, syntax, performance, syntax_explanation(if bad), performance_explanation(if bad), business_impact, risk, suggestions(0–2).",
       ].join(" ");
 
-      const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems));
+      const userPayload = JSON.stringify(buildUserPayload(oldQuery, newQuery, pageItems));
 
       let explanationsText = "";
       let lastError: string | undefined;
@@ -955,12 +783,11 @@ export async function POST(req: Request) {
       "Return ONLY JSON with a top-level key 'explanations' (array). No prose outside JSON.",
       "Write 2–6 sentences per change (biased by 'verbosity').",
       "Be concrete: clause semantics, join/predicate effects, null behavior, sargability, indexes, cardinality/row explosion, sort/limit.",
-      "If hints include 'transactional_change', cover lock scope, partial commits, and when COMMIT-in-loop is dangerous.",
       "Avoid boilerplate and fluff; anchor advice to the provided description and local context.",
-      "Each item must include: index, text, clauses, change_kind, syntax, performance, syntax_explanation(if bad), performance_explanation(if bad), business_impact, risk, suggestions(0–2)."
+      "Each item must include: index, text, clauses, change_kind, syntax, performance, syntax_explanation(if bad), performance_explanation(if bad), business_impact, risk, suggestions(0–2).",
     ].join(" ");
 
-    const userPayload = JSON.stringify(buildUserPayload(canonOld, canonNew, pageItems));
+    const userPayload = JSON.stringify(buildUserPayload(oldQuery, newQuery, pageItems));
 
     let explanationsText = "";
     let modelUsed = "";
@@ -1037,10 +864,10 @@ export async function POST(req: Request) {
 
     const counts = finalChanges.reduce(
       (acc, c) => {
-        acc[c.type as keyof typeof acc]++;
+        (acc as any)[c.type]++;
         return acc;
       },
-      { addition: 0, deletion: 0, modification: 0 }
+      { addition: 0, deletion: 0, modification: 0 } as Record<ChangeType, number>
     );
 
     const summary =
@@ -1062,7 +889,6 @@ export async function POST(req: Request) {
           via,
           modelUsed,
           usedExplanations: parsed.length,
-          error: explanationsText ? undefined : lastError,
           timeoutMs: REQUEST_TIMEOUT_MS,
           retries: RETRIES,
           detailMode: detail,

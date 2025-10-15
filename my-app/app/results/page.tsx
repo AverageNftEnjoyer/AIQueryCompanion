@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import Script from "next/script";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
@@ -14,7 +13,6 @@ import {
   BellOff,
   Zap,
   AlertCircle,
-  BarChart3,
   ChevronDown,
   Loader2,
   Link2,
@@ -23,10 +21,17 @@ import {
   Send,
 } from "lucide-react";
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
-import { generateQueryDiff, canonicalizeSQL, renderHighlightedSQL, type ComparisonResult } from "@/lib/query-differ";
+import {
+  generateQueryDiff,
+  buildAlignedRows,
+  renderHighlightedSQL,
+  type ComparisonResult,
+  type AlignedRow,
+} from "@/lib/query-differ";
 import ChatPanel from "@/components/chatpanel";
 import AnalysisPanel from "@/components/analysis";
 import { useUserPrefs } from "@/hooks/user-prefs";
+import { Changes } from "@/components/changes";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -35,18 +40,17 @@ type Audience = "stakeholder" | "developer";
 type AnalysisMode = "fast" | "expert";
 type Mode = "single" | "compare";
 
-
 interface AnalysisResult {
   summary: string;
   changes: Array<{
     type: ChangeType;
     description: string;
     explanation: string;
-    lineNumber: number;
+    lineNumber: number; // start line (API already grouped if needed)
     side: Side;
     syntax: GoodBad;
     performance: GoodBad;
-    span?: number;
+    span?: number; // present for grouped runs
     index?: number;
     meta?: {
       clauses?: string[];
@@ -79,22 +83,6 @@ const gridBgLight = (
     <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
   </div>
 );
-
-function deriveDisplayChanges(analysis: AnalysisResult | null) {
-  if (!analysis) return [];
-  return analysis.changes.slice().sort((a, b) => (a.lineNumber ?? 0) - (b.lineNumber ?? 0));
-}
-
-function toMiniChanges(analysis: AnalysisResult | null) {
-  if (!analysis) return [];
-  return analysis.changes.map((c) => ({
-    type: c.type,
-    side: c.side,
-    lineNumber: c.lineNumber,
-    span: c.span ?? 1,
-    label: c.description,
-  }));
-}
 
 function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }) {
   const lines = useMemo(() => {
@@ -130,16 +118,10 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
             >
               {lines.length ? (
                 lines.map((line, idx) => (
-                  <div
-                    key={idx}
-                    className="group flex items-start gap-2 px-2 py-[2px] rounded"
-                  >
-                    <span
-                      className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent"
-                    >
+                  <div key={idx} className="group flex items-start gap-2 px-2 py-[2px] rounded">
+                    <span className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent">
                       {idx + 1}
                     </span>
-                    {/* compact, highlighted SQL like compare mode */}
                     <code className="block whitespace-pre pr-2 leading-[1.22]">
                       {renderHighlightedSQL(line)}
                     </code>
@@ -155,7 +137,6 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
     </div>
   );
 }
-
 
 function FancyLoader({ isLight }: { isLight: boolean }) {
   const messages = [
@@ -221,7 +202,9 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
         </div>
         <div className={`mt-6 flex items-center gap-2 ${textColor}`} aria-live="polite">
           <Zap className="w-4 h-4 animate-pulse" />
-          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>{messages[index]}</span>
+          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
+            {messages[index]}
+          </span>
         </div>
       </div>
     </div>
@@ -256,19 +239,29 @@ export default function ResultsPage() {
   const chatbotAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
-  const [typeFilter, setTypeFilter] = useState<ChangeType | "all">("all");
-const [sideFilter, setSideFilter] = useState<Side | "all">("all");
 
-useEffect(() => {
-  try {
-    const tf = localStorage.getItem("qa:typeFilter");
-    if (tf) setTypeFilter(tf as any);
-    const sf = localStorage.getItem("qa:sideFilter");
-    if (sf) setSideFilter(sf as any);
-  } catch {}
-}, []);
+  // Preferences
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
+  // Filters (state held here; Changes component just receives values + callbacks)
+  const [typeFilter, setTypeFilter] = useState<ChangeType | "all">("all");
+  const [sideFilter, setSideFilter] = useState<Side | "all">("all");
+  useEffect(() => {
+    try {
+      const tf = localStorage.getItem("qa:typeFilter");
+      if (tf) setTypeFilter(tf as any);
+      const sf = localStorage.getItem("qa:sideFilter");
+      if (sf) setSideFilter(sf as any);
+    } catch {}
+  }, []);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("qa:typeFilter", typeFilter);
+  }, [typeFilter]);
+  useEffect(() => {
+    if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter);
+  }, [sideFilter]);
+
+  // Summary stuff
   const [audience, setAudience] = useState<Audience>("stakeholder");
   const [summaryStakeholder, setSummaryStakeholder] = useState<string>("");
   const [summaryDeveloper, setSummaryDeveloper] = useState<string>("");
@@ -276,29 +269,6 @@ useEffect(() => {
   const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null);
 
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert");
-  const canonicalOld = useMemo(
-    () => (mode === "compare" && oldQuery ? canonicalizeSQL(oldQuery) : ""),
-    [mode, oldQuery]
-  );
-  const canonicalNew = useMemo(
-    () => (newQuery ? canonicalizeSQL(newQuery) : ""),
-    [newQuery]
-  );
-
-  const totalOldLines = useMemo(() => {
-    if (mode === "compare") return (canonicalOld ? canonicalOld.split("\n").length : 0);
-    return (oldQuery ? oldQuery.split("\n").length : 0);
-  }, [mode, canonicalOld, oldQuery]);
-
-  const totalNewLines = useMemo(() => {
-    if (mode === "compare") return (canonicalNew ? canonicalNew.split("\n").length : 0);
-    return (newQuery ? newQuery.split("\n").length : 0);
-  }, [mode, canonicalNew, newQuery]);
-
-  const allMiniChanges = useMemo(() => toMiniChanges(analysis), [analysis]);
-  const miniOld = useMemo(() => allMiniChanges.filter((c) => c.side === "old" || c.side === "both"), [allMiniChanges]);
-  const miniNew = useMemo(() => allMiniChanges.filter((c) => c.side === "new" || c.side === "both"), [allMiniChanges]);
-
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null);
   const summarizeAbortRef = useRef<AbortController | null>(null);
@@ -400,14 +370,14 @@ useEffect(() => {
 
     if (!parsed || (parsed as any).mode === "single") {
       const qRaw = String((parsed as any)?.singleQuery || (parsed as any)?.newQuery || "");
-      const q = normalizeEOL(qRaw); // ⬅️ preserve exact spacing/tabs
+      const q = normalizeEOL(qRaw);
       if (!q || q.length > MAX_QUERY_CHARS) {
         router.push("/");
         return;
       }
       setMode("single");
       setSingleQuery(q);
-      setNewQuery(q); // keep for ChatPanel
+      setNewQuery(q);
       setOldQuery("");
       setLoading(false);
       return;
@@ -421,18 +391,18 @@ useEffect(() => {
       return;
     }
     setMode("compare");
-    setOldQuery(o); // ⬅️ raw (preserved)
-    setNewQuery(n); // ⬅️ raw (preserved)
+    setOldQuery(o);
+    setNewQuery(n);
     setLoading(false);
 
-    // PREPARE CHANGES ONLY (no explanations yet) — compare mode only
+    // PREPARE CHANGES ONLY — server groups correctly; we render as-is
     (async () => {
       try {
         const PAGE_SIZE = 24;
         const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: canonicalizeSQL(o), newQuery: canonicalizeSQL(n) }),
+          body: JSON.stringify({ oldQuery: o, newQuery: n }), // RAW
         });
         const prepData = await prepRes.json().catch(() => ({}));
         if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
@@ -443,7 +413,7 @@ useEffect(() => {
           const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oldQuery: canonicalizeSQL(o), newQuery: canonicalizeSQL(n) }),
+            body: JSON.stringify({ oldQuery: o, newQuery: n }), // RAW
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
@@ -467,7 +437,7 @@ useEffect(() => {
     })();
   }, [router]);
 
-  // Sound toggles & persistence to actual audio elements
+  // Sound toggles & persistence
   useEffect(() => {
     const audios = [
       doneAudioRef.current,
@@ -487,32 +457,20 @@ useEffect(() => {
     }
   }, [soundOn]);
 
-  useEffect(() => {
-    if (typeof window !== "undefined") localStorage.setItem("qa:typeFilter", typeFilter);
-  }, [typeFilter]);
-  useEffect(() => {
-    if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter);
-  }, [sideFilter]);
-  useEffect(() => {
-    if (typeof window !== "undefined") localStorage.setItem("qa:audience", audience);
-  }, [audience]);
+  // ---- Diff + aligned rows (SOURCE OF TRUTH for QueryComparison + MiniMaps)
+  const comparison: ComparisonResult | null = useMemo(() => {
+    if (mode !== "compare" || !oldQuery || !newQuery) return null;
+    return generateQueryDiff(oldQuery, newQuery, { basis: "raw" });
+  }, [mode, oldQuery, newQuery]);
 
-  const stats = useMemo(() => {
-    if (mode !== "compare") return null;
-    if (!canonicalOld || !canonicalNew) return null;
-    const diff: ComparisonResult = generateQueryDiff(canonicalOld, canonicalNew);
-    return diff.stats;
-  }, [mode, canonicalOld, canonicalNew]);
+  const alignedRows: AlignedRow[] = useMemo(() => {
+    return comparison ? buildAlignedRows(comparison) : [];
+  }, [comparison]);
 
-  const displayChanges = useMemo(() => {
-    if (mode !== "compare") return [];
-    const items = deriveDisplayChanges(analysis);
-    return items.filter(
-      (chg) => (typeFilter === "all" || chg.type === typeFilter) && (sideFilter === "all" || chg.side === sideFilter)
-    );
-  }, [mode, analysis, typeFilter, sideFilter]);
+  // Stats for chips
+  const stats = useMemo(() => comparison?.stats ?? null, [comparison]);
 
-  // ===== Summary fetcher (manual only) =====
+  // Summary fetcher (manual)
   async function fetchSummary(forAudience: Audience) {
     if (summarizeAbortRef.current) summarizeAbortRef.current.abort();
     summarizeAbortRef.current = new AbortController();
@@ -524,7 +482,7 @@ useEffect(() => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          newQuery: canonicalNew,
+          newQuery, // RAW
           analysis,
           audience: forAudience,
         }),
@@ -600,15 +558,17 @@ useEffect(() => {
           } catch {}
         }
       } else {
-        [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach((a) => {
-          try {
-            if (a) {
-              a.muted = true;
-              a.pause();
-              a.currentTime = 0;
-            }
-          } catch {}
-        });
+        [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach(
+          (a) => {
+            try {
+              if (a) {
+                a.muted = true;
+                a.pause();
+                a.currentTime = 0;
+              }
+            } catch {}
+          }
+        );
       }
       return next;
     });
@@ -622,7 +582,7 @@ useEffect(() => {
   const runAnalysis = async () => {
     if (mode !== "compare") return;
     if (streaming) return;
-    if (!canonicalOld || !canonicalNew) return;
+    if (!oldQuery || !newQuery) return; // RAW guard
 
     setAnalysisStarted(true);
     analysisDoneSoundPlayedRef.current = false;
@@ -632,10 +592,11 @@ useEffect(() => {
     try {
       const PAGE_SIZE = 24;
 
+      // Prep placeholders
       const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+        body: JSON.stringify({ oldQuery, newQuery }), // RAW
       });
       const prepData = await prepRes.json().catch(() => ({}));
       if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
@@ -648,7 +609,7 @@ useEffect(() => {
         const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+          body: JSON.stringify({ oldQuery, newQuery }), // RAW
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
@@ -666,11 +627,12 @@ useEffect(() => {
         changes: mergedPlaceholders,
       }));
 
+      // Stream each item explanation
       for (let i = 0; i < total; i++) {
         const r = await fetch(`/api/analyze?mode=item&index=${i}&analysisMode=${analysisMode}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+          body: JSON.stringify({ oldQuery, newQuery }), // RAW
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) continue;
@@ -846,7 +808,11 @@ useEffect(() => {
               {/* Stats chips — compare only */}
               {mode === "compare" && stats && (
                 <section className="mt-0 mb-2">
-                  <div className={`flex items-center justify-center gap-2 text-xs ${isLight ? "text-slate-700" : "text-white/80"}`}>
+                  <div
+                    className={`flex items-center justify-center gap-2 text-xs ${
+                      isLight ? "text-slate-700" : "text-white/80"
+                    }`}
+                  >
                     <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
                       {stats.additions} additions
                     </span>
@@ -856,24 +822,28 @@ useEffect(() => {
                     <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
                       {stats.deletions} deletions
                     </span>
-                    <span className={`px-2 py-1 rounded ${isLight ? "bg-black/5 border-black/15" : "bg-white/10 border-white/20"}`}>
+                    <span
+                      className={`px-2 py-1 rounded ${
+                        isLight ? "bg-black/5 border-black/15" : "bg-white/10 border-white/20"
+                      }`}
+                    >
                       {stats.unchanged} unchanged
                     </span>
                   </div>
                 </section>
               )}
 
-              {/* TOP PANE(S) — same height for both modes */}
+              {/* TOP PANE(S) */}
               <section className="mt-1">
                 <div className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
                   {mode === "single" ? (
                     <>
-                      {/* Left: Single query (2/3 width) */}
+                      {/* Left: Single query */}
                       <div className="md:flex-[2] min-w-0 h-full">
                         <SingleQueryView query={singleQuery} isLight={isLight} />
                       </div>
 
-                      {/* Right: Chat only — full height to match the query box */}
+                      {/* Right: Chat only */}
                       <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
                         <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
                           <CardContent className="p-0 h-full flex flex-col min-h-0">
@@ -890,22 +860,22 @@ useEffect(() => {
                       <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
                         <QueryComparison
                           ref={cmpRef}
-                          oldQuery={mode === "compare" ? oldQuery : oldQuery}
-                          newQuery={mode === "compare" ? newQuery : newQuery}
+                          oldQuery={oldQuery}
+                          newQuery={newQuery}
                           showTitle={false}
                           syncScrollEnabled={syncEnabled}
                         />
                       </div>
 
-                      {/* Dual minimaps */}
+                      {/* Dual minimaps (visual-row aligned) */}
                       <div className="hidden lg:flex h-full items-stretch gap-2">
                         <MiniMap
-                          totalLines={totalOldLines}
-                          changes={miniOld}
+                          alignedRows={alignedRows}
                           forceSide="old"
                           onJump={({ line }) => {
+                            if (!cmpRef.current) return;
                             playMiniClick();
-                            cmpRef.current?.scrollTo({ side: "old", line });
+                            cmpRef.current.scrollTo({ side: "old", line });
                           }}
                           className={`w-6 h-full rounded-md ${
                             isLight
@@ -915,12 +885,12 @@ useEffect(() => {
                           soundEnabled={soundOn}
                         />
                         <MiniMap
-                          totalLines={totalNewLines}
-                          changes={miniNew}
+                          alignedRows={alignedRows}
                           forceSide="new"
                           onJump={({ line }) => {
+                            if (!cmpRef.current) return;
                             playMiniClick();
-                            cmpRef.current?.scrollTo({ side: "new", line });
+                            cmpRef.current.scrollTo({ side: "new", line });
                           }}
                           className={`w-6 h-full rounded-md ${
                             isLight
@@ -945,126 +915,33 @@ useEffect(() => {
 
               {/* LOWER PANELS */}
               {mode === "compare" ? (
-                // ==== Compare: Changes + Summary | AI Analysis + Chat ====
                 <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
                   {/* LEFT: Changes + Summary */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                    {/* Changes */}
-                    <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-                      <CardContent className="p-5">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-slate-900 font-semibold">Changes</h3>
-                          <div className="flex items-center gap-2">
-                            {(typeFilter !== "all" || sideFilter !== "all") && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setTypeFilter("all");
-                                  setSideFilter("all");
-                                }}
-                                className="h-8 px-3 text-sm rounded border border-gray-300 bg-white text-black"
-                                title="Clear filters"
-                              >
-                                Clear
-                              </button>
-                            )}
-                            <label className="sr-only" htmlFor="typeFilter">
-                              Filter by type
-                            </label>
-                            <select
-                              id="typeFilter"
-                              className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
-                              value={typeFilter}
-                              onChange={(e) => setTypeFilter(e.target.value as any)}
-                              title="Filter by type"
-                            >
-                              <option value="all">All Types</option>
-                              <option value="addition">Additions</option>
-                              <option value="modification">Modifications</option>
-                              <option value="deletion">Deletions</option>
-                            </select>
-
-                            <label className="sr-only" htmlFor="sideFilter">
-                              Filter by side
-                            </label>
-                            <select
-                              id="sideFilter"
-                              className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
-                              value={sideFilter}
-                              onChange={(e) => setSideFilter(e.target.value as any)}
-                              title="Filter by side"
-                            >
-                              <option value="all">Both</option>
-                              <option value="old">Old only</option>
-                              <option value="new">New only</option>
-                            </select>
-                          </div>
-                        </div>
-
-                        <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
-                          {displayChanges.length > 0 ? (
-                            <div className="space-y-3">
-                              {displayChanges.map((chg, index) => {
-                                const jumpSide: "old" | "new" | "both" =
-                                  chg.side === "both" ? "both" : chg.side === "old" ? "old" : "new";
-                                return (
-                                  <button
-                                    key={index}
-                                    className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      playMiniClick();
-                                      cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber });
-                                      window.scrollTo({ top: 0, behavior: "smooth" });
-                                      (e.currentTarget as HTMLButtonElement).blur();
-                                    }}
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter" || e.key === " ") {
-                                        e.preventDefault();
-                                        playMiniClick();
-                                        cmpRef.current?.scrollTo({ side: jumpSide, line: chg.lineNumber });
-                                        (e.currentTarget as HTMLButtonElement).blur();
-                                      }
-                                    }}
-                                  >
-                                    <div className="flex items-center gap-2 mb-2">
-                                      <span
-                                        className={`px-2 py-1 rounded text-xs font-medium transition ${
-                                          chg.type === "addition"
-                                            ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                            : chg.type === "deletion"
-                                            ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                                            : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                                        }`}
-                                      >
-                                        {chg.type}
-                                      </span>
-                                      <span className="text-xs text-gray-500">
-                                        {chg.side} · line {chg.lineNumber}
-                                      </span>
-                                    </div>
-                                    <p className="text-gray-800 text-sm">{chg.description}</p>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <div className="flex items-center justify-center h-full text-gray-500">
-                              <p>No changes detected.</p>
-                            </div>
-                          )}
-                        </div>
-                      </CardContent>
-                    </Card>
+                    <Changes
+                      oldQuery={oldQuery}
+                      newQuery={newQuery}
+                      isLight={isLight}
+                      typeFilter={typeFilter}
+                      sideFilter={sideFilter}
+                      onChangeTypeFilter={setTypeFilter}
+                      onChangeSideFilter={setSideFilter}
+                      onJump={(side, line) => {
+                        if (!cmpRef.current) return;
+                        cmpRef.current.scrollTo({ side, line });
+                        window.scrollTo({ top: 0, behavior: "smooth" });
+                      }}
+                    />
 
                     {/* Summary */}
-                    <Card
-                      ref={summaryRef}
-                      className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg"
-                    >
+                    <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
                       <CardContent className="p-5">
                         <div className="flex items-center justify-between mb-4">
-                          <h3 ref={summaryHeaderRef} tabIndex={-1} className="text-slate-900 font-semibold focus:outline-none">
+                          <h3
+                            ref={summaryHeaderRef}
+                            tabIndex={-1}
+                            className="text-slate-900 font-semibold focus:outline-none"
+                          >
                             Summary
                           </h3>
 
@@ -1076,7 +953,11 @@ useEffect(() => {
                               title="Generate summary"
                               className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
                             >
-                              {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                              {summarizing ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Send className="h-3.5 w-3.5" />
+                              )}
                               <span className="text-sm">Generate Summary</span>
                             </button>
 
@@ -1086,7 +967,9 @@ useEffect(() => {
                                 onClick={() => handleSwitchAudience("stakeholder")}
                                 disabled={loadingAudience === "stakeholder"}
                                 className={`px-3 h-8 rounded-full text-sm transition ${
-                                  audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                                  audience === "stakeholder"
+                                    ? "bg-white text-gray-900 shadow"
+                                    : "text-gray-600 hover:text-gray-900"
                                 }`}
                                 title="Stakeholder-friendly summary"
                               >
@@ -1103,7 +986,9 @@ useEffect(() => {
                                 onClick={() => handleSwitchAudience("developer")}
                                 disabled={loadingAudience === "developer"}
                                 className={`px-3 h-8 rounded-full text-sm transition ${
-                                  audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                                  audience === "developer"
+                                    ? "bg-white text-gray-900 shadow"
+                                    : "text-gray-600 hover:text-gray-900"
                                 }`}
                                 title="Developer-focused summary"
                               >
@@ -1120,7 +1005,6 @@ useEffect(() => {
                         </div>
 
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          {/* In compare mode, summary references canonicalNew; that's fine */}
                           {(() => {
                             const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
                             if (!currentSummary && (summarizing || loadingAudience)) {
@@ -1152,18 +1036,16 @@ useEffect(() => {
 
                   {/* RIGHT: AI Analysis + Chat */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                    <AnalysisPanel
-                      isLight={isLight}
-                      canonicalOld={canonicalOld}
-                      canonicalNew={canonicalNew}
-                    />
+                    {/* AnalysisPanel expects canonicalOld/canonicalNew props by name;
+                       pass RAW values to keep that component unchanged. */}
+                    <AnalysisPanel isLight={isLight} canonicalOld={oldQuery} canonicalNew={newQuery} />
 
                     {/* Chat */}
                     <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
                       <CardContent className="p-0">
                         <ChatPanel
-                          rawOld={oldQuery}   
-                          rawNew={newQuery}   
+                          rawOld={oldQuery}
+                          rawNew={newQuery}
                           changeCount={analysis?.changes?.length ?? 0}
                           stats={stats ?? null}
                         />

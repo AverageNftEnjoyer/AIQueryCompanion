@@ -207,6 +207,7 @@ function buildPrompt(body: ChatbotBody) {
   const canOld = body.oldQuery ? canonicalizeSQL(body.oldQuery) : "";
   const canNew = body.newQuery ? canonicalizeSQL(body.newQuery) : "";
 
+  // Use visible (RAW) for 1:1 numbering with comparison; caller already sends these.
   const visOld = (body.visibleOld ?? canOld) || "";
   const visNew = (body.visibleNew ?? canNew) || "";
 
@@ -332,10 +333,21 @@ export async function POST(req: Request) {
       );
     }
 
+    // Are we in compare mode?
     const hasVisibleOld = !!(body.visibleOld && body.visibleOld.length);
     const hasVisibleNew = !!(body.visibleNew && body.visibleNew.length);
-    const compareMode = (hasVisibleOld && hasVisibleNew) || (!!body.oldQuery && !!body.newQuery);
+    const hasRawOld = !!(body.oldQuery && body.oldQuery.length);
+    const hasRawNew = !!(body.newQuery && body.newQuery.length);
+    const compareMode = (hasVisibleOld && hasVisibleNew) || (hasRawOld && hasRawNew);
 
+    // Robust visible text (RAW) for 1:1 numbering; fall back to raw if visible not provided
+    const visOldText = (body.visibleOld ?? body.oldQuery ?? "") || "";
+    const visNewText = (body.visibleNew ?? body.newQuery ?? "") || "";
+    const oldLines = splitVisibleLines(visOldText);
+    const newLines = splitVisibleLines(visNewText);
+    const bothPresent = oldLines.length > 0 && newLines.length > 0;
+
+    // Handle side-only follow-ups like: "old" or "new" (optionally with a number)
     const sideFollowup = parseSideFollowup(question);
     if (sideFollowup && compareMode) {
       let line = sideFollowup.line;
@@ -356,8 +368,29 @@ export async function POST(req: Request) {
       }
     }
 
+    // If user asked "line N" with no side in compare mode, default to NEW;
+    // if NEW doesn't have that line, fall back to OLD. No disambiguation.
     const parsed = parseLineQuery(body.question || question);
-    if (compareMode && parsed && parsed.target == null) {
+    if (compareMode && parsed && parsed.target == null && bothPresent) {
+      const n = parsed.start;
+      const end = parsed.end;
+      const withinNew = n >= 1 && n <= newLines.length;
+      const withinOld = n >= 1 && n <= oldLines.length;
+
+      if (withinNew || withinOld) {
+        const side = withinNew ? "new" : "old";
+        body.question = `${side} line ${n}${end ? `-${end}` : ""}`;
+      } else {
+        return NextResponse.json(
+          {
+            answer: `Line ${n} is out of range. NEW has ${newLines.length} line(s); OLD has ${oldLines.length} line(s).`,
+            meta: { mode: "range", playSound: true },
+          },
+          { status: 200 }
+        );
+      }
+    } else if (compareMode && parsed && parsed.target == null && !bothPresent) {
+      // Not enough info to resolve side safely
       const n = parsed.start;
       return NextResponse.json(
         {
@@ -368,8 +401,10 @@ export async function POST(req: Request) {
       );
     }
 
+    // Build the prompt (VISIBLE-indexed for strict 1:1 line numbers)
     const { full } = buildPrompt({ ...body, question: body.question || question });
 
+    // Assistants flow
     const thread = await createThread();
     await addMessage(thread.id, full);
     const run = await runAssistant(thread.id);

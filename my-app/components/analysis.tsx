@@ -22,6 +22,7 @@ interface ChangeItem {
 
 interface Props {
   isLight: boolean;
+  /** These props are RAW queries (passed straight from ResultsPage). */
   canonicalOld: string;
   canonicalNew: string;
 }
@@ -32,23 +33,24 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
   const [changes, setChanges] = React.useState<ChangeItem[]>([]);
   const [error, setError] = React.useState<string | null>(null);
 
-  const bgCard = "bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)]";
+  const bgCard =
+    "bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)]";
 
   async function handleRun() {
-    if (!canonicalNew || streaming) return;
+    if (!canonicalNew || !canonicalOld || streaming) return;
 
     setStreaming(true);
     setError(null);
     setSummary("Preparing changes…");
 
     try {
-      // 1) Fetch placeholders via your existing analyzer (prepOnly)
+      // 1) Fetch placeholders via analyzer (prepOnly) — server uses RAW basis + same grouping as UI
       const PAGE_SIZE = 24;
       async function prepPage(cursor: number) {
         const res = await fetch(`/api/analyze?cursor=${cursor}&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
+          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }), // RAW to align with QueryComparison
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error || `Prep failed (${res.status})`);
@@ -66,7 +68,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
         nextCursor = p?.page?.nextCursor ?? null;
       }
 
-      // De-dupe and sort by index if available
+      // De-dupe and sort by index (server returns index)
       const byIndex = new Map<number, ChangeItem>();
       for (const c of placeholders) {
         const pending = { ...c, explanation: "Pending…" as const };
@@ -77,7 +79,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
       setChanges(merged);
       setSummary(`Streaming ${total} changes… 0 explained.`);
 
-      // 2) For each change, call your analyze route in item mode for a 2–6 line summary
+      // 2) Stream per-item explanations — stays aligned with the same grouped changes
       let explained = 0;
       for (let i = 0; i < merged.length; i++) {
         const item = merged[i];
@@ -87,12 +89,10 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            // keep it concise like you wanted (2–6 lines)
-            "x-analysis-detail": "fast",
           },
           body: JSON.stringify({
-            oldQuery: canonicalOld,
-            newQuery: canonicalNew,
+            oldQuery: canonicalOld, // RAW
+            newQuery: canonicalNew, // RAW
           }),
         });
 
@@ -120,8 +120,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
             map.set(item.index!, {
               ...item,
               explanation:
-                data?.error ||
-                "Couldn’t parse analysis output. Consider widening context or retrying.",
+                data?.error || "Couldn’t parse analysis output. Consider widening context or retrying.",
               syntax: "bad",
               performance: "bad",
             });
@@ -151,7 +150,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
             AI Analysis {streaming && <span className="text-xs text-gray-500 ml-2">• In Progress…</span>}
           </h3>
 
-        <button
+          <button
             type="button"
             onClick={handleRun}
             disabled={streaming || !canonicalNew}
@@ -165,9 +164,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
 
         <div className="h-[27.6rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
           {error ? (
-            <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
-              {error}
-            </div>
+            <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">{error}</div>
           ) : (
             <div className="space-y-4">
               {changes.length > 0 ? (

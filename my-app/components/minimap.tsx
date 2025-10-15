@@ -1,76 +1,97 @@
 "use client";
 
 import * as React from "react";
+import type { AlignedRow, AlignedRowKind } from "@/lib/query-differ";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
 
+/** (Legacy) kept for compat if you ever pass pre-grouped items; ignored when `alignedRows` is provided. */
 export interface MiniChange {
-  type: ChangeType;
   lineNumber: number;
+  type: ChangeType;
   side: Side;
   span?: number;
   label?: string;
 }
 
 interface MiniMapProps {
-  totalLines: number;
-  changes: MiniChange[];
+  /** Source of truth from query-differ.tsx — REQUIRED for exact visual alignment. */
+  alignedRows: AlignedRow[];
+
+  /** Which pane this minimap represents. */
+  forceSide: Extract<Side, "old" | "new">;
+
+  /** Called when a block is clicked. Jumps to the first real line in that run. */
   onJump: (opts: { side: Side; line: number }) => void;
+
+  /** The props below are just UI niceties. */
   className?: string;
   soundSrc?: string;
   soundEnabled?: boolean;
   mapHeightPx?: number;
   minBlockPx?: number;
-  forceSide?: Side;
   maxStackRows?: number;
+
+  /** Legacy input — ignored when `alignedRows` is present. */
+  changes?: MiniChange[];
 }
 
 const COLOR: Record<ChangeType, string> = {
-  addition: "#10b981", // green
-  modification: "#f59e0b", // amber
-  deletion: "#ef4444", // red
+  addition: "#10b981",
+  modification: "#f59e0b",
+  deletion: "#ef4444",
 };
 
 const ROW_OFFSET_PX = 3;
 
+type Block = {
+  key: string;
+  type: ChangeType;     // addition | deletion | modification
+  side: Side;           // "old" | "new" | "both"
+  vStart: number;       // 1-based visual row start (alignedRows)
+  vSpan: number;        // number of visual rows in this run
+  topPx: number;
+  heightPx: number;
+  jumpLine: number;     // real file line number to jump to (for the pane)
+  label?: string;
+};
+
 export function MiniMap({
-  totalLines,
-  changes,
+  alignedRows,
+  forceSide,
   onJump,
   className,
   soundSrc = "/minimapbar.mp3",
   soundEnabled = true,
   mapHeightPx = 220,
   minBlockPx = 6,
-  forceSide,
   maxStackRows = 3,
 }: MiniMapProps) {
   const rootRef = React.useRef<HTMLDivElement | null>(null);
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null);
   const [measuredH, setMeasuredH] = React.useState<number>(mapHeightPx);
 
-  // FIX: robust height measurement + parent observation + window resize
+  // Measure height & observe parent/resize
   React.useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
 
-    const updateHeight = () => {
+    const update = () => {
       const h = el.offsetHeight || el.clientHeight || mapHeightPx;
       if (typeof h === "number" && h > 0) setMeasuredH(h);
     };
 
     const parent = el.parentElement;
-    const ro = new ResizeObserver(() => updateHeight());
+    const ro = new ResizeObserver(() => update());
     if (parent) ro.observe(parent);
     ro.observe(el);
 
-    updateHeight();
-    window.addEventListener("resize", updateHeight);
-
+    update();
+    window.addEventListener("resize", update);
     return () => {
       ro.disconnect();
-      window.removeEventListener("resize", updateHeight);
+      window.removeEventListener("resize", update);
     };
   }, [mapHeightPx]);
 
@@ -95,70 +116,180 @@ export function MiniMap({
       el.pause();
       el.currentTime = 0;
       el.volume = 0.6;
-      el.play().catch(() => {});
+      void el.play();
     } catch {}
   };
 
-  const blocks = React.useMemo(() => {
+  /**
+   * Build **visual** runs from aligned rows:
+   *  - old minimap: rows with kind ∈ {deletion, modification}; anchor to old.visualIndex
+   *  - new minimap: rows with kind ∈ {addition, modification}; anchor to new.visualIndex
+   * Runs are contiguous when visualIndex increments by 1.
+   * Jump line: first defined real lineNumber on that side within the run.
+   */
+  const blocks: Block[] = React.useMemo(() => {
     const H = Math.max(1, measuredH);
-    const L = Math.max(1, totalLines);
+    const totalVisualRows = Math.max(1, alignedRows.length);
+    const useOld = forceSide === "old";
 
-    type Block = {
-      key: string;
-      type: ChangeType;
-      side: Side;
-      line: number;
-      span: number;
-      label?: string;
-      topPx: number;
-      heightPx: number;
+    const includeKinds: Record<AlignedRowKind, boolean> = {
+      unchanged: false,
+      addition: !useOld,
+      deletion: useOld,
+      modification: true,
     };
 
-    const result: Block[] = [];
-    const sorted = [...changes].sort((a, b) => a.lineNumber - b.lineNumber);
-    const rowBottoms: number[] = [];
+    type Pending = {
+      type: ChangeType;
+      side: Side;            // "old"/"new" for pure adds/dels, "both" for modifications
+      vStart: number;        // visual start row (1-based)
+      vEnd: number;          // visual end row (inclusive)
+      firstJump?: number;    // first real lineNumber seen (for scroll target)
+    } | null;
 
-    for (let i = 0; i < sorted.length; i++) {
-      const c = sorted[i];
-      const span = Math.max(1, c.span ?? 1);
-      const start = Math.max(1, Math.min(c.lineNumber, L));
+    let cur: Pending = null;
+    const out: Block[] = [];
 
-      const heightPx = Math.max(minBlockPx, (span / L) * H);
-      let top = ((start - 1) / L) * H;
+    const rowToType = (k: AlignedRowKind): ChangeType =>
+      k === "addition" ? "addition" : k === "deletion" ? "deletion" : "modification";
+
+    const getV = (r: AlignedRow): number | undefined =>
+      useOld ? r.old.visualIndex : r.new.visualIndex;
+
+    const getJump = (r: AlignedRow): number | undefined =>
+      useOld ? r.old.lineNumber : r.new.lineNumber;
+
+    const sideTagFor = (k: AlignedRowKind): Side =>
+      k === "modification" ? "both" : forceSide;
+
+    // We iterate in **visual** order (the array is already in render order)
+    for (let i = 0; i < alignedRows.length; i++) {
+      const r = alignedRows[i];
+      if (!includeKinds[r.kind]) {
+        // Close any open run at a boundary
+        if (cur) {
+          const vSpan = cur.vEnd - cur.vStart + 1;
+          const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
+          let top = ((cur.vStart - 1) / totalVisualRows) * H;
+          top = Math.min(Math.max(0, top), H - heightPx);
+
+          out.push({
+            key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
+            type: cur.type,
+            side: cur.side,
+            vStart: cur.vStart,
+            vSpan,
+            topPx: top,         // stacking added below
+            heightPx,
+            jumpLine: Math.max(1, cur.firstJump ?? 1),
+          });
+          cur = null;
+        }
+        continue;
+      }
+
+      const v = getV(r);
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        // If we can't anchor visually, end the current run
+        if (cur) {
+          const vSpan = cur.vEnd - cur.vStart + 1;
+          const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
+          let top = ((cur.vStart - 1) / totalVisualRows) * H;
+          top = Math.min(Math.max(0, top), H - heightPx);
+
+          out.push({
+            key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
+            type: cur.type,
+            side: cur.side,
+            vStart: cur.vStart,
+            vSpan,
+            topPx: top,
+            heightPx,
+            jumpLine: Math.max(1, cur.firstJump ?? 1),
+          });
+          cur = null;
+        }
+        continue;
+      }
+
+      const t = rowToType(r.kind);
+      const sideTag = sideTagFor(r.kind);
+      const jl = getJump(r);
+
+      if (cur && cur.type === t && cur.side === sideTag && v === cur.vEnd + 1) {
+        cur.vEnd = v;
+        if (cur.firstJump === undefined && typeof jl === "number") cur.firstJump = jl;
+      } else {
+        // Flush previous
+        if (cur) {
+          const vSpan = cur.vEnd - cur.vStart + 1;
+          const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
+          let top = ((cur.vStart - 1) / totalVisualRows) * H;
+          top = Math.min(Math.max(0, top), H - heightPx);
+
+          out.push({
+            key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
+            type: cur.type,
+            side: cur.side,
+            vStart: cur.vStart,
+            vSpan,
+            topPx: top,
+            heightPx,
+            jumpLine: Math.max(1, cur.firstJump ?? 1),
+          });
+        }
+        cur = { type: t, side: sideTag, vStart: v, vEnd: v, firstJump: typeof jl === "number" ? jl : undefined };
+      }
+    }
+
+    // Flush tail
+    if (cur) {
+      const vSpan = cur.vEnd - cur.vStart + 1;
+      const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
+      let top = ((cur.vStart - 1) / totalVisualRows) * H;
       top = Math.min(Math.max(0, top), H - heightPx);
 
+      out.push({
+        key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
+        type: cur.type,
+        side: cur.side,
+        vStart: cur.vStart,
+        vSpan,
+        topPx: top,
+        heightPx,
+        jumpLine: Math.max(1, cur.firstJump ?? 1),
+      });
+      cur = null;
+    }
+
+    // Stack overlapping blocks a bit so they’re clickable
+    const rowBottoms: number[] = [];
+    const stacked: Block[] = [];
+    for (let i = 0; i < out.length; i++) {
+      const b = out[i];
+      let top = b.topPx;
       let row = 0;
       for (; row < rowBottoms.length; row++) {
         if (top >= rowBottoms[row] + ROW_OFFSET_PX) break;
       }
       if (row === rowBottoms.length) {
-        if (rowBottoms.length < maxStackRows) {
+        if (rowBottoms.length < (maxStackRows ?? 3)) {
           rowBottoms.push(-Infinity);
         } else {
           let best = 0;
           for (let r = 1; r < rowBottoms.length; r++) if (rowBottoms[r] < rowBottoms[best]) best = r;
           row = best;
-          top = Math.min(H - heightPx, Math.max(0, rowBottoms[row] + ROW_OFFSET_PX));
+          top = Math.min(measuredH - b.heightPx, Math.max(0, rowBottoms[row] + ROW_OFFSET_PX));
         }
       }
+      const topWithOffset = Math.min(measuredH - b.heightPx, Math.max(0, top + row * ROW_OFFSET_PX));
+      rowBottoms[row] = topWithOffset + b.heightPx;
 
-      const topWithOffset = Math.min(H - heightPx, Math.max(0, top + row * ROW_OFFSET_PX));
-      rowBottoms[row] = topWithOffset + heightPx;
-
-      result.push({
-        key: `${i}-${start}-${span}-${c.type}-${c.side}`,
-        type: c.type,
-        side: c.side,
-        line: start,
-        span,
-        label: c.label,
-        topPx: topWithOffset,
-        heightPx,
-      });
+      stacked.push({ ...b, topPx: topWithOffset });
     }
 
-    return result;
-  }, [changes, measuredH, minBlockPx, totalLines, maxStackRows]);
+    return stacked;
+  }, [alignedRows, forceSide, maxStackRows, measuredH, minBlockPx]);
 
   return (
     <div
@@ -177,11 +308,11 @@ export function MiniMap({
       {blocks.map((b) => (
         <button
           key={b.key}
-          title={`${b.label || b.type} @ lines ${b.line}-${b.line + b.span - 1}`}
+          title={`${b.type} • rows ${b.vStart}-${b.vStart + b.vSpan - 1}`}
           onClick={(e) => {
             e.preventDefault();
             playClick();
-            onJump({ side: forceSide ?? b.side, line: b.line });
+            onJump({ side: forceSide, line: b.jumpLine });
           }}
           className="absolute left-0 right-0 transition-[filter,transform] hover:brightness-110 active:brightness-125"
           style={{
@@ -191,7 +322,7 @@ export function MiniMap({
             opacity: 1,
             mixBlendMode: "normal",
           }}
-          aria-label={`Jump to ${b.type} at lines ${b.line}-${b.line + b.span - 1}`}
+          aria-label={`Jump to ${b.type} at rows ${b.vStart}-${b.vStart + b.vSpan - 1}`}
         />
       ))}
     </div>

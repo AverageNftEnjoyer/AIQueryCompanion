@@ -64,7 +64,7 @@ const ChatPanel = memo(function ChatPanel({
 }: ChatPanelProps) {
   const compareMode = !!rawOld && !!rawNew;
 
-  // ✅ Use RAW in compare mode so numbering matches analyze mode exactly
+  // ✅ Use RAW in compare mode so numbering matches analyze mode & comparison exactly
   const visibleOld = compareMode ? (rawOld ?? "") : (rawOld ?? canonicalOld ?? "");
   const visibleNew = compareMode ? (rawNew ?? "") : (rawNew ?? canonicalNew ?? "");
 
@@ -95,9 +95,8 @@ const ChatPanel = memo(function ChatPanel({
 
     try {
       const maybeLine = findLineMention(q);
-      const focusFrom = visibleNew || visibleOld || "";
-      const lineContext = maybeLine ? extractLineContext(focusFrom, maybeLine, 6) : null;
 
+      // We pass both RAW “visible*” and RAW “old/new” so /api/chatbot can index by visible (RAW) numbering
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -107,22 +106,13 @@ const ChatPanel = memo(function ChatPanel({
           newQuery: newTextRaw,
           visibleOld,
           visibleNew,
-          indexing: "visible",
+          indexing: "visible", // ✅ force visible (RAW) indexing for line numbers
           mode: compareMode ? "compare" : "single",
           context: {
             stats,
             changeCount,
-            ...(maybeLine && lineContext
-              ? {
-                  focusLine: maybeLine,
-                  focusLineExists: lineContext.exists,
-                  focusLineExact: lineContext.exact,
-                  focusSnippet: lineContext.snippet,
-                  focusTotalLines: lineContext.totalLines,
-                }
-              : null),
           },
-          // ✅ send recent history so route can resolve “old/new” follow-ups
+          // ✅ send recent history so route can resolve follow-ups like “old” / “new”
           history: [...messages, { role: "user", content: q }]
             .slice(-8)
             .map((m) => ({ role: m.role, content: m.content })),
