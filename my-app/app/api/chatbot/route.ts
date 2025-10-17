@@ -1,4 +1,3 @@
-// /app/api/chatbot/route.ts
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -207,7 +206,6 @@ function buildPrompt(body: ChatbotBody) {
   const canOld = body.oldQuery ? canonicalizeSQL(body.oldQuery) : "";
   const canNew = body.newQuery ? canonicalizeSQL(body.newQuery) : "";
 
-  // Use visible (RAW) for 1:1 numbering with comparison; caller already sends these.
   const visOld = (body.visibleOld ?? canOld) || "";
   const visNew = (body.visibleNew ?? canNew) || "";
 
@@ -333,21 +331,18 @@ export async function POST(req: Request) {
       );
     }
 
-    // Are we in compare mode?
     const hasVisibleOld = !!(body.visibleOld && body.visibleOld.length);
     const hasVisibleNew = !!(body.visibleNew && body.visibleNew.length);
     const hasRawOld = !!(body.oldQuery && body.oldQuery.length);
     const hasRawNew = !!(body.newQuery && body.newQuery.length);
     const compareMode = (hasVisibleOld && hasVisibleNew) || (hasRawOld && hasRawNew);
 
-    // Robust visible text (RAW) for 1:1 numbering; fall back to raw if visible not provided
     const visOldText = (body.visibleOld ?? body.oldQuery ?? "") || "";
     const visNewText = (body.visibleNew ?? body.newQuery ?? "") || "";
     const oldLines = splitVisibleLines(visOldText);
     const newLines = splitVisibleLines(visNewText);
     const bothPresent = oldLines.length > 0 && newLines.length > 0;
 
-    // Handle side-only follow-ups like: "old" or "new" (optionally with a number)
     const sideFollowup = parseSideFollowup(question);
     if (sideFollowup && compareMode) {
       let line = sideFollowup.line;
@@ -368,8 +363,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // If user asked "line N" with no side in compare mode, default to NEW;
-    // if NEW doesn't have that line, fall back to OLD. No disambiguation.
+    
     const parsed = parseLineQuery(body.question || question);
     if (compareMode && parsed && parsed.target == null && bothPresent) {
       const n = parsed.start;
@@ -390,7 +384,6 @@ export async function POST(req: Request) {
         );
       }
     } else if (compareMode && parsed && parsed.target == null && !bothPresent) {
-      // Not enough info to resolve side safely
       const n = parsed.start;
       return NextResponse.json(
         {
@@ -401,7 +394,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Build the prompt (VISIBLE-indexed for strict 1:1 line numbers)
     const { full } = buildPrompt({ ...body, question: body.question || question });
 
     // Assistants flow

@@ -22,7 +22,6 @@ interface ChangeItem {
 
 interface Props {
   isLight: boolean;
-  /** These props are RAW queries (passed straight from ResultsPage). */
   canonicalOld: string;
   canonicalNew: string;
 }
@@ -44,13 +43,12 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
     setSummary("Preparing changes…");
 
     try {
-      // 1) Fetch placeholders via analyzer (prepOnly) — server uses RAW basis + same grouping as UI
       const PAGE_SIZE = 24;
       async function prepPage(cursor: number) {
         const res = await fetch(`/api/analyze?cursor=${cursor}&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }), // RAW to align with QueryComparison
+          body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }), 
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data?.error || `Prep failed (${res.status})`);
@@ -68,7 +66,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
         nextCursor = p?.page?.nextCursor ?? null;
       }
 
-      // De-dupe and sort by index (server returns index)
       const byIndex = new Map<number, ChangeItem>();
       for (const c of placeholders) {
         const pending = { ...c, explanation: "Pending…" as const };
@@ -79,7 +76,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
       setChanges(merged);
       setSummary(`Streaming ${total} changes… 0 explained.`);
 
-      // 2) Stream per-item explanations — stays aligned with the same grouped changes
       let explained = 0;
       for (let i = 0; i < merged.length; i++) {
         const item = merged[i];
@@ -91,8 +87,8 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
-            oldQuery: canonicalOld, // RAW
-            newQuery: canonicalNew, // RAW
+            oldQuery: canonicalOld, 
+            newQuery: canonicalNew,
           }),
         });
 
@@ -113,7 +109,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
           explained++;
           setSummary(`Streaming ${total} changes… ${explained} explained.`);
         } else {
-          // graceful fallback
           setChanges((prev) => {
             const map = new Map<number, ChangeItem>();
             for (const c of prev) if (typeof c.index === "number") map.set(c.index, c);
@@ -131,7 +126,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
           setSummary(`Streaming ${total} changes… ${explained} explained.`);
         }
 
-        // Let paint happen
         await new Promise((r) => setTimeout(r, 0));
       }
 
@@ -162,7 +156,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew }: P
           </button>
         </div>
 
-        <div className="h-[27.6rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
+        <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
           {error ? (
             <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">{error}</div>
           ) : (

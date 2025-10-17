@@ -56,7 +56,6 @@ export async function POST(req: Request) {
     const signals = extractSignals(newQuery)
     const { clip, clipBytes } = smartClip(newQuery, stmt, MODEL_CLIP_BYTES)
 
-    // Pass 1 (normal)
     const systemPrompt1 = buildSystemPrompt(stmt, /*strict*/ false)
     const userPayload1 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ false, audience)
 
@@ -82,7 +81,6 @@ export async function POST(req: Request) {
 
     let tldr = composeTLDR(stmt, parsed, audience).trim()
 
-    // If boilerplate or empty, run strict pass
     if (!tldr || isBoilerplate(tldr)) {
       const systemPrompt2 = buildSystemPrompt(stmt, /*strict*/ true)
       const userPayload2 = buildUserPayload(clip, stmt, hints, signals, /*forceConcreteness*/ true, audience)
@@ -520,7 +518,6 @@ function buildFlow(sig: ReturnType<typeof extractSignals>): string {
   return steps.join("; ")
 }
 
-/* ---- grammar safety for “In short, it …” ---- */
 function ensureVerbPhrase(s: string): string {
   const t = (s || "").trim()
   if (!t) return "does the intended work"
