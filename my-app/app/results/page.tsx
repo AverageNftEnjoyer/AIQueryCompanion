@@ -239,6 +239,7 @@ export default function ResultsPage() {
   const chatbotAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
+  const comparisonSectionRef = useRef<HTMLDivElement | null>(null); // scroll target (top of QueryComparison)
 
   // Preferences
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
@@ -272,7 +273,35 @@ export default function ResultsPage() {
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null);
   const summarizeAbortRef = useRef<AbortController | null>(null);
+const SUSTAIN_MS = 4000; // how long to keep the solid highlight
 
+const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
+  // Always scroll page to the comparison (muted or not)
+  comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  // Jump in the viewer (use new side when 'both')
+  const targetSide = side === "both" ? "new" : side;
+  cmpRef.current?.scrollTo({ side: targetSide, line });
+
+  // One-time flash (no looping → no flicker)
+  cmpRef.current?.flashRange?.(targetSide, line, line);
+
+  // Persist a solid highlight for ~4s without re-triggering flash
+  // (relies on your QueryComparison rendering data attrs; adjust selectors if needed)
+  requestAnimationFrame(() => {
+    const el =
+      (document.querySelector(`[data-qc-side="${targetSide}"][data-line="${line}"]`) as HTMLElement | null) ||
+      (document.querySelector(`[data-side="${targetSide}"][data-line="${line}"]`) as HTMLElement | null);
+
+    if (el) {
+      el.classList.add("qa-persist-highlight");
+      setTimeout(() => el.classList.remove("qa-persist-highlight"), SUSTAIN_MS);
+    }
+  });
+
+  // Respect the bell for audio
+  if (soundOn) playMiniClick();
+};
   const analysisDoneSoundPlayedRef = useRef(false);
 
   const clearResumeHandler = (() => {
@@ -455,6 +484,22 @@ export default function ResultsPage() {
       });
       clearResumeHandler();
     }
+
+    // 🔇 Also enforce mute for any third-party/internal <audio> tags that play minimapbar.mp3 (e.g., inside <Changes />)
+    try {
+      const allMini = Array.from(
+        document.querySelectorAll<HTMLAudioElement>('audio[src$="minimapbar.mp3"], audio[src*="minimapbar.mp3"]')
+      );
+      allMini.forEach((a) => {
+        a.muted = !soundOn;
+        if (!soundOn) {
+          try {
+            a.pause();
+            a.currentTime = 0;
+          } catch {}
+        }
+      });
+    } catch {}
   }, [soundOn]);
 
   // ---- Diff + aligned rows (SOURCE OF TRUTH for QueryComparison + MiniMaps)
@@ -469,6 +514,38 @@ export default function ResultsPage() {
 
   // Stats for chips
   const stats = useMemo(() => comparison?.stats ?? null, [comparison]);
+
+  // --- Wrap cmpRef scrollTo to uniformly add sound, flash, and scroll up to the comparison area ---
+  const scrollWrapperInstalled = useRef(false);
+  useEffect(() => {
+    const inst = cmpRef.current as any;
+    if (!inst || scrollWrapperInstalled.current) return;
+
+    const originalScrollTo = inst.scrollTo?.bind(inst);
+    if (typeof originalScrollTo !== "function") return;
+
+    inst.scrollTo = (opts: { side: "old" | "new"; line: number; flash?: boolean }) => {
+      // Play click SFX (respects bell)
+      playMiniClick();
+
+      // Scroll the viewport to the comparison section first (so the user sees the highlight)
+      try {
+        comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } catch {}
+
+      // Delegate to actual comparison scroll
+      originalScrollTo(opts);
+
+      // Ensure flash on the exact line
+      try {
+        if (typeof inst.flashRange === "function" && opts?.line) {
+          inst.flashRange(opts.side, opts.line, opts.line);
+        }
+      } catch {}
+    };
+
+    scrollWrapperInstalled.current = true;
+  }, [cmpRef, soundOn]);
 
   // Summary fetcher (manual)
   async function fetchSummary(forAudience: Audience) {
@@ -762,7 +839,7 @@ export default function ResultsPage() {
                 title={soundOn ? "Mute sounds" : "Enable sounds"}
                 className={`inline-flex items-center justify-center w-8 h-8 rounded-lg transition border border-transparent ${
                   isLight ? "hover:bg-black/10" : "hover:bg-white/10"
-                } focus:outline-none focus-visible:ring-0`}
+                }`}
               >
                 {soundOn ? (
                   <Bell className={`h-5 w-5 ${isLight ? "text-gray-700" : "text-white"}`} />
@@ -835,7 +912,10 @@ export default function ResultsPage() {
 
               {/* TOP PANE(S) */}
               <section className="mt-1">
-                <div className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0">
+                <div
+                  ref={comparisonSectionRef}
+                  className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0"
+                >
                   {mode === "single" ? (
                     <>
                       {/* Left: Single query */}
@@ -875,7 +955,13 @@ export default function ResultsPage() {
                           onJump={({ line }) => {
                             if (!cmpRef.current) return;
                             playMiniClick();
+                            // Scroll up to the comparison section first
+                            comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                             cmpRef.current.scrollTo({ side: "old", line });
+                          }}
+                          onFlashRange={({ startLine, endLine }) => {
+                            if (!cmpRef.current) return;
+                            cmpRef.current.flashRange?.("old", startLine, endLine);
                           }}
                           className={`w-6 h-full rounded-md ${
                             isLight
@@ -890,7 +976,13 @@ export default function ResultsPage() {
                           onJump={({ line }) => {
                             if (!cmpRef.current) return;
                             playMiniClick();
+                            // Scroll up to the comparison section first
+                            comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                             cmpRef.current.scrollTo({ side: "new", line });
+                          }}
+                          onFlashRange={({ startLine, endLine }) => {
+                            if (!cmpRef.current) return;
+                            cmpRef.current.flashRange?.("new", startLine, endLine);
                           }}
                           className={`w-6 h-full rounded-md ${
                             isLight
@@ -928,8 +1020,9 @@ export default function ResultsPage() {
                       onChangeSideFilter={setSideFilter}
                       onJump={(side, line) => {
                         if (!cmpRef.current) return;
-                        cmpRef.current.scrollTo({ side, line });
-                        window.scrollTo({ top: 0, behavior: "smooth" });
+                        playMiniClick();
+                        comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                        cmpRef.current.scrollTo({ side, line, flash: true });
                       }}
                     />
 
@@ -1036,9 +1129,13 @@ export default function ResultsPage() {
 
                   {/* RIGHT: AI Analysis + Chat */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                    {/* AnalysisPanel expects canonicalOld/canonicalNew props by name;
-                       pass RAW values to keep that component unchanged. */}
-                    <AnalysisPanel isLight={isLight} canonicalOld={oldQuery} canonicalNew={newQuery} />
+                      <AnalysisPanel
+                        isLight={isLight}
+                        canonicalOld={oldQuery}
+                        canonicalNew={newQuery}
+                        cmpRef={cmpRef}
+                          onJump={(side, line) => jumpAndFlash(side, line)}
+                      />
 
                     {/* Chat */}
                     <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">

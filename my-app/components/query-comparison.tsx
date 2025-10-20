@@ -1,7 +1,7 @@
 // components/query-comparison.tsx
 "use client";
 
-import { useMemo, useRef, forwardRef, useImperativeHandle } from "react";
+import { useMemo, useRef, forwardRef, useImperativeHandle, useEffect } from "react";
 import type { Ref } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -16,6 +16,7 @@ import { BarChart3 } from "lucide-react";
 export type QueryJumpSide = "old" | "new" | "both";
 export type QueryComparisonHandle = {
   scrollTo: (opts: { side: QueryJumpSide; line: number; flash?: boolean }) => void;
+  flashRange: (side: "old" | "new", startLine: number, endLine: number) => void; // NEW
 };
 
 interface QueryComparisonProps {
@@ -90,9 +91,26 @@ function QueryComparisonInner(
     const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`);
     if (!el) return;
     el.classList.remove("flash-highlight");
+    // reflow to restart animation
     void el.offsetWidth;
     el.classList.add("flash-highlight");
     window.setTimeout(() => el.classList.remove("flash-highlight"), 1200);
+  }
+
+  // NEW: flash a whole contiguous range (inclusive)
+  function flashRangeImpl(side: "old" | "new", startLine: number, endLine: number) {
+    const pane = side === "old" ? leftRef.current : rightRef.current;
+    if (!pane) return;
+    const s = Math.max(1, Math.min(startLine, endLine));
+    const e = Math.max(1, Math.max(startLine, endLine));
+    for (let ln = s; ln <= e; ln++) {
+      const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${ln}"]`);
+      if (!el) continue;
+      el.classList.remove("flash-highlight");
+      void el.offsetWidth;
+      el.classList.add("flash-highlight");
+      window.setTimeout(() => el.classList.remove("flash-highlight"), 1200);
+    }
   }
 
   useImperativeHandle(ref, () => ({
@@ -141,7 +159,25 @@ function QueryComparisonInner(
 
       if (flash) flashLine(side, line);
     },
+
+    // NEW
+    flashRange: (side, startLine, endLine) => {
+      flashRangeImpl(side, startLine, endLine);
+    },
   }));
+
+  // Optional: respond to MiniMap’s DOM event fallback (qa:flash-range)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ side: "old" | "new"; startLine: number; endLine: number }>;
+      const d = ce.detail;
+      if (!d) return;
+      if (d.side !== "old" && d.side !== "new") return;
+      flashRangeImpl(d.side, d.startLine, d.endLine);
+    };
+    window.addEventListener("qa:flash-range", handler as EventListener);
+    return () => window.removeEventListener("qa:flash-range", handler as EventListener);
+  }, []);
 
   const heightStyle =
     typeof paneHeight === "number"

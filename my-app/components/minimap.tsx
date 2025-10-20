@@ -22,8 +22,17 @@ interface MiniMapProps {
   /** Which pane this minimap represents. */
   forceSide: Extract<Side, "old" | "new">;
 
-  /** Called when a block is clicked. Jumps to the first real line in that run. */
+  /**
+   * Backward-compatible jump handler (unchanged).
+   * We still jump to the first real line of the run.
+   */
   onJump: (opts: { side: Side; line: number }) => void;
+
+  /**
+   * NEW (optional): if provided, we’ll also request a transient highlight
+   * for the ENTIRE run of lines on this pane.
+   */
+  onFlashRange?: (opts: { side: Extract<Side, "old" | "new">; startLine: number; endLine: number }) => void;
 
   /** The props below are just UI niceties. */
   className?: string;
@@ -53,7 +62,9 @@ type Block = {
   vSpan: number;        // number of visual rows in this run
   topPx: number;
   heightPx: number;
-  jumpLine: number;     // real file line number to jump to (for the pane)
+  /** For the pane this minimap controls: */
+  startLine: number;    // real file line number start (inclusive)
+  endLine: number;      // real file line number end (inclusive)
   label?: string;
 };
 
@@ -61,6 +72,7 @@ export function MiniMap({
   alignedRows,
   forceSide,
   onJump,
+  onFlashRange,
   className,
   soundSrc = "/minimapbar.mp3",
   soundEnabled = true,
@@ -72,7 +84,6 @@ export function MiniMap({
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null);
   const [measuredH, setMeasuredH] = React.useState<number>(mapHeightPx);
 
-  // Measure height & observe parent/resize
   React.useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -121,11 +132,12 @@ export function MiniMap({
   };
 
   /**
-   * Build **visual** runs from aligned rows:
+   * Build **visual** runs from aligned rows AND compute real-line [startLine, endLine]
+   * for the pane this minimap controls (forceSide).
+   *
    *  - old minimap: rows with kind ∈ {deletion, modification}; anchor to old.visualIndex
    *  - new minimap: rows with kind ∈ {addition, modification}; anchor to new.visualIndex
    * Runs are contiguous when visualIndex increments by 1.
-   * Jump line: first defined real lineNumber on that side within the run.
    */
   const blocks: Block[] = React.useMemo(() => {
     const H = Math.max(1, measuredH);
@@ -144,7 +156,8 @@ export function MiniMap({
       side: Side;            // "old"/"new" for pure adds/dels, "both" for modifications
       vStart: number;        // visual start row (1-based)
       vEnd: number;          // visual end row (inclusive)
-      firstJump?: number;    // first real lineNumber seen (for scroll target)
+      firstLine?: number;    // first real lineNumber on this pane
+      lastLine?: number;     // last real lineNumber on this pane
     } | null;
 
     let cur: Pending = null;
@@ -156,98 +169,21 @@ export function MiniMap({
     const getV = (r: AlignedRow): number | undefined =>
       useOld ? r.old.visualIndex : r.new.visualIndex;
 
-    const getJump = (r: AlignedRow): number | undefined =>
+    const getLine = (r: AlignedRow): number | undefined =>
       useOld ? r.old.lineNumber : r.new.lineNumber;
 
     const sideTagFor = (k: AlignedRowKind): Side =>
       k === "modification" ? "both" : forceSide;
 
-    // We iterate in **visual** order (the array is already in render order)
-    for (let i = 0; i < alignedRows.length; i++) {
-      const r = alignedRows[i];
-      if (!includeKinds[r.kind]) {
-        // Close any open run at a boundary
-        if (cur) {
-          const vSpan = cur.vEnd - cur.vStart + 1;
-          const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
-          let top = ((cur.vStart - 1) / totalVisualRows) * H;
-          top = Math.min(Math.max(0, top), H - heightPx);
-
-          out.push({
-            key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
-            type: cur.type,
-            side: cur.side,
-            vStart: cur.vStart,
-            vSpan,
-            topPx: top,         // stacking added below
-            heightPx,
-            jumpLine: Math.max(1, cur.firstJump ?? 1),
-          });
-          cur = null;
-        }
-        continue;
-      }
-
-      const v = getV(r);
-      if (typeof v !== "number" || !Number.isFinite(v)) {
-        // If we can't anchor visually, end the current run
-        if (cur) {
-          const vSpan = cur.vEnd - cur.vStart + 1;
-          const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
-          let top = ((cur.vStart - 1) / totalVisualRows) * H;
-          top = Math.min(Math.max(0, top), H - heightPx);
-
-          out.push({
-            key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
-            type: cur.type,
-            side: cur.side,
-            vStart: cur.vStart,
-            vSpan,
-            topPx: top,
-            heightPx,
-            jumpLine: Math.max(1, cur.firstJump ?? 1),
-          });
-          cur = null;
-        }
-        continue;
-      }
-
-      const t = rowToType(r.kind);
-      const sideTag = sideTagFor(r.kind);
-      const jl = getJump(r);
-
-      if (cur && cur.type === t && cur.side === sideTag && v === cur.vEnd + 1) {
-        cur.vEnd = v;
-        if (cur.firstJump === undefined && typeof jl === "number") cur.firstJump = jl;
-      } else {
-        // Flush previous
-        if (cur) {
-          const vSpan = cur.vEnd - cur.vStart + 1;
-          const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
-          let top = ((cur.vStart - 1) / totalVisualRows) * H;
-          top = Math.min(Math.max(0, top), H - heightPx);
-
-          out.push({
-            key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
-            type: cur.type,
-            side: cur.side,
-            vStart: cur.vStart,
-            vSpan,
-            topPx: top,
-            heightPx,
-            jumpLine: Math.max(1, cur.firstJump ?? 1),
-          });
-        }
-        cur = { type: t, side: sideTag, vStart: v, vEnd: v, firstJump: typeof jl === "number" ? jl : undefined };
-      }
-    }
-
-    // Flush tail
-    if (cur) {
+    const flush = () => {
+      if (!cur) return;
       const vSpan = cur.vEnd - cur.vStart + 1;
       const heightPx = Math.max(minBlockPx, (vSpan / totalVisualRows) * H);
       let top = ((cur.vStart - 1) / totalVisualRows) * H;
       top = Math.min(Math.max(0, top), H - heightPx);
+
+      const startLine = Math.max(1, cur.firstLine ?? 1);
+      const endLine = Math.max(startLine, cur.lastLine ?? startLine);
 
       out.push({
         key: `${cur.type}-${cur.side}-${cur.vStart}-${vSpan}`,
@@ -257,12 +193,47 @@ export function MiniMap({
         vSpan,
         topPx: top,
         heightPx,
-        jumpLine: Math.max(1, cur.firstJump ?? 1),
+        startLine,
+        endLine,
       });
       cur = null;
+    };
+
+    for (let i = 0; i < alignedRows.length; i++) {
+      const r = alignedRows[i];
+      if (!includeKinds[r.kind]) {
+        flush();
+        continue;
+      }
+
+      const v = getV(r);
+      if (typeof v !== "number" || !Number.isFinite(v)) {
+        flush();
+        continue;
+      }
+
+      const t = rowToType(r.kind);
+      const sideTag = sideTagFor(r.kind);
+      const line = getLine(r);
+
+      if (cur && cur.type === t && cur.side === sideTag && v === cur.vEnd + 1) {
+        cur.vEnd = v;
+        if (typeof line === "number") {
+          if (cur.firstLine === undefined) cur.firstLine = line;
+          cur.lastLine = line;
+        }
+      } else {
+        flush();
+        cur = { type: t, side: sideTag, vStart: v, vEnd: v };
+        if (typeof line === "number") {
+          cur.firstLine = line;
+          cur.lastLine = line;
+        }
+      }
     }
 
-    // Stack overlapping blocks a bit so they’re clickable
+    flush();
+
     const rowBottoms: number[] = [];
     const stacked: Block[] = [];
     for (let i = 0; i < out.length; i++) {
@@ -312,7 +283,15 @@ export function MiniMap({
           onClick={(e) => {
             e.preventDefault();
             playClick();
-            onJump({ side: forceSide, line: b.jumpLine });
+            onJump({ side: forceSide, line: b.startLine });
+            onFlashRange?.({ side: forceSide, startLine: b.startLine, endLine: b.endLine });
+            try {
+              window.dispatchEvent(
+                new CustomEvent("qa:flash-range", {
+                  detail: { side: forceSide, startLine: b.startLine, endLine: b.endLine },
+                })
+              );
+            } catch {}
           }}
           className="absolute left-0 right-0 transition-[filter,transform] hover:brightness-110 active:brightness-125"
           style={{

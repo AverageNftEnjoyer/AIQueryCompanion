@@ -314,5 +314,10 @@ html.dark { color-scheme: dark; }
 @media (max-width: 1366px) and (min-width: 1024px) {
             html { zoom: .85; } 
           }
-
-          
+.qa-persist-highlight {
+  position: relative;
+  background: rgba(251, 191, 36, 0.25);           /* amber-400 @ 25% */
+  outline: 2px solid rgba(245, 158, 11, 0.55);    /* amber-500 */
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25) inset,
+              0 0 0 2px rgba(245, 158, 11, 0.15);
+}
