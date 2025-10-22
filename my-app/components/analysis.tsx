@@ -19,6 +19,8 @@ interface ChangeItem {
   performance: GoodBad;
   span?: number;
   index?: number;
+  /** NEW: comes from server; "block" | "warn" | "info" */
+  severity?: "block" | "warn" | "info";
 }
 
 interface HardcodeFinding {
@@ -26,6 +28,7 @@ interface HardcodeFinding {
   detail: string;
   lineNumber: number;
   side: Side;
+  /** "error" | "warn" | "info" mapped from server severity */
   severity?: "info" | "warn" | "error";
 }
 
@@ -33,30 +36,24 @@ interface Props {
   isLight: boolean;
   canonicalOld: string;
   canonicalNew: string;
-  /** Optional: parent’s comparison ref (fallback if onJump isn’t provided) */
   cmpRef?: React.RefObject<QueryComparisonHandle>;
-  /** Preferred: parent-provided jump handler (plays sound, scrolls, 4s highlight) */
   onJump?: (side: Side, line: number) => void;
 }
 
 export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmpRef, onJump }: Props) {
-  // -------- Analysis state --------
   const [streaming, setStreaming] = React.useState(false);
   const [summary, setSummary] = React.useState("Click “Generate Analysis” to review each change.");
   const [changes, setChanges] = React.useState<ChangeItem[]>([]);
   const [pendingChanges, setPendingChanges] = React.useState<number>(0);
   const [error, setError] = React.useState<string | null>(null);
 
-  // -------- Hardcoding state --------
   const [hcLoading, setHcLoading] = React.useState(false);
   const [hcError, setHcError] = React.useState<string | null>(null);
   const [hcFindings, setHcFindings] = React.useState<HardcodeFinding[]>([]);
   const [hcMessage, setHcMessage] = React.useState<string>("Scanning for hardcoded values…");
 
-  // -------- Mode toggle --------
   const [mode, setMode] = React.useState<"analysis" | "hardcode">("analysis");
 
-  // 3-second-feel progress messaging (rotates every 3s while hardcode is loading)
   const hcMessages = React.useMemo(
     () => [
       "Scanning for changes and credentials…",
@@ -68,16 +65,12 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     []
   );
 
-  /** Unified jump that prefers parent’s onJump (sound+scroll+4s highlight).
-   *  Falls back to cmpRef.scrollTo if onJump isn’t supplied.
-   */
   function handleJump(line: number) {
     if (typeof onJump === "function") {
       onJump("new", line);
       return;
     }
     if (cmpRef?.current) {
-      // Fallback: jump in the *new* pane and request flash
       cmpRef.current.scrollTo({ side: "new", line, flash: false });
     }
   }
@@ -202,19 +195,27 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
             : 0;
 
         const desc = String(it?.description ?? "unknown");
-        const sev =
-          it?.syntax === "bad"
-            ? desc.toLowerCase().includes("block")
-              ? "error"
-              : "warn"
-            : "info";
+
+        // Prefer server-provided severity; fallback to rule-based mapping
+        const serverSeverity = (it?.severity as "block" | "warn" | "info" | undefined) || undefined;
+
+        const severity: "error" | "warn" | "info" = (() => {
+          if (serverSeverity === "block") return "error";
+          if (serverSeverity === "warn") return "warn";
+          if (serverSeverity === "info") return "info";
+
+          const dl = desc.toLowerCase();
+          if (dl.includes("secret/credential") || dl.includes("env-or-schema")) return "error";
+          if (it?.syntax === "bad") return "warn";
+          return "info";
+        })();
 
         return {
           kind: desc,
           detail: String(it?.explanation ?? ""),
           lineNumber: Number(ln),
           side: "new",
-          severity: sev,
+          severity,
         };
       });
 
@@ -286,7 +287,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
         {/* Fixed-height body; scrolls instead of resizing */}
         <div className="h-[27.7rem] bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-y-auto">
           {mode === "analysis" ? (
-            // -------- Analysis view --------
             error ? (
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
                 {error}
@@ -371,8 +371,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
             ) : (
               <div className="text-gray-700 text-sm">{summary}</div>
             )
-          ) : // -------- Hardcoding view --------
-          hcError ? (
+          ) : hcError ? (
             <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
               {hcError}
             </div>
@@ -415,7 +414,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                             : "bg-gray-100 text-gray-700 group-hover:bg-gray-200"
                         }`}
                       >
-                        {f.severity === "error" ? "Needs Fixed" : f.severity === "warn" ? "Review" : "Info"}
+                        {f.severity === "error" ? "Flagged" : f.severity === "warn" ? "Review" : "Info"}
                       </span>
                     </div>
                     {/* Right: explanation */}

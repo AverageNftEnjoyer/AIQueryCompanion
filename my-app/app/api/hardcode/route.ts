@@ -18,20 +18,22 @@ type Side = "old" | "new" | "both";
 type GoodBad = "good" | "bad";
 
 type ChangeItem = {
+  index?: number;
   type: ChangeType;
+  side: Side;
+  lineNumber: number;
   description: string;
   explanation: string;
-  lineNumber: number;
-  side: Side;
   syntax: GoodBad;
   performance: GoodBad;
   span?: number;
-  index?: number;
+  /** NEW: pass through server-calculated severity so UI can color correctly */
+  severity?: "block" | "warn" | "info";
 };
 
 type Severity = "warn" | "block" | "info";
 type Finding = {
-  lineNumber: number; 
+  lineNumber: number; // raw NEW query 1-based line index
   side: "new";
   rule: string;
   reason: string;
@@ -75,11 +77,10 @@ const DATE_LIT_RE = /\bDATE\s*'[^']*'|\bTO_DATE\s*\(/i;
 const STRING_LIT_RE = /'((?:''|[^'])*)'/g;
 const NUMBER_LIT_RE = /(?<![\w\.])(?:\d+(?:\.\d+)?)(?![\w\.])/g;
 
-/* ---------- Comments handling (skip fully-commented lines; strip inline) --------- */
-const FULL_LINE_COMMENT_RE = /^\s*(--|\/\*|\*|\*\/)/; 
-const INLINE_BLOCK_RE = /\/\*[\s\S]*?\*\//g;         
-const INLINE_DASH_RE = /--.*$/;                      
-
+/* ---------- Comments handling ---------- */
+const FULL_LINE_COMMENT_RE = /^\s*(--|\/\*|\*|\*\/)/;
+const INLINE_BLOCK_RE = /\/\*[\s\S]*?\*\//g;
+const INLINE_DASH_RE = /--.*$/;
 function stripInlineComments(s: string): string {
   return s.replace(INLINE_BLOCK_RE, "").replace(INLINE_DASH_RE, "");
 }
@@ -108,46 +109,56 @@ function looksLikePriceRounding(line: string) {
   return /\bROUND\s*\([^)]*,\s*2\s*\)/i.test(line) || /\bROUND\s*\(\s*NVL\s*\(/i.test(line);
 }
 
-/* ------------- Context-aware relaxation for SUBSTR on error lines ------------- */
-// Diagnostic markers commonly present on error/trace lines
+/* ------------- SUBSTR diagnostics relaxation ------------- */
 const ERROR_CONTEXT_RE = /(SQLERRM|DBMS_UTILITY\.FORMAT_ERROR_(STACK|BACKTRACE)|\$\$plsql_line)/i;
-// SUBSTR and DBMS_LOB.SUBSTR (greedy-safe, global, case-insensitive)
 const SUBSTR_CALL_RE = /\b(?:SUBSTRB?|DBMS_LOB\.SUBSTR)\s*\(([^)]*)\)/ig;
-// Common truncation caps we consider "safe" in diagnostics
-const SUBSTR_LEN_ALLOWLIST = new Set<string>([
-  "128", "255", "256", "512", "1000", "1024", "2000", "4000"
-]);
-
+const SUBSTR_LEN_ALLOWLIST = new Set<string>(["128", "255", "256", "512", "1000", "1024", "2000", "4000"]);
 function stripSubstrErrorLengths(line: string, nums: string[]): string[] {
   if (!ERROR_CONTEXT_RE.test(line)) return nums;
-
   let keep = [...nums];
   SUBSTR_CALL_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = SUBSTR_CALL_RE.exec(line))) {
     const args = m[1]
       .split(",")
-      .map(s => stripInlineComments(s).trim())
+      .map((s) => stripInlineComments(s).trim())
       .filter(Boolean);
-
     const startArg = args[1]?.match(/^\d+$/)?.[0];
-    const lenArg   = args[2]?.match(/^\d+$/)?.[0];
-
-    if (startArg) keep = keep.filter(n => n !== startArg);
-
+    const lenArg = args[2]?.match(/^\d+$/)?.[0];
+    if (startArg) keep = keep.filter((n) => n !== startArg);
     if (lenArg && SUBSTR_LEN_ALLOWLIST.has(lenArg)) {
-      keep = keep.filter(n => n !== lenArg);
+      keep = keep.filter((n) => n !== lenArg);
     }
   }
   return keep;
 }
 
+/* -------- Stable domain constants for APPLICATION_ID (never flag) -------- */
+const STABLE_ENUMS = {
+  APPLICATION_ID: new Set<string>(["200", "222"]), // 200=PAYTABLES, 222=RECEIVABLES
+};
+function isAppIdContext(line: string): boolean {
+  return /\bAPPLICATION_ID\b/i.test(line);
+}
+function onlyAllowedAppIds(values: string[]): boolean {
+  if (!values.length) return false;
+  return values.every((v) => STABLE_ENUMS.APPLICATION_ID.has(v));
+}
+function extractAppIdNums(line: string): string[] {
+  const eq = line.match(/\bAPPLICATION_ID\b\s*=\s*(\d+)/i);
+  if (eq && eq[1]) return [eq[1]];
+  const inm = line.match(/\bAPPLICATION_ID\b\s*IN\s*\(([^)]+)\)/i);
+  if (inm && inm[1]) {
+    const nums = inm[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter((t) => /^\d+(\.\d+)?$/.test(t));
+    return nums;
+  }
+  return [];
+}
+
 /* ===================== NEW-side target line finder ===================== */
-/**
- * Collect raw NEW query line numbers that were touched on the NEW side
- * (i.e., rows of kind 'addition' or 'modification' where row.new.lineNumber exists).
- * Deletions are ignored because they don't anchor to NEW.
- */
 function newTouchedLinesFromRows(rows: AlignedRow[]): number[] {
   const set = new Set<number>();
   for (const r of rows) {
@@ -164,11 +175,11 @@ function newTouchedLinesFromRows(rows: AlignedRow[]): number[] {
 function scanLine(lineText: string, lineNumber: number): Finding[] {
   const findings: Finding[] = [];
   if (!lineText) return findings;
-
   if (FULL_LINE_COMMENT_RE.test(lineText)) return findings;
 
   const line = stripInlineComments(lineText);
 
+  // block: secrets / env
   if (SECRET_RE.test(line)) {
     findings.push({
       lineNumber,
@@ -190,17 +201,27 @@ function scanLine(lineText: string, lineNumber: number): Finding[] {
   }
 
   if (DATE_LIT_RE.test(line)) {
-    // no-op
+    // recognized; will only warn if clearly hardcoded without proper date logic (handled below as needed)
   }
 
   if (isLikelyIdColumn(line)) return findings;
   if (looksLikePriceRounding(line)) return findings;
   if (isLookupColumn(line)) return findings;
 
+  // magic numbers (with SUBSTR diagnostics carve-out)
   let nums = collectNumberLiterals(line).filter((n) => !NUMERIC_WHITELIST.has(n));
   nums = stripSubstrErrorLengths(line, nums);
 
-  if (nums.length) {
+  // APPLICATION_ID carve-out
+  let appIdAllAllowed = false;
+  if (isAppIdContext(line)) {
+    const appNums = extractAppIdNums(line);
+    if (appNums.length && onlyAllowedAppIds(appNums)) {
+      appIdAllAllowed = true;
+    }
+  }
+
+  if (!appIdAllAllowed && nums.length) {
     const hasNote = /--\s*(business rule|per\s+requirements?|per\s+spec)/i.test(lineText);
     if (!hasNote) {
       findings.push({
@@ -215,8 +236,8 @@ function scanLine(lineText: string, lineNumber: number): Finding[] {
     }
   }
 
-  // ------- IN(...) list size --------
-  if (/\bIN\s*\(/i.test(line)) {
+  // IN-list (3+ distinct literals) (skip if APPLICATION_ID carve-out)
+  if (!appIdAllAllowed && /\bIN\s*\(/i.test(line)) {
     const strings = collectStringLiterals(line);
     const allLits = strings.concat(nums);
     const distinct = Array.from(new Set(allLits.map((x) => x.trim()))).filter(Boolean);
@@ -282,10 +303,8 @@ async function explainWithAgent(
       top_p: 0.9,
       max_tokens: 1000,
     });
-
     const text = resp.choices?.[0]?.message?.content?.trim();
     if (!text) throw new Error("Empty agent response");
-
     const items = text.split(/\n(?=\d+\.)/g).map((s) => s.replace(/^\s*\d+\.\s*/, "").trim());
     return findings.map((_, i) => items[i] || "");
   } catch {
@@ -300,7 +319,7 @@ async function explainWithAgent(
 export async function POST(req: Request) {
   try {
     const url = new URL(req.url);
-    const scanMode = url.searchParams.get("scanMode") || undefined; 
+    const scanMode = url.searchParams.get("scanMode") || undefined;
 
     const body = await req.json().catch(() => null);
 
@@ -353,12 +372,13 @@ export async function POST(req: Request) {
         return {
           index: i,
           type: "modification",
-          side: "new",             
+          side: "new",
           lineNumber: f.lineNumber,
           description: `${f.rule}: ${f.reason}`,
           explanation: explanations[i] || `${f.severity.toUpperCase()}: ${f.reason}`,
           syntax: bad ? "bad" : "good",
           performance: "good",
+          severity: f.severity,
         } as ChangeItem;
       })
       .sort((a, b) => a.lineNumber - b.lineNumber);
