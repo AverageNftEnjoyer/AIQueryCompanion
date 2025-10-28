@@ -510,10 +510,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     return comparison ? buildAlignedRows(comparison) : [];
   }, [comparison]);
 
-  // Stats for chips
   const stats = useMemo(() => comparison?.stats ?? null, [comparison]);
-
-  // --- Wrap cmpRef scrollTo to uniformly add sound, flash, and scroll up to the comparison area ---
   const scrollWrapperInstalled = useRef(false);
   useEffect(() => {
     const inst = cmpRef.current as any;
@@ -523,18 +520,14 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     if (typeof originalScrollTo !== "function") return;
 
     inst.scrollTo = (opts: { side: "old" | "new"; line: number; flash?: boolean }) => {
-      // Play click SFX (respects bell)
       playMiniClick();
 
-      // Scroll the viewport to the comparison section first (so the user sees the highlight)
       try {
         comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch {}
 
-      // Delegate to actual comparison scroll
       originalScrollTo(opts);
 
-      // Ensure flash on the exact line
       try {
         if (typeof inst.flashRange === "function" && opts?.line) {
           inst.flashRange(opts.side, opts.line, opts.line);
@@ -545,7 +538,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     scrollWrapperInstalled.current = true;
   }, [cmpRef, soundOn]);
 
-  // Summary fetcher (manual)
   async function fetchSummary(forAudience: Audience) {
     if (summarizeAbortRef.current) summarizeAbortRef.current.abort();
     summarizeAbortRef.current = new AbortController();
@@ -557,7 +549,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          newQuery, // RAW
+          newQuery, 
           analysis,
           audience: forAudience,
         }),
@@ -770,8 +762,8 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
       {isLight ? gridBgLight : gridBg}
 
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
-          <div className="grid grid-cols-3 items-center gap-3">
+            <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-3 md:py-2">
+            <div className="grid grid-cols-3 items-center gap-3">
             {/* Left: Home */}
             <div className="flex">
               <Link
@@ -857,8 +849,8 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={chatbotAudioRef} src="/chatbot.mp3" preload="metadata" muted={!soundOn} />
 
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-2 pb-24 md:pb-10">
-          {loading && !error && <FancyLoader isLight={isLight} />}
+          <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-1 pb-20 md:pb-4">
+            {loading && !error && <FancyLoader isLight={isLight} />}
 
           {!loading && error && (
             <Alert className={`${isLight ? "bg-white border-red-500/40" : "bg-black/40"} backdrop-blur text-inherit`}>
@@ -912,8 +904,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
               <section className="mt-1">
                 <div
                   ref={comparisonSectionRef}
-                  className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] md:h-[78vh] lg:h-[82vh] xl:h-[86vh] min-h-0"
-                >
+                  className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] sm:h-[74vh] md:h-[90vh] lg:h-[92vh] xl:h-[80vh] 2xl:h-[78vh] min-h-0">
                   {mode === "single" ? (
                     <>
                       {/* Left: Single query */}
@@ -946,14 +937,13 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                       </div>
 
                       {/* Dual minimaps (visual-row aligned) */}
-                      <div className="hidden lg:flex h-full items-stretch gap-2">
+                      <div className="hidden md:flex h-full items-stretch gap-2">
                         <MiniMap
                           alignedRows={alignedRows}
                           forceSide="old"
                           onJump={({ line }) => {
                             if (!cmpRef.current) return;
                             playMiniClick();
-                            // Scroll up to the comparison section first
                             comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                             cmpRef.current.scrollTo({ side: "old", line });
                           }}
@@ -974,7 +964,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                           onJump={({ line }) => {
                             if (!cmpRef.current) return;
                             playMiniClick();
-                            // Scroll up to the comparison section first
                             comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                             cmpRef.current.scrollTo({ side: "new", line });
                           }}

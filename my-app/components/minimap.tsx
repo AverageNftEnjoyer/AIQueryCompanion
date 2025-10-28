@@ -6,7 +6,6 @@ import type { AlignedRow, AlignedRowKind } from "@/lib/query-differ";
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
 
-/** (Legacy) kept for compat if you ever pass pre-grouped items; ignored when `alignedRows` is provided. */
 export interface MiniChange {
   lineNumber: number;
   type: ChangeType;
@@ -16,25 +15,11 @@ export interface MiniChange {
 }
 
 interface MiniMapProps {
-  /** Source of truth from query-differ.tsx — REQUIRED for exact visual alignment. */
   alignedRows: AlignedRow[];
-
-  /** Which pane this minimap represents. */
   forceSide: Extract<Side, "old" | "new">;
-
-  /**
-   * Backward-compatible jump handler (unchanged).
-   * We still jump to the first real line of the run.
-   */
   onJump: (opts: { side: Side; line: number }) => void;
-
-  /**
-   * NEW (optional): if provided, we’ll also request a transient highlight
-   * for the ENTIRE run of lines on this pane.
-   */
   onFlashRange?: (opts: { side: Extract<Side, "old" | "new">; startLine: number; endLine: number }) => void;
 
-  /** The props below are just UI niceties. */
   className?: string;
   soundSrc?: string;
   soundEnabled?: boolean;
@@ -42,7 +27,6 @@ interface MiniMapProps {
   minBlockPx?: number;
   maxStackRows?: number;
 
-  /** Legacy input — ignored when `alignedRows` is present. */
   changes?: MiniChange[];
 }
 
@@ -62,9 +46,8 @@ type Block = {
   vSpan: number;        // number of visual rows in this run
   topPx: number;
   heightPx: number;
-  /** For the pane this minimap controls: */
-  startLine: number;    // real file line number start (inclusive)
-  endLine: number;      // real file line number end (inclusive)
+  startLine: number;    // real file line number start 
+  endLine: number;      // real file line number end
   label?: string;
 };
 
@@ -131,14 +114,7 @@ export function MiniMap({
     } catch {}
   };
 
-  /**
-   * Build **visual** runs from aligned rows AND compute real-line [startLine, endLine]
-   * for the pane this minimap controls (forceSide).
-   *
-   *  - old minimap: rows with kind ∈ {deletion, modification}; anchor to old.visualIndex
-   *  - new minimap: rows with kind ∈ {addition, modification}; anchor to new.visualIndex
-   * Runs are contiguous when visualIndex increments by 1.
-   */
+ 
   const blocks: Block[] = React.useMemo(() => {
     const H = Math.max(1, measuredH);
     const totalVisualRows = Math.max(1, alignedRows.length);
