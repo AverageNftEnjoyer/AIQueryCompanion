@@ -280,19 +280,24 @@ function QueryComparisonInner(
       </div>
 
       <style jsx global>{`
-        .flash-highlight {
-          animation: qc-flash 0.9s ease-out;
+      .flash-highlight {
+        animation: qc-rect-flash 1.2s ease-out;
+      }
+
+      @keyframes qc-rect-flash {
+        0% {
+          background-color: rgba(250, 204, 21, 0.25); /* soft yellow fill */
+          box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.8); /* rectangular edge */
         }
-        @keyframes qc-flash {
-          0% {
-            outline: 2px solid rgba(250, 204, 21, 0.85);
-            background-color: rgba(250, 204, 21, 0.2);
-          }
-          100% {
-            outline: 0px solid transparent;
-            background-color: transparent;
-          }
+        40% {
+          background-color: rgba(250, 204, 21, 0.15);
+          box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.5);
         }
+        100% {
+          background-color: transparent;
+          box-shadow: inset 0 0 0 0 rgba(250, 204, 21, 0);
+        }
+      }
 
         .hover-scroll::-webkit-scrollbar {
           width: 10px;
