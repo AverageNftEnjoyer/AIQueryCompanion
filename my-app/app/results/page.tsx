@@ -239,9 +239,8 @@ export default function ResultsPage() {
   const chatbotAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
-  const comparisonSectionRef = useRef<HTMLDivElement | null>(null); // scroll target (top of QueryComparison)
+  const comparisonSectionRef = useRef<HTMLDivElement | null>(null); 
 
-  // Preferences
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
   // Filters (state held here; Changes component just receives values + callbacks)
@@ -299,7 +298,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     }
   });
 
-  // Respect the bell for audio
   if (soundOn) playMiniClick();
 };
   const analysisDoneSoundPlayedRef = useRef(false);
@@ -1037,66 +1035,72 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                           >
                             Summary
                           </h3>
-
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => fetchSummary(audience)}
-                              disabled={summarizing || !!loadingAudience}
-                              title="Generate summary"
-                              className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                            >
-                              {summarizing ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Send className="h-3.5 w-3.5" />
-                              )}
-                              <span className="text-sm">Generate Summary</span>
-                            </button>
-
-                            <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+                            <div className="flex items-center gap-2">
                               <button
                                 type="button"
-                                onClick={() => handleSwitchAudience("stakeholder")}
-                                disabled={loadingAudience === "stakeholder"}
-                                className={`px-3 h-8 rounded-full text-sm transition ${
-                                  audience === "stakeholder"
-                                    ? "bg-white text-gray-900 shadow"
-                                    : "text-gray-600 hover:text-gray-900"
-                                }`}
-                                title="Stakeholder-friendly summary"
+                                onClick={() => fetchSummary(audience)}
+                                disabled={summarizing || !!loadingAudience}
+                                title="Generate summary"
+                                className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
                               >
-                                {loadingAudience === "stakeholder" ? (
-                                  <span className="inline-flex items-center gap-1">
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
-                                  </span>
-                                ) : (
-                                  "Stakeholder"
-                                )}
+                                {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                                <span className="text-sm">Generate Summary</span>
                               </button>
-                              <button
-                                type="button"
-                                onClick={() => handleSwitchAudience("developer")}
-                                disabled={loadingAudience === "developer"}
-                                className={`px-3 h-8 rounded-full text-sm transition ${
-                                  audience === "developer"
-                                    ? "bg-white text-gray-900 shadow"
-                                    : "text-gray-600 hover:text-gray-900"
-                                }`}
-                                title="Developer-focused summary"
-                              >
-                                {loadingAudience === "developer" ? (
-                                  <span className="inline-flex items-center gap-1">
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
-                                  </span>
-                                ) : (
-                                  "Developer"
-                                )}
-                              </button>
+                              <div className="md:hidden">
+                                <label htmlFor="audienceSelect" className="sr-only">Audience</label>
+                                <select
+                                  id="audienceSelect"
+                                  value={audience}
+                                  onChange={(e) => handleSwitchAudience(e.target.value as Audience)}
+                                  disabled={!!loadingAudience}
+                                  className="h-8 px-3 rounded-md border border-gray-300 bg-gray-100 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-black/10"
+                                >
+                                  <option value="stakeholder">
+                                    {loadingAudience === "stakeholder" ? "Stakeholder (loading…)" : "Stakeholder"}
+                                  </option>
+                                  <option value="developer">
+                                    {loadingAudience === "developer" ? "Developer (loading…)" : "Developer"}
+                                  </option>
+                                </select>
+                              </div>
+                              <div className="hidden md:inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSwitchAudience("stakeholder")}
+                                  disabled={loadingAudience === "stakeholder"}
+                                  className={`px-3 h-8 rounded-full text-sm transition ${
+                                    audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                                  }`}
+                                  title="Stakeholder-friendly summary"
+                                >
+                                  {loadingAudience === "stakeholder" ? (
+                                    <span className="inline-flex items-center gap-1">
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
+                                    </span>
+                                  ) : (
+                                    "Stakeholder"
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSwitchAudience("developer")}
+                                  disabled={loadingAudience === "developer"}
+                                  className={`px-3 h-8 rounded-full text-sm transition ${
+                                    audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                                  }`}
+                                  title="Developer-focused summary"
+                                >
+                                  {loadingAudience === "developer" ? (
+                                    <span className="inline-flex items-center gap-1">
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
+                                    </span>
+                                  ) : (
+                                    "Developer"
+                                  )}
+                                </button>
+                              </div>
                             </div>
-                          </div>
                         </div>
-
                         <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
                           {(() => {
                             const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
@@ -1117,7 +1121,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                               );
                             }
                             return currentSummary ? (
-                              <p className="text-gray-800 text-sm leading-relaxed">{currentSummary}</p>
+                              <p className="text-gray-800 text-sm leading-relaxed break-words">{currentSummary}</p>
                             ) : (
                               <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
                             );

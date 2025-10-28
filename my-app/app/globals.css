@@ -5,11 +5,7 @@ html, body {
   background-color: var(--background);
 }
 
-/* If any default margin sneaks in on some browsers */
 body { margin: 0; }
-/* =========================
-   LIGHT THEME (default)
-   ========================= */
 :root {
   --background: oklch(0.99 0 0);
   --foreground: oklch(0.18 0 0);
@@ -57,10 +53,6 @@ body { margin: 0; }
   --sidebar-ring: oklch(0.55 0.15 280);
 }
 
-/* =========================
-   DARK THEME (via .dark)
-   (your original tokens)
-   ========================= */
 .dark {
   --background: oklch(0.10 0 0);
   --foreground: oklch(0.95 0 0);
@@ -149,7 +141,6 @@ body { margin: 0; }
   --font-body: var(--font-dm-sans);
 }
 
-/* Make native controls/scrollbars honor theme */
 html { color-scheme: light; }
 html.dark { color-scheme: dark; }
 
@@ -219,13 +210,11 @@ html.dark { color-scheme: dark; }
   background-color: rgba(0, 0, 0, 0.45);
 }
 
-/* --------- Fallback for browsers without scrollbar-gutter ---------
-   Reserve a constant gutter so content width/height never changes
-   when the scrollbar appears (prevents text "jump"). */
+
 @supports not (scrollbar-gutter: stable both-edges) {
   .hover-scroll {
-    padding-inline-end: 12px;  /* reserve vertical scrollbar width */
-    padding-block-end: 12px;   /* reserve horizontal scrollbar height */
+    padding-inline-end: 12px;  
+    padding-block-end: 12px;   
   }
 }
 @keyframes qa-flash {
@@ -316,8 +305,28 @@ html.dark { color-scheme: dark; }
           }
 .qa-persist-highlight {
   position: relative;
-  background: rgba(251, 191, 36, 0.25);           /* amber-400 @ 25% */
-  outline: 2px solid rgba(245, 158, 11, 0.55);    /* amber-500 */
+  background: rgba(251, 191, 36, 0.25);           
+  outline: 2px solid rgba(245, 158, 11, 0.55);    
   box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25) inset,
               0 0 0 2px rgba(245, 158, 11, 0.15);
+}
+
+@media (max-width: 640px) {
+  button.text-sm,
+  .text-sm button {
+    letter-spacing: -0.015em !important;
+  }
+
+  button.inline-flex.items-center.gap-2 {
+    gap: 0.25rem !important; 
+  }
+
+  button.h-8.px-3 {
+    padding-left: 0.6rem !important;
+    padding-right: 0.6rem !important; 
+  }
+
+  button svg {
+    flex-shrink: 0;
+  }
 }
