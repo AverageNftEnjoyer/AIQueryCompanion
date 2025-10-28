@@ -1,4 +1,3 @@
-// components/query-comparison.tsx
 "use client";
 
 import { useMemo, useRef, forwardRef, useImperativeHandle, useEffect } from "react";
@@ -24,7 +23,6 @@ interface QueryComparisonProps {
   newQuery: string;
   className?: string;
   showTitle?: boolean;
-  /** Height of each scrollable pane. Use "100%" to fill the parent (recommended). */
   paneHeight?: number | string;
   syncScrollEnabled?: boolean;
 }
@@ -54,7 +52,7 @@ function QueryComparisonInner(
   const rows: AlignedRow[] = useMemo(() => buildAlignedRows(comparison), [comparison]);
 
   const theme = {
-    baseRow: "group flex items-start gap-3 px-3 py-0.5 rounded-md",
+    baseRow: "group flex items-start gap-3 px-3 py-0.5 rounded-md border-l-4 border-transparent",
     added: "bg-emerald-100 border-l-4 border-emerald-600",
     removed: "bg-rose-100 border-l-4 border-rose-600",
     modified: "bg-amber-100 border-l-4 border-amber-600",
@@ -240,7 +238,7 @@ function QueryComparisonInner(
                 {...(lineNo ? { "data-line": lineNo } : {})}
                 className={`${theme.baseRow} ${rowBg} relative`}
               >
-                <span className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-transparent`}>
+                <span className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-transparent shrink-0`}>
                   {side.visualIndex ?? idx + 1}
                 </span>
                 <code className="block whitespace-pre pr-4">
