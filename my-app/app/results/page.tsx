@@ -699,7 +699,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         const r = await fetch(`/api/analyze?mode=item&index=${i}&analysisMode=${analysisMode}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery, newQuery }), // RAW
+          body: JSON.stringify({ oldQuery, newQuery }),
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) continue;
@@ -904,7 +904,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
               <section className="mt-1">
                 <div
                   ref={comparisonSectionRef}
-                  className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] sm:h-[74vh] md:h-[90vh] lg:h-[92vh] xl:h-[80vh] 2xl:h-[78vh] min-h-0">
+                  className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] sm:h-[74vh] md:h-[96vh] lg:h-[98vh] xl:h-[80vh] 2xl:h-[78vh] min-h-0">
                   {mode === "single" ? (
                     <>
                       {/* Left: Single query */}
