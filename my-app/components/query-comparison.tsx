@@ -52,7 +52,7 @@ function QueryComparisonInner(
   const rows: AlignedRow[] = useMemo(() => buildAlignedRows(comparison), [comparison]);
 
   const theme = {
-    baseRow: "group flex items-start gap-3 px-3 py-[2px]",
+    baseRow: "group flex items-start gap-3 px-3 py-[2px] border-l-4 border-transparent",
     added: "bg-emerald-100 border-l-4 border-emerald-600",
     removed: "bg-rose-100 border-l-4 border-rose-600",
     modified: "bg-amber-100 border-l-4 border-amber-600",
