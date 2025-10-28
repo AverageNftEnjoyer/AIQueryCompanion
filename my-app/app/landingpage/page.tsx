@@ -29,9 +29,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useUserPrefs } from "@/hooks/user-prefs";
 
 export const dynamic = "force-dynamic";
-
-// NOTE: Height is now controlled via CSS media queries for better fit on laptops.
-const MAX_QUERY_CHARS = 120_000;
+const MAX_QUERY_CHARS = 140_000;
 
 type BusyMode = "analyze" | "compare" | null;
 type LandingMode = "analyze" | "compare";

@@ -68,7 +68,7 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://api.openai.com/v
 const ANALYSIS_AGENT_ID = process.env.ANALYSIS_AGENT_ID || "";
 const DEFAULT_MODEL = process.env.ANALYSIS_AGENT_MODEL || "gpt-4.1-nano";
 
-const MAX_QUERY_CHARS = 120_000;
+const MAX_QUERY_CHARS = 140_000;
 
 // —— Networking knobs —— //
 const FUNCTION_MAX_MS = (typeof maxDuration === "number" ? maxDuration : 60) * 1000;

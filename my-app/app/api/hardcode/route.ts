@@ -42,7 +42,7 @@ type Finding = {
   severity: Severity;
 };
 
-const MAX_QUERY_CHARS = 120_000;
+const MAX_QUERY_CHARS = 140_000;
 
 /* ============================ Utilities ============================ */
 

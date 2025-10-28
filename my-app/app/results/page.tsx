@@ -69,7 +69,7 @@ interface AnalysisResult {
   performanceImpact?: "Positive" | "Negative" | "Neutral";
 }
 
-const MAX_QUERY_CHARS = 120_000;
+const MAX_QUERY_CHARS = 140_000;
 
 const gridBg = (
   <div className="pointer-events-none absolute inset-0 opacity-90">
