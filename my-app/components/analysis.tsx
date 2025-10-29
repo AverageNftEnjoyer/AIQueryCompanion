@@ -4,6 +4,12 @@ import * as React from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Loader2, Send, Search } from "lucide-react";
 import type { QueryComparisonHandle } from "@/components/query-comparison";
+import {
+  generateQueryDiff,
+  buildAlignedRows,
+  type ComparisonResult,
+  type AlignedRow,
+} from "@/lib/query-differ";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -19,7 +25,6 @@ interface ChangeItem {
   performance: GoodBad;
   span?: number;
   index?: number;
-  /** NEW: comes from server; "block" | "warn" | "info" */
   severity?: "block" | "warn" | "info";
 }
 
@@ -28,7 +33,6 @@ interface HardcodeFinding {
   detail: string;
   lineNumber: number;
   side: Side;
-  /** "error" | "warn" | "info" mapped from server severity */
   severity?: "info" | "warn" | "error";
 }
 
@@ -39,6 +43,8 @@ interface Props {
   cmpRef?: React.RefObject<QueryComparisonHandle>;
   onJump?: (side: Side, line: number) => void;
 }
+
+const toLF = (s: string) => s.replace(/\r\n/g, "\n");
 
 export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmpRef, onJump }: Props) {
   const [streaming, setStreaming] = React.useState(false);
@@ -65,17 +71,50 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     []
   );
 
-  function handleJump(line: number) {
+  const displayOld = React.useMemo(() => toLF(canonicalOld || ""), [canonicalOld]);
+  const displayNew = React.useMemo(() => toLF(canonicalNew || ""), [canonicalNew]);
+
+  const comparison: ComparisonResult | null = React.useMemo(() => {
+    if (!displayNew) return null;
+    return generateQueryDiff(displayOld, displayNew, { basis: "raw" });
+  }, [displayOld, displayNew]);
+
+  const alignedRows: AlignedRow[] = React.useMemo(() => {
+    return comparison ? buildAlignedRows(comparison) : [];
+  }, [comparison]);
+
+  const { newLineToDisplay, oldLineToDisplay } = React.useMemo(() => {
+    const n2d = new Map<number, number>();
+    const o2d = new Map<number, number>();
+    for (const r of alignedRows) {
+      const v = r.new?.visualIndex;
+      if (typeof v === "number") {
+        if (typeof r.new?.lineNumber === "number") n2d.set(r.new.lineNumber, v);
+        if (typeof r.old?.lineNumber === "number") o2d.set(r.old.lineNumber, v);
+      }
+    }
+    return { newLineToDisplay: n2d, oldLineToDisplay: o2d };
+  }, [alignedRows]);
+
+  const toDisplayLine = React.useCallback(
+    (side: Side, line: number) => {
+      if (side === "old") return oldLineToDisplay.get(line) ?? line;
+      return newLineToDisplay.get(line) ?? line;
+    },
+    [newLineToDisplay, oldLineToDisplay]
+  );
+
+  function handleJump(line: number, side: Side = "new") {
+    const dl = toDisplayLine(side, line);
     if (typeof onJump === "function") {
-      onJump("new", line);
+      onJump("new", dl);
       return;
     }
     if (cmpRef?.current) {
-      cmpRef.current.scrollTo({ side: "new", line, flash: false });
+      cmpRef.current.scrollTo({ side: "new", line: dl, flash: false });
     }
   }
 
-  /* -------------------- Run AI Analysis -------------------- */
   async function handleRun() {
     setMode("analysis");
     setStreaming(true);
@@ -153,7 +192,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     }
   }
 
-  /* -------------------- Run Hardcoding Scan (NEW-ONLY) -------------------- */
   async function handleScanHardcode() {
     setMode("hardcode");
     setHcLoading(true);
@@ -195,15 +233,12 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
             : 0;
 
         const desc = String(it?.description ?? "unknown");
-
-        // Prefer server-provided severity; fallback to rule-based mapping
         const serverSeverity = (it?.severity as "block" | "warn" | "info" | undefined) || undefined;
 
         const severity: "error" | "warn" | "info" = (() => {
           if (serverSeverity === "block") return "error";
           if (serverSeverity === "warn") return "warn";
           if (serverSeverity === "info") return "info";
-
           const dl = desc.toLowerCase();
           if (dl.includes("secret/credential") || dl.includes("env-or-schema")) return "error";
           if (it?.syntax === "bad") return "warn";
@@ -231,7 +266,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
   return (
     <Card className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
       <CardContent className="p-5">
-        {/* Header & actions */}
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-slate-900 font-semibold">AI Tools</h3>
 
@@ -258,7 +292,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
               </button>
             )}
 
-            {/* Toggle pills */}
             <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
               <button
                 type="button"
@@ -284,7 +317,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
           </div>
         </div>
 
-        {/* Fixed-height body; scrolls instead of resizing */}
         <div className="h-[27.7rem] bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-y-auto">
           {mode === "analysis" ? (
             error ? (
@@ -293,80 +325,84 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
               </div>
             ) : changes.length > 0 ? (
               <div className="space-y-4">
-                {changes.map((chg, i) => (
-                  <button
-                    key={i}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      handleJump(chg.lineNumber);
-                      (e.currentTarget as HTMLButtonElement).blur();
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
+                {changes.map((chg, i) => {
+                  const dispLine =
+                    chg.side === "old"
+                      ? toDisplayLine("old", chg.lineNumber)
+                      : toDisplayLine("new", chg.lineNumber);
+                  return (
+                    <button
+                      key={i}
+                      onClick={(e) => {
                         e.preventDefault();
-                        handleJump(chg.lineNumber);
+                        handleJump(chg.lineNumber, chg.side === "old" ? "old" : "new");
                         (e.currentTarget as HTMLButtonElement).blur();
-                      }
-                    }}
-                    className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                  >
-                    <div className="flex items-start gap-4">
-                      {/* Left: badges */}
-                      <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                        <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                          Line {chg.lineNumber}
-                        </span>
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                            chg.type === "addition"
-                              ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                              : chg.type === "deletion"
-                              ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                              : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                          }`}
-                        >
-                          {chg.type}
-                        </span>
-                        <div className="flex flex-col gap-1 pt-1">
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                              chg.syntax === "good"
-                                ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                : "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                            }`}
-                          >
-                            Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          handleJump(chg.lineNumber, chg.side === "old" ? "old" : "new");
+                          (e.currentTarget as HTMLButtonElement).blur();
+                        }
+                      }}
+                      className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                    >
+                      <div className="flex items-start gap-4">
+                        <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
+                          <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
+                            Line {dispLine}
                           </span>
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                              chg.performance === "good"
+                              chg.type === "addition"
                                 ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                : "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                                : chg.type === "deletion"
+                                ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                                : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
                             }`}
                           >
-                            Performance: {chg.performance === "good" ? "Good" : "Bad"}
+                            {chg.type}
                           </span>
+                          <div className="flex flex-col gap-1 pt-1">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
+                                chg.syntax === "good"
+                                  ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
+                                  : "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                              }`}
+                            >
+                              Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
+                            </span>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
+                                chg.performance === "good"
+                                  ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
+                                  : "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                              }`}
+                            >
+                              Performance: {chg.performance === "good" ? "Good" : "Bad"}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex-1">
+                          {chg.explanation === "Pending…" ? (
+                            <div className="space-y-2" aria-busy="true" aria-live="polite">
+                              <div className="h-3 w-[95%] bg-gray-200 rounded animate-pulse" />
+                              <div className="h-3 w-[90%] bg-gray-200 rounded animate-pulse" />
+                              <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
+                              <div className="h-3 w-[82%] bg-gray-200 rounded animate-pulse" />
+                            </div>
+                          ) : (
+                            <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap transition-opacity duration-300 opacity-100">
+                              {chg.explanation}
+                            </p>
+                          )}
                         </div>
                       </div>
-
-                      {/* Right: explanation (skeleton while pending) */}
-                      <div className="flex-1">
-                        {chg.explanation === "Pending…" ? (
-                          <div className="space-y-2" aria-busy="true" aria-live="polite">
-                            <div className="h-3 w-[95%] bg-gray-200 rounded animate-pulse" />
-                            <div className="h-3 w-[90%] bg-gray-200 rounded animate-pulse" />
-                            <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                            <div className="h-3 w-[82%] bg-gray-200 rounded animate-pulse" />
-                          </div>
-                        ) : (
-                          <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap transition-opacity duration-300 opacity-100">
-                            {chg.explanation}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             ) : (
               <div className="text-gray-700 text-sm">{summary}</div>
@@ -382,48 +418,49 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
             </div>
           ) : hcFindings.length > 0 ? (
             <div className="space-y-4">
-              {hcFindings.map((f, i) => (
-                <button
-                  key={i}
-                  onClick={(e) => {
-                    e.preventDefault();
-                    handleJump(f.lineNumber);
-                    (e.currentTarget as HTMLButtonElement).blur();
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
+              {hcFindings.map((f, i) => {
+                const dispLine = toDisplayLine("new", f.lineNumber);
+                return (
+                  <button
+                    key={i}
+                    onClick={(e) => {
                       e.preventDefault();
-                      handleJump(f.lineNumber);
+                      handleJump(f.lineNumber, "new");
                       (e.currentTarget as HTMLButtonElement).blur();
-                    }
-                  }}
-                  className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
-                >
-                  <div className="flex items-start gap-4">
-                    {/* Left: badges */}
-                    <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                      <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                        Line {f.lineNumber}
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                          f.severity === "error"
-                            ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                            : f.severity === "warn"
-                            ? "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                            : "bg-gray-100 text-gray-700 group-hover:bg-gray-200"
-                        }`}
-                      >
-                        {f.severity === "error" ? "Flagged" : f.severity === "warn" ? "Review" : "Info"}
-                      </span>
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        handleJump(f.lineNumber, "new");
+                        (e.currentTarget as HTMLButtonElement).blur();
+                      }
+                    }}
+                    className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                  >
+                    <div className="flex items-start gap-4">
+                      <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
+                        <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
+                          Line {dispLine}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
+                            f.severity === "error"
+                              ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
+                              : f.severity === "warn"
+                              ? "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
+                              : "bg-gray-100 text-gray-700 group-hover:bg-gray-200"
+                          }`}
+                        >
+                          {f.severity === "error" ? "Flagged" : f.severity === "warn" ? "Review" : "Info"}
+                        </span>
+                      </div>
+                      <div className="flex-1">
+                        <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{f.detail}</p>
+                      </div>
                     </div>
-                    {/* Right: explanation */}
-                    <div className="flex-1">
-                      <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{f.detail}</p>
-                    </div>
-                  </div>
-                </button>
-              ))}
+                  </button>
+                );
+              })}
             </div>
           ) : (
             <div className="text-gray-600 text-sm">

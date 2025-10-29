@@ -1090,7 +1090,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                               </div>
                             </div>
                         </div>
-                        <div className="min-h-[28rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
+                        <div className="min-h-[28.15rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
                           {(() => {
                             const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
                             if (!currentSummary && (summarizing || loadingAudience)) {

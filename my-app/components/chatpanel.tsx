@@ -1,4 +1,3 @@
-// components/ChatPanel.tsx
 "use client";
 
 import React, { memo, useRef, useState, useEffect } from "react";
@@ -64,7 +63,6 @@ const ChatPanel = memo(function ChatPanel({
 }: ChatPanelProps) {
   const compareMode = !!rawOld && !!rawNew;
 
-  // ✅ Use RAW in compare mode so numbering matches analyze mode & comparison exactly
   const visibleOld = compareMode ? (rawOld ?? "") : (rawOld ?? canonicalOld ?? "");
   const visibleNew = compareMode ? (rawNew ?? "") : (rawNew ?? canonicalNew ?? "");
 
@@ -95,8 +93,6 @@ const ChatPanel = memo(function ChatPanel({
 
     try {
       const maybeLine = findLineMention(q);
-
-      // We pass both RAW “visible*” and RAW “old/new” so /api/chatbot can index by visible (RAW) numbering
       const res = await fetch("/api/chatbot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -106,13 +102,12 @@ const ChatPanel = memo(function ChatPanel({
           newQuery: newTextRaw,
           visibleOld,
           visibleNew,
-          indexing: "visible", // ✅ force visible (RAW) indexing for line numbers
+          indexing: "visible", 
           mode: compareMode ? "compare" : "single",
           context: {
             stats,
             changeCount,
           },
-          // ✅ send recent history so route can resolve follow-ups like “old” / “new”
           history: [...messages, { role: "user", content: q }]
             .slice(-8)
             .map((m) => ({ role: m.role, content: m.content })),
@@ -150,24 +145,40 @@ const ChatPanel = memo(function ChatPanel({
             <div
               key={i}
               className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
-                m.role === "user"
-                  ? "ml-auto bg-emerald-100 text-emerald-900"
-                  : "mr-auto bg-white text-gray-900 border border-gray-200"
+               m.role === "user"
+                ? "ml-auto bg-gray-100 text-gray-900 border border-gray-200"
+                : "mr-auto bg-white text-gray-900 border border-gray-200"
               }`}
             >
               {m.content}
             </div>
           ))}
           {loading && (
-            <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
-              <span className="inline-flex items-center gap-2">
-                <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" aria-hidden="true">
-                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                </svg>
-                Thinking…
-              </span>
-            </div>
-          )}
+  <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
+    <div className="flex items-center gap-2">
+      <div className="flex items-center justify-center gap-1 h-4">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="w-2 h-2 rounded-full bg-gray-500"
+            style={{
+              animation: "dotFlash 1.2s infinite ease-in-out",
+              animationDelay: `${i * 0.2}s`,
+            }}
+          />
+        ))}
+      </div>
+    </div>
+    <style>{`
+      @keyframes dotFlash {
+        0%, 100% { opacity: 0.4; transform: scale(0.9) translateY(0); }
+        25% { opacity: 1; transform: scale(1.15) translateY(-1px); }
+        50% { opacity: 0.8; transform: scale(1) translateY(1px); }
+        75% { opacity: 0.6; transform: scale(1.05) translateY(-0.5px); }
+      }
+    `}</style>
+  </div>
+)}
         </div>
       </div>
 

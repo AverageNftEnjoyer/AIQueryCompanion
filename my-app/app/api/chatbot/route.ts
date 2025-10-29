@@ -199,18 +199,18 @@ async function getMessages(threadId: string) {
   return res.json();
 }
 
-/* ----------------------- Prompt Builder (VISIBLE-indexed) ----------------------- */
+/* ----------------------- Prompt Builder (FORCE RAW NEW LINES) ----------------------- */
 function buildPrompt(body: ChatbotBody) {
   const question = (body?.question || "").trim();
 
   const canOld = body.oldQuery ? canonicalizeSQL(body.oldQuery) : "";
   const canNew = body.newQuery ? canonicalizeSQL(body.newQuery) : "";
 
-  const visOld = (body.visibleOld ?? canOld) || "";
-  const visNew = (body.visibleNew ?? canNew) || "";
+ 
+  const visOld = (body.visibleOld ?? body.oldQuery ?? "") || "";
+  const visNew = (body.visibleNew ?? body.newQuery ?? "") || "";
 
-  const indexing: "visible" | "canonical" =
-    body.indexing ?? (body.visibleOld || body.visibleNew ? "visible" : "canonical");
+  const indexing: "visible" | "canonical" = "visible";
 
   const lineReq = parseLineQuery(question);
   const focusTarget: "old" | "new" = (lineReq?.target ?? "new");
@@ -224,30 +224,32 @@ function buildPrompt(body: ChatbotBody) {
     if (focusText) {
       const { text, from, to, total } = sliceLines(focusText, lineReq.start, lineReq.end);
       focusBlock =
-        `FOCUS_RANGE (${indexing.toUpperCase()}): ${focusTarget.toUpperCase()} lines ${from}` +
-        `${to && to !== from ? `-${to}` : ""} of ${total}\n` +
+        `FOCUS_RANGE: ${focusTarget.toUpperCase()} lines ${from}${to && to !== from ? `-${to}` : ""} of ${total}\n` +
         "FOCUS_LINES:\n```\n" + text + "\n```\n";
     } else {
       focusBlock = `FOCUS_RANGE: (${focusTarget.toUpperCase()} query not provided by user)\n`;
     }
   }
 
-  let vOldBlk = visOld ? buildDisplayBlock("DISPLAY_VISIBLE_OLD", visOld, { head: 800, tail: 800 }) : null;
-  let vNewBlk = visNew ? buildDisplayBlock("DISPLAY_VISIBLE_NEW", visNew, { head: 800, tail: 800 }) : null;
-  let cOldBlk = canOld ? buildDisplayBlock("DISPLAY_CANONICAL_OLD", canOld, { head: 800, tail: 800 }) : null;
-  let cNewBlk = canNew ? buildDisplayBlock("DISPLAY_CANONICAL_NEW", canNew, { head: 800, tail: 800 }) : null;
+  let vOldBlk = visOld ? buildDisplayBlock("DISPLAY_OLD (raw numbering)", visOld, { head: 800, tail: 800 }) : null;
+  let vNewBlk = visNew ? buildDisplayBlock("DISPLAY_NEW (raw numbering)", visNew, { head: 800, tail: 800 }) : null;
+  let cOldBlk = canOld ? buildDisplayBlock("DISPLAY_CANONICAL_OLD (do not use for numbering)", canOld, { head: 800, tail: 800 }) : null;
+  let cNewBlk = canNew ? buildDisplayBlock("DISPLAY_CANONICAL_NEW (do not use for numbering)", canNew, { head: 800, tail: 800 }) : null;
 
   const metaBits: string[] = [];
   if (body.context?.changeCount != null) metaBits.push(`Change count: ${body.context.changeCount}`);
   if (body.context?.stats) metaBits.push(`Stats provided`);
 
-  const header =
-    "SYSTEM NOTES FOR ASSISTANT:\n" +
-    "- Treat DISPLAY_VISIBLE_* as the single source of truth for line numbers.\n" +
-    "- When the user references a line/range, ALWAYS quote from VISIBLE blocks (not canonical).\n" +
-    "- If OLD/NEW is unspecified, default to VISIBLE NEW.\n" +
-    "- Use CANONICAL blocks only to improve SQL understanding; do not renumber lines.\n" +
-    "- If FOCUS_LINES is present, start by quoting those exact line(s) and then explain in 2–4 sentences.\n";
+ const header =
+  "You are Query Companion — a senior Oracle SQL/PLSQL and SQL tutor.\n" +
+  "\n" +
+  "Important Context Alignment Rules:\n" +
+  "- Always reference the numbered NEW query display exactly as shown. This display may include blank placeholder lines to align with deletions from the OLD query.\n" +
+  "- Blank lines are intentional; they mark where lines existed in the OLD query. Treat them as meaningful for alignment, not as missing or invalid.\n" +
+  "- Never reference canonicalized or raw numbering. Only use the DISPLAY_NEW numbering seen by the user.\n" +
+  "- If a referenced line is blank, explain what *used to be there* based on the diff context (e.g., 'This line is blank because a WHERE clause was removed here').\n" +
+  "- Use natural phrasing: 'On line 42...', 'Between lines 75–78...' — never say 'RAW line' or 'canonical line'.\n";
+
 
   const compose = () => {
     const ctxParts: string[] = [];
@@ -272,10 +274,10 @@ function buildPrompt(body: ChatbotBody) {
 
   let step = 0;
   while (full.length > MAX_CONTENT && step < shrinkSteps.length) {
-    if (cOldBlk) cOldBlk = buildDisplayBlock("DISPLAY_CANONICAL_OLD", canOld, shrinkSteps[step]);
-    if (cNewBlk) cNewBlk = buildDisplayBlock("DISPLAY_CANONICAL_NEW", canNew, shrinkSteps[step]);
-    if (vOldBlk) vOldBlk = buildDisplayBlock("DISPLAY_VISIBLE_OLD", visOld, shrinkSteps[step]);
-    if (vNewBlk) vNewBlk = buildDisplayBlock("DISPLAY_VISIBLE_NEW", visNew, shrinkSteps[step]);
+    if (cOldBlk) cOldBlk = buildDisplayBlock("DISPLAY_CANONICAL_OLD (do not use for numbering)", canOld, shrinkSteps[step]);
+    if (cNewBlk) cNewBlk = buildDisplayBlock("DISPLAY_CANONICAL_NEW (do not use for numbering)", canNew, shrinkSteps[step]);
+    if (vOldBlk) vOldBlk = buildDisplayBlock("DISPLAY_OLD (raw numbering)", visOld, shrinkSteps[step]);
+    if (vNewBlk) vNewBlk = buildDisplayBlock("DISPLAY_NEW (raw numbering)", visNew, shrinkSteps[step]);
     full = compose();
     step++;
   }
@@ -289,16 +291,11 @@ function buildPrompt(body: ChatbotBody) {
     full = compose();
   }
 
+  // Last resort: keep only NEW raw with focus
   if (full.length > MAX_CONTENT) {
-    const focusVis = focusTarget === "old" ? visOld : visNew;
-    const tiny = buildDisplayBlock(`DISPLAY_VISIBLE_${focusTarget.toUpperCase()}`, focusVis, { head: 40, tail: 40 });
-    if (focusTarget === "old") {
-      vOldBlk = tiny;
-      vNewBlk = null;
-    } else {
-      vNewBlk = tiny;
-      vOldBlk = null;
-    }
+    const tiny = buildDisplayBlock(`DISPLAY_NEW (raw numbering)`, visNew, { head: 40, tail: 40 });
+    vNewBlk = tiny;
+    vOldBlk = null;
     cOldBlk = null;
     cNewBlk = null;
     full = [
@@ -324,7 +321,7 @@ export async function POST(req: Request) {
       return NextResponse.json(
         {
           answer:
-            "Please paste your NEW_QUERY (and OLD_QUERY if you want a diff). You can also ask about a line range like `line 50–70`.",
+            "Please paste your NEW query (and OLD query if you want a diff). You can also ask about a line range like “line 50–70”.",
           meta: { mode: "empty", playSound: true },
         },
         { status: 200 }
@@ -337,12 +334,14 @@ export async function POST(req: Request) {
     const hasRawNew = !!(body.newQuery && body.newQuery.length);
     const compareMode = (hasVisibleOld && hasVisibleNew) || (hasRawOld && hasRawNew);
 
+    // Prefer RAW queries for visible context (so numbering is raw)
     const visOldText = (body.visibleOld ?? body.oldQuery ?? "") || "";
     const visNewText = (body.visibleNew ?? body.newQuery ?? "") || "";
     const oldLines = splitVisibleLines(visOldText);
     const newLines = splitVisibleLines(visNewText);
     const bothPresent = oldLines.length > 0 && newLines.length > 0;
 
+    // Handle follow-up like "old 220" / "new 180"
     const sideFollowup = parseSideFollowup(question);
     if (sideFollowup && compareMode) {
       let line = sideFollowup.line;
@@ -363,17 +362,18 @@ export async function POST(req: Request) {
       }
     }
 
-    
+    // If user said just "line N", prefer NEW; validate range against NEW first.
     const parsed = parseLineQuery(body.question || question);
-    if (compareMode && parsed && parsed.target == null && bothPresent) {
+    if (compareMode && parsed && parsed.target == null) {
       const n = parsed.start;
       const end = parsed.end;
       const withinNew = n >= 1 && n <= newLines.length;
       const withinOld = n >= 1 && n <= oldLines.length;
 
-      if (withinNew || withinOld) {
-        const side = withinNew ? "new" : "old";
-        body.question = `${side} line ${n}${end ? `-${end}` : ""}`;
+      if (withinNew) {
+        body.question = `new line ${n}${end ? `-${end}` : ""}`;
+      } else if (withinOld) {
+        body.question = `old line ${n}${end ? `-${end}` : ""}`;
       } else {
         return NextResponse.json(
           {
@@ -394,7 +394,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const { full } = buildPrompt({ ...body, question: body.question || question });
+    const { full } = buildPrompt({ ...body, indexing: "visible", question: body.question || question });
 
     // Assistants flow
     const thread = await createThread();

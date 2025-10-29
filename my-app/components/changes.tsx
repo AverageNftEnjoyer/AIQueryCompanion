@@ -18,9 +18,9 @@ export type ChangeItem = {
   type: ChangeType;
   description: string;
   explanation?: string;
-  lineNumber: number; // start line of the group on the chosen side
+  lineNumber: number;
   side: Side;
-  span?: number; // number of lines in the group
+  span?: number;
   syntax?: GoodBad;
   performance?: GoodBad;
   index?: number;
@@ -48,9 +48,42 @@ type Props = {
 const toLF = (s: string) => s.replace(/\r\n/g, "\n");
 const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 
-/** Build groups strictly from aligned rows, with safe narrowing on line numbers */
-function deriveGroups(rows: AlignedRow[]): ChangeItem[] {
+/**
+ * Build maps that let us convert any row/line into a NEW-side "display line"
+ * that includes placeholders for deletions. This mirrors what the user sees.
+ *
+ * - displayLineByRowIndex: the 1-based NEW display line for each aligned row index
+ * - newLineToDisplay: map from actual NEW line numbers to their display lines
+ * - oldLineToDisplay: map from OLD line numbers (deletions) to the display line
+ *   where the blank placeholder appears in NEW
+ */
+function buildNewDisplayLineMaps(rows: AlignedRow[]) {
+  const displayLineByRowIndex: number[] = [];
+  const newLineToDisplay = new Map<number, number>();
+  const oldLineToDisplay = new Map<number, number>();
+
+  let displayLine = 0; // 1-based for user display
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    displayLine += 1;
+    displayLineByRowIndex[i] = displayLine;
+
+    if (isNum((r as any)?.new?.lineNumber)) {
+      newLineToDisplay.set((r as any).new.lineNumber, displayLine);
+    }
+
+    if (r.kind === "deletion" && isNum((r as any)?.old?.lineNumber)) {
+      oldLineToDisplay.set((r as any).old.lineNumber, displayLine);
+    }
+  }
+
+  return { displayLineByRowIndex, newLineToDisplay, oldLineToDisplay };
+}
+
+/** Build groups strictly from aligned rows, anchoring to NEW display line numbers */
+function deriveGroupsWithNewAnchors(rows: AlignedRow[]): ChangeItem[] {
   const groups: ChangeItem[] = [];
+  const { newLineToDisplay, oldLineToDisplay } = buildNewDisplayLineMaps(rows);
 
   type ModRun = {
     kind: "modification";
@@ -70,60 +103,94 @@ function deriveGroups(rows: AlignedRow[]): ChangeItem[] {
     if (!run) return;
 
     if (run.kind === "addition") {
-      const start = run.startNew;
-      const end = run.endNew;
-      const span = end - start + 1;
+      const startNew = run.startNew;
+      const endNew = run.endNew;
+      const span = endNew - startNew + 1;
+      const anchorStartDisplay = newLineToDisplay.get(startNew) ?? startNew;
+      const anchorEndDisplay = newLineToDisplay.get(endNew) ?? endNew;
+
       const base =
         span > 1
-          ? `Lines ${start}-${end}: added ${span} lines`
-          : `Line ${start}: added 1 line`;
+          ? `Lines ${anchorStartDisplay}-${anchorEndDisplay}: added ${span} line${span > 1 ? "s" : ""}`
+          : `Line ${anchorStartDisplay}: added 1 line`;
+
       groups.push({
         type: "addition",
         side: "new",
-        lineNumber: start,
-        span,
+        lineNumber: anchorStartDisplay,
+        span: Math.max(1, anchorEndDisplay - anchorStartDisplay + 1),
         description: run.preview ? `${base}. Preview "${run.preview}"` : base,
       });
     } else if (run.kind === "deletion") {
-      const start = run.startOld;
-      const end = run.endOld;
-      const span = end - start + 1;
+      const startOld = run.startOld;
+      const endOld = run.endOld;
+      const span = endOld - startOld + 1;
+
+      const anchorStartDisplay = oldLineToDisplay.get(startOld) ?? startOld;
+      const anchorEndDisplay = oldLineToDisplay.get(endOld) ?? anchorStartDisplay;
+
       const base =
         span > 1
-          ? `Lines ${start}-${end}: removed ${span} lines`
-          : `Line ${start}: removed 1 line`;
+          ? `Lines ${anchorStartDisplay}-${anchorEndDisplay}: removed ${span} line${span > 1 ? "s" : ""}`
+          : `Line ${anchorStartDisplay}: removed 1 line`;
+
       groups.push({
         type: "deletion",
-        side: "old",
-        lineNumber: start,
-        span,
+        side: "old", 
+        lineNumber: anchorStartDisplay,
+        span: Math.max(1, anchorEndDisplay - anchorStartDisplay + 1),
         description: run.preview ? `${base}. Preview "${run.preview}"` : base,
       });
     } else {
-      // modification
-      const anchorStart = isNum(run.startNew) ? run.startNew : (run.startOld as number);
-      const anchorEnd = isNum(run.endNew) ? run.endNew! : (run.endOld as number);
-      const span = Math.max(1, anchorEnd - anchorStart + 1);
+ 
+      const sNew = run.startNew;
+      const eNew = run.endNew;
+      const sOld = run.startOld;
+      const eOld = run.endOld;
 
+      let anchorStartDisplay: number | undefined;
+      let anchorEndDisplay: number | undefined;
+
+      if (isNum(sNew) && isNum(eNew)) {
+        anchorStartDisplay = newLineToDisplay.get(sNew) ?? sNew;
+        anchorEndDisplay = newLineToDisplay.get(eNew) ?? eNew;
+      } else if (isNum(sNew)) {
+        anchorStartDisplay = newLineToDisplay.get(sNew) ?? sNew;
+        anchorEndDisplay = anchorStartDisplay;
+      } else if (isNum(sOld)) {
+        anchorStartDisplay = oldLineToDisplay.get(sOld) ?? sOld;
+        anchorEndDisplay = isNum(eOld)
+          ? oldLineToDisplay.get(eOld) ?? anchorStartDisplay
+          : anchorStartDisplay;
+      }
+
+      if (!isNum(anchorStartDisplay)) {
+        anchorStartDisplay = 1;
+        anchorEndDisplay = anchorStartDisplay;
+      }
+      if (!isNum(anchorEndDisplay)) anchorEndDisplay = anchorStartDisplay;
+
+      const span = Math.max(1, anchorEndDisplay - anchorStartDisplay + 1);
       const base =
         span > 1
-          ? `Lines ${anchorStart}-${anchorEnd}: modified ${span} lines`
-          : `Line ${anchorStart}: modified 1 line`;
+          ? `Lines ${anchorStartDisplay}-${anchorEndDisplay}: modified ${span} line${span > 1 ? "s" : ""}`
+          : `Line ${anchorStartDisplay}: modified 1 line`;
 
       const pOld = (run.prevPreviewOld || "").trim();
       const pNew = (run.prevPreviewNew || "").trim();
-      const preview = pOld && pNew
-        ? `Preview "${pOld}" → "${pNew}"`
-        : pNew
-        ? `Preview "${pNew}"`
-        : pOld
-        ? `Preview "${pOld}"`
-        : "";
+      const preview =
+        pOld && pNew
+          ? `Preview "${pOld}" → "${pNew}"`
+          : pNew
+          ? `Preview "${pNew}"`
+          : pOld
+          ? `Preview "${pOld}"`
+          : "";
 
       groups.push({
         type: "modification",
         side: "both",
-        lineNumber: anchorStart,
+        lineNumber: anchorStartDisplay,
         span,
         description: preview ? `${base}. ${preview}` : base,
       });
@@ -175,7 +242,6 @@ function deriveGroups(rows: AlignedRow[]): ChangeItem[] {
       continue;
     }
 
-    // modification
     const lnNew = row.new?.lineNumber;
     const lnOld = row.old?.lineNumber;
     if (!isNum(lnNew) && !isNum(lnOld)) {
@@ -245,7 +311,7 @@ export function Changes({
   );
 
   const rows: AlignedRow[] = useMemo(() => buildAlignedRows(comparison), [comparison]);
-  const groups = useMemo(() => deriveGroups(rows), [rows]);
+  const groups = useMemo(() => deriveGroupsWithNewAnchors(rows), [rows]);
 
   const filtered = useMemo(
     () =>
@@ -257,7 +323,6 @@ export function Changes({
     [groups, typeFilter, sideFilter]
   );
 
-  // --- Sound playback (same as minimap) ---
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null);
   const [soundEnabled] = React.useState(true);
   const playClick = () => {
@@ -339,14 +404,14 @@ export function Changes({
                     onClick={(e) => {
                       e.preventDefault();
                       playClick();
-                      onJump(chg.side, chg.lineNumber);
+                      onJump("new", chg.lineNumber);
                       (e.currentTarget as HTMLButtonElement).blur();
                     }}
                     onKeyDown={(e) => {
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         playClick();
-                        onJump(chg.side, chg.lineNumber);
+                        onJump("new", chg.lineNumber);
                         (e.currentTarget as HTMLButtonElement).blur();
                       }
                     }}

@@ -86,7 +86,10 @@ function QueryComparisonInner(
   function flashLine(side: "old" | "new", line: number) {
     const pane = side === "old" ? leftRef.current : rightRef.current;
     if (!pane) return;
-    const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`);
+    // Prefer display line; fallback to raw line
+    const el =
+      pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`) ||
+      pane.querySelector<HTMLElement>(`[data-side="${side}"][data-rawline="${line}"]`);
     if (!el) return;
     el.classList.remove("flash-highlight");
     // reflow to restart animation
@@ -102,7 +105,9 @@ function QueryComparisonInner(
     const s = Math.max(1, Math.min(startLine, endLine));
     const e = Math.max(1, Math.max(startLine, endLine));
     for (let ln = s; ln <= e; ln++) {
-      const el = pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${ln}"]`);
+      const el =
+        pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${ln}"]`) ||
+        pane.querySelector<HTMLElement>(`[data-side="${side}"][data-rawline="${ln}"]`);
       if (!el) continue;
       el.classList.remove("flash-highlight");
       void el.offsetWidth;
@@ -120,6 +125,7 @@ function QueryComparisonInner(
 
         const tR =
           r.querySelector<HTMLElement>(`[data-side="new"][data-line="${line}"]`) ||
+          r.querySelector<HTMLElement>(`[data-side="new"][data-rawline="${line}"]`) ||
           r.querySelector<HTMLElement>(`[data-line="${line}"]`);
 
         suppressSync.current.old = true;
@@ -145,6 +151,7 @@ function QueryComparisonInner(
 
       const target =
         primary.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`) ||
+        primary.querySelector<HTMLElement>(`[data-side="${side}"][data-rawline="${line}"]`) ||
         primary.querySelector<HTMLElement>(`[data-line="${line}"]`);
 
       if (target) {
@@ -229,17 +236,19 @@ function QueryComparisonInner(
                 ? theme.added
                 : "";
 
-            const lineNo = side.lineNumber ?? undefined;
+            const displayLine = side.visualIndex ?? idx + 1; // DISPLAY index (with deletion placeholders)
+            const rawLine = side.lineNumber;                 // raw source line (may be undefined)
 
             return (
               <div
                 key={idx}
                 data-side={which}
-                {...(lineNo ? { "data-line": lineNo } : {})}
+                data-line={displayLine}
+                {...(typeof rawLine === "number" ? { "data-rawline": rawLine } : {})}
                 className={`${theme.baseRow} ${rowBg} relative`}
               >
                 <span className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-transparent shrink-0`}>
-                  {side.visualIndex ?? idx + 1}
+                  {displayLine}
                 </span>
                 <code className="block whitespace-pre pr-4">
                   {renderHighlightedSQL(side.text ?? "")}
