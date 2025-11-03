@@ -10,12 +10,6 @@ type Props = {
   className?: string;
 };
 
-/**
- * Keeps next-themes and your persisted prefs in sync:
- * - Clicking toggles next-themes AND your prefs.isLight.
- * - If theme changes elsewhere (e.g., another component), we mirror it to prefs.
- * - We avoid infinite loops by only updating when values differ.
- */
 export function ThemeToggle({ onClickSound, className }: Props) {
   const { setTheme, resolvedTheme, theme } = useTheme();
   const { isLight, setIsLight } = useUserPrefs();
@@ -25,7 +19,6 @@ export function ThemeToggle({ onClickSound, className }: Props) {
 
   const isDark = (resolvedTheme ?? theme) === "dark";
 
-  // If next-themes changes (e.g., some other control), reflect to prefs
   React.useEffect(() => {
     const currentlyLight = !isDark;
     if (currentlyLight !== isLight) {
@@ -34,8 +27,7 @@ export function ThemeToggle({ onClickSound, className }: Props) {
   }, [isDark, isLight, setIsLight]);
 
   const handleClick = () => {
-    const nextIsLight = isDark; // if dark -> go light; if light -> go dark
-    // Update both stores, but do minimal writes to avoid loops
+    const nextIsLight = isDark; 
     const nextTheme = nextIsLight ? "light" : "dark";
     if (resolvedTheme !== nextTheme) setTheme(nextTheme);
     if (isLight !== nextIsLight) setIsLight(nextIsLight);

@@ -27,13 +27,12 @@ type ChangeItem = {
   syntax: GoodBad;
   performance: GoodBad;
   span?: number;
-  /** NEW: pass through server-calculated severity so UI can color correctly */
   severity?: "block" | "warn" | "info";
 };
 
 type Severity = "warn" | "block" | "info";
 type Finding = {
-  lineNumber: number; // raw NEW query 1-based line index
+  lineNumber: number; 
   side: "new";
   rule: string;
   reason: string;
@@ -62,7 +61,7 @@ function safeErrMessage(e: any, fallback = "Unexpected error") {
 
 /* ============================ Heuristics =========================== */
 
-const NUMERIC_WHITELIST = new Set<string>(["0", "1", "2", "100", "2.00", "0.00"]);
+const NUMERIC_WHITELIST = new Set<string>(["0", "1", "100", "2.00", "0.00"]);
 const ID_COLUMN_WHITELIST = [/(\bUSER_ID\b|\bCLIENT_ID\b|\bCUSTOMER_ID\b|\bACCOUNT_ID\b)/i];
 const LOOKUP_COLUMN_WHITELIST = [
   /\bSTATUS\b/i,
@@ -170,6 +169,49 @@ function newTouchedLinesFromRows(rows: AlignedRow[]): number[] {
   return Array.from(set).sort((a, b) => a - b);
 }
 
+/* ==================== NEW: char-vs-number detectors ==================== */
+
+/** Column name patterns that are very often string-coded */
+const STRINGY_COL_HINT = /\b(STATUS|STATE|TYPE|ROLE|CATEGORY|CLASS|CODE|_CD|_CODE|FLAG|DESC|DESCRIPTION)\b/i;
+
+/** equality like: COL = 1   or   COL = 1.2  */
+const EQ_CHAR_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s*=\s*(\d+(?:\.\d+)?)(?![\w\.])/i;
+
+/** IN-list like: COL IN (1,2,3) — unquoted numbers only */
+const IN_CHAR_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s+IN\s*\(\s*(\d+(?:\.\d+)?(?:\s*,\s*\d+(?:\.\d+)?)*)\s*\)/i;
+
+/** BETWEEN like: COL BETWEEN 1 AND 9 */
+const BETWEEN_CHAR_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s+BETWEEN\s+(\d+(?:\.\d+)?)\s+AND\s+(\d+(?:\.\d+)?)/i;
+
+/** TO_CHAR applied to a numeric literal on the right side:  char_col = TO_CHAR(1) */
+const TO_CHAR_RIGHT_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s*=\s*TO_CHAR\s*\(\s*(\d+(?:\.\d+)?)\s*\)/i;
+
+/** TO_NUMBER applied to the column:  TO_NUMBER(char_col) = 1  (function on column -> index skip) */
+const TO_NUMBER_ON_COLUMN_RE = /\bTO_NUMBER\s*\(\s*([A-Z_][A-Z0-9_$#]*)\s*\)\s*=\s*(\d+(?:\.\d+)?)/i;
+
+function pushCharNumFinding(
+  findings: Finding[],
+  lineNumber: number,
+  snippet: string,
+  rule: string,
+  col: string,
+  nums: string[],
+  severity: Severity = "warn"
+) {
+  findings.push({
+    lineNumber,
+    side: "new",
+    rule,
+    reason:
+      `Character-like column \`${col}\` compared to unquoted numeric literal${nums.length > 1 ? "s" : ""} ` +
+      `(${nums.join(", ")}). This forces implicit conversion and may throw ORA-01722 or bypass indexes. ` +
+      `Quote the literals (e.g., '${nums[0]}') or cast the **literal**, not the column.`,
+    snippet,
+    severity,
+    literals: nums,
+  });
+}
+
 /* =============================== Scanner =============================== */
 
 function scanLine(lineText: string, lineNumber: number): Finding[] {
@@ -179,7 +221,6 @@ function scanLine(lineText: string, lineNumber: number): Finding[] {
 
   const line = stripInlineComments(lineText);
 
-  // block: secrets / env
   if (SECRET_RE.test(line)) {
     findings.push({
       lineNumber,
@@ -200,57 +241,128 @@ function scanLine(lineText: string, lineNumber: number): Finding[] {
     });
   }
 
+  // Date literals are allowed; other rules may still apply
   if (DATE_LIT_RE.test(line)) {
-    // recognized; will only warn if clearly hardcoded without proper date logic (handled below as needed)
+    /* keep scanning */
   }
 
-  if (isLikelyIdColumn(line)) return findings;
-  if (looksLikePriceRounding(line)) return findings;
-  if (isLookupColumn(line)) return findings;
+  /* --- NEW: char-vs-number rules (run before any “early returns”) --- */
 
-  // magic numbers (with SUBSTR diagnostics carve-out)
-  let nums = collectNumberLiterals(line).filter((n) => !NUMERIC_WHITELIST.has(n));
-  nums = stripSubstrErrorLengths(line, nums);
-
-  // APPLICATION_ID carve-out
-  let appIdAllAllowed = false;
-  if (isAppIdContext(line)) {
-    const appNums = extractAppIdNums(line);
-    if (appNums.length && onlyAllowedAppIds(appNums)) {
-      appIdAllAllowed = true;
+  {
+    const m = line.match(EQ_CHAR_NUM_RE);
+    if (m) {
+      const col = m[1];
+      const num = m[2];
+      if (STRINGY_COL_HINT.test(col)) {
+        pushCharNumFinding(findings, lineNumber, lineText, "char-vs-number-compare", col, [num], "warn");
+      }
     }
   }
-
-  if (!appIdAllAllowed && nums.length) {
-    const hasNote = /--\s*(business rule|per\s+requirements?|per\s+spec)/i.test(lineText);
-    if (!hasNote) {
+  {
+    const m = line.match(IN_CHAR_NUM_RE);
+    if (m) {
+      const col = m[1];
+      const list = m[2].split(",").map((s) => s.trim()).filter(Boolean);
+      if (STRINGY_COL_HINT.test(col)) {
+        pushCharNumFinding(findings, lineNumber, lineText, "char-vs-number-in", col, list, "warn");
+      }
+    }
+  }
+  {
+    const m = line.match(BETWEEN_CHAR_NUM_RE);
+    if (m) {
+      const col = m[1];
+      const nums = [m[2], m[3]];
+      if (STRINGY_COL_HINT.test(col)) {
+        pushCharNumFinding(findings, lineNumber, lineText, "char-vs-number-between", col, nums, "warn");
+      }
+    }
+  }
+  {
+    const m = line.match(TO_CHAR_RIGHT_NUM_RE);
+    if (m) {
+      const col = m[1];
+      const num = m[2];
+      if (STRINGY_COL_HINT.test(col)) {
+        findings.push({
+          lineNumber,
+          side: "new",
+          rule: "to-char-right-literal",
+          reason:
+            `\`${col}\` is character-like; comparing to \`TO_CHAR(${num})\` is redundant and still encourages mixing types. ` +
+            `Prefer quoting the literal directly (e.g., '${num}').`,
+          snippet: lineText,
+          severity: "info",
+          literals: [num],
+        });
+      }
+    }
+  }
+  {
+    const m = line.match(TO_NUMBER_ON_COLUMN_RE);
+    if (m) {
+      const col = m[1];
+      const num = m[2];
       findings.push({
         lineNumber,
         side: "new",
-        rule: "magic-number",
-        reason: `Hardcoded numeric literal(s) without context: ${nums.join(", ")}`,
+        rule: "to-number-on-column",
+        reason:
+          `\`TO_NUMBER(${col}) = ${num}\` applies a function to the column, which disables index usage and can raise ORA-01722. ` +
+          `Prefer comparing \`${col}\` to a quoted literal ('${num}') or cast the **literal** side instead.`,
         snippet: lineText,
         severity: "warn",
-        literals: nums,
+        literals: [num],
       });
     }
   }
 
-  // IN-list (3+ distinct literals) (skip if APPLICATION_ID carve-out)
-  if (!appIdAllAllowed && /\bIN\s*\(/i.test(line)) {
-    const strings = collectStringLiterals(line);
-    const allLits = strings.concat(nums);
-    const distinct = Array.from(new Set(allLits.map((x) => x.trim()))).filter(Boolean);
-    if (distinct.length >= 3) {
-      findings.push({
-        lineNumber,
-        side: "new",
-        rule: "in-list-3plus",
-        reason: `IN-list with ${distinct.length} distinct hardcoded values.`,
-        snippet: lineText,
-        severity: "warn",
-        literals: distinct,
-      });
+  const skipMagicNumber =
+    isLikelyIdColumn(line) || looksLikePriceRounding(line) || isLookupColumn(line);
+
+  if (!skipMagicNumber) {
+    let nums = collectNumberLiterals(line).filter((n) => !NUMERIC_WHITELIST.has(n));
+    nums = stripSubstrErrorLengths(line, nums);
+
+    // APPLICATION_ID carve-out
+    let appIdAllAllowed = false;
+    if (isAppIdContext(line)) {
+      const appNums = extractAppIdNums(line);
+      if (appNums.length && onlyAllowedAppIds(appNums)) {
+        appIdAllAllowed = true;
+      }
+    }
+
+    if (!appIdAllAllowed && nums.length) {
+      const hasNote = /--\s*(business rule|per\s+requirements?|per\s+spec)/i.test(lineText);
+      if (!hasNote) {
+        findings.push({
+          lineNumber,
+          side: "new",
+          rule: "magic-number",
+          reason: `Hardcoded numeric literal(s) without context: ${nums.join(", ")}`,
+          snippet: lineText,
+          severity: "warn",
+          literals: nums,
+        });
+      }
+    }
+
+    if (!appIdAllAllowed && /\bIN\s*\(/i.test(line)) {
+      const strings = collectStringLiterals(line);
+      const allLits = strings.concat(nums);
+      const distinct = Array.from(new Set(allLits.map((x) => x.trim()))).filter(Boolean);
+      if (distinct.length >= 3) {
+        findings.push({
+          lineNumber,
+          side: "new",
+          rule: "in-list-3plus",
+          reason: `IN-list with ${distinct.length} distinct hardcoded values.`,
+          snippet: lineText,
+          severity: "warn",
+          literals: distinct,
+        });
+      }
     }
   }
 
@@ -278,6 +390,10 @@ async function explainWithAgent(
     "You are a SQL static analysis explainer.",
     "Given old & new queries and a list of hardcoding findings, produce a concise, one-paragraph explanation for each finding (numbered list).",
     "",
+    "Rules to emphasize:",
+    "- Flag comparisons of CHARACTER columns to unquoted numeric literals (e.g., STATUS = 1, TYPE_CODE IN (1,2)). Explain Oracle’s implicit conversion risk (ORA-01722) and index bypass when functions apply to columns.",
+    "- Recommend quoting the literals (e.g., STATUS = '1') or casting the literal, not the column. Avoid TO_NUMBER(column) or TO_CHAR(column) in predicates.",
+    "",
     "OLD QUERY:",
     "```sql",
     oldQuery || "",
@@ -296,7 +412,7 @@ async function explainWithAgent(
     const resp = await openai.chat.completions.create({
       model,
       messages: [
-        { role: "system", content: "You are HARDCODE Inspector: analyze hardcoded SQL issues." },
+        { role: "system", content: "You are HARDCODE Inspector: analyze hardcoded SQL issues with Oracle-focused guidance." },
         { role: "user", content: userContent },
       ],
       temperature: 0.2,
@@ -351,7 +467,6 @@ export async function POST(req: Request) {
       );
     }
 
-    // Scan
     const findings: Finding[] = [];
     for (const ln of targetLineNumbers) {
       findings.push(...scanLine(newLines[ln - 1] ?? "", ln));

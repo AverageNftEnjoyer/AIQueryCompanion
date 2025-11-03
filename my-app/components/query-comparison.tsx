@@ -15,7 +15,7 @@ import { BarChart3 } from "lucide-react";
 export type QueryJumpSide = "old" | "new" | "both";
 export type QueryComparisonHandle = {
   scrollTo: (opts: { side: QueryJumpSide; line: number; flash?: boolean }) => void;
-  flashRange: (side: "old" | "new", startLine: number, endLine: number) => void; // NEW
+  flashRange: (side: "old" | "new", startLine: number, endLine: number) => void; 
 };
 
 interface QueryComparisonProps {
@@ -27,7 +27,6 @@ interface QueryComparisonProps {
   syncScrollEnabled?: boolean;
 }
 
-/** Normalize CRLF -> LF so line numbers stay stable across platforms. */
 const toLF = (s: string) => s.replace(/\r\n/g, "\n");
 
 function QueryComparisonInner(
@@ -86,19 +85,16 @@ function QueryComparisonInner(
   function flashLine(side: "old" | "new", line: number) {
     const pane = side === "old" ? leftRef.current : rightRef.current;
     if (!pane) return;
-    // Prefer display line; fallback to raw line
     const el =
       pane.querySelector<HTMLElement>(`[data-side="${side}"][data-line="${line}"]`) ||
       pane.querySelector<HTMLElement>(`[data-side="${side}"][data-rawline="${line}"]`);
     if (!el) return;
     el.classList.remove("flash-highlight");
-    // reflow to restart animation
     void el.offsetWidth;
     el.classList.add("flash-highlight");
     window.setTimeout(() => el.classList.remove("flash-highlight"), 1200);
   }
 
-  // NEW: flash a whole contiguous range (inclusive)
   function flashRangeImpl(side: "old" | "new", startLine: number, endLine: number) {
     const pane = side === "old" ? leftRef.current : rightRef.current;
     if (!pane) return;
@@ -165,13 +161,11 @@ function QueryComparisonInner(
       if (flash) flashLine(side, line);
     },
 
-    // NEW
     flashRange: (side, startLine, endLine) => {
       flashRangeImpl(side, startLine, endLine);
     },
   }));
 
-  // Optional: respond to MiniMap’s DOM event fallback (qa:flash-range)
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<{ side: "old" | "new"; startLine: number; endLine: number }>;
@@ -236,8 +230,8 @@ function QueryComparisonInner(
                 ? theme.added
                 : "";
 
-            const displayLine = side.visualIndex ?? idx + 1; // DISPLAY index (with deletion placeholders)
-            const rawLine = side.lineNumber;                 // raw source line (may be undefined)
+            const displayLine = side.visualIndex ?? idx + 1; 
+            const rawLine = side.lineNumber;               
 
             return (
               <div
