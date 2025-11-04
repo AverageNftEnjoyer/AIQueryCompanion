@@ -14,11 +14,9 @@ import {
   Zap,
   AlertCircle,
   ChevronDown,
-  Loader2,
   Link2,
   Sun,
   Moon,
-  Send,
 } from "lucide-react";
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
 import {
@@ -28,7 +26,6 @@ import {
   type ComparisonResult,
   type AlignedRow,
 } from "@/lib/query-differ";
-import ChatPanel from "@/components/chatpanel";
 import AnalysisPanel from "@/components/analysis";
 import { useUserPrefs } from "@/hooks/user-prefs";
 import { Changes } from "@/components/changes";
@@ -36,7 +33,6 @@ import { Changes } from "@/components/changes";
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
 type GoodBad = "good" | "bad";
-type Audience = "stakeholder" | "developer";
 type AnalysisMode = "fast" | "expert";
 type Mode = "single" | "compare";
 
@@ -46,11 +42,11 @@ interface AnalysisResult {
     type: ChangeType;
     description: string;
     explanation: string;
-    lineNumber: number; // start line (API already grouped if needed)
+    lineNumber: number;
     side: Side;
     syntax: GoodBad;
     performance: GoodBad;
-    span?: number; // present for grouped runs
+    span?: number;
     index?: number;
     meta?: {
       clauses?: string[];
@@ -239,11 +235,15 @@ export default function ResultsPage() {
   const chatbotAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
-  const comparisonSectionRef = useRef<HTMLDivElement | null>(null); 
+  const comparisonSectionRef = useRef<HTMLDivElement | null>(null);
 
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
-  // Filters (state held here; Changes component just receives values + callbacks)
+  const topPaneHeights =
+    mode === "single"
+      ? "h:[88svh] md:h-[90dvh] lg:h-[92dvh] 2xl:h-[86dvh] min-h-[560px] max-h-[1400px]"
+      : "h-[80svh] md:h-[88dvh] lg:h-[90dvh] 2xl:h-[84dvh] min-h-[560px] max-h-[1400px]";
+
   const [typeFilter, setTypeFilter] = useState<ChangeType | "all">("all");
   const [sideFilter, setSideFilter] = useState<Side | "all">("all");
   useEffect(() => {
@@ -261,45 +261,33 @@ export default function ResultsPage() {
     if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter);
   }, [sideFilter]);
 
-  // Summary stuff
-  const [audience, setAudience] = useState<Audience>("stakeholder");
-  const [summaryStakeholder, setSummaryStakeholder] = useState<string>("");
-  const [summaryDeveloper, setSummaryDeveloper] = useState<string>("");
-  const [summarizing, setSummarizing] = useState<boolean>(false);
-  const [loadingAudience, setLoadingAudience] = useState<Audience | null>(null);
-
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert");
   const summaryRef = useRef<HTMLDivElement | null>(null);
   const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null);
   const summarizeAbortRef = useRef<AbortController | null>(null);
-const SUSTAIN_MS = 4000; // how long to keep the solid highlight
+  const SUSTAIN_MS = 4000;
 
-const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
-  // Always scroll page to the comparison (muted or not)
-  comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
+    comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 
-  // Jump in the viewer (use new side when 'both')
-  const targetSide = side === "both" ? "new" : side;
-  cmpRef.current?.scrollTo({ side: targetSide, line });
+    const targetSide = side === "both" ? "new" : side;
+    cmpRef.current?.scrollTo({ side: targetSide, line });
 
-  // One-time flash (no looping → no flicker)
-  cmpRef.current?.flashRange?.(targetSide, line, line);
+    cmpRef.current?.flashRange?.(targetSide, line, line);
 
-  // Persist a solid highlight for ~4s without re-triggering flash
-  // (relies on your QueryComparison rendering data attrs; adjust selectors if needed)
-  requestAnimationFrame(() => {
-    const el =
-      (document.querySelector(`[data-qc-side="${targetSide}"][data-line="${line}"]`) as HTMLElement | null) ||
-      (document.querySelector(`[data-side="${targetSide}"][data-line="${line}"]`) as HTMLElement | null);
+    requestAnimationFrame(() => {
+      const el =
+        (document.querySelector(`[data-qc-side="${targetSide}"][data-line="${line}"]`) as HTMLElement | null) ||
+        (document.querySelector(`[data-side="${targetSide}"][data-line="${line}"]`) as HTMLElement | null);
 
-    if (el) {
-      el.classList.add("qa-persist-highlight");
-      setTimeout(() => el.classList.remove("qa-persist-highlight"), SUSTAIN_MS);
-    }
-  });
+      if (el) {
+        el.classList.add("qa-persist-highlight");
+        setTimeout(() => el.classList.remove("qa-persist-highlight"), SUSTAIN_MS);
+      }
+    });
 
-  if (soundOn) playMiniClick();
-};
+    if (soundOn) playMiniClick();
+  };
   const analysisDoneSoundPlayedRef = useRef(false);
 
   const clearResumeHandler = (() => {
@@ -325,7 +313,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
           clearResumeHandler();
         });
       };
-      // @ts-ignore
       (clearResumeHandler as any).handler = resume;
       window.addEventListener("pointerdown", resume, { once: true });
       window.addEventListener("keydown", resume, { once: true });
@@ -422,14 +409,13 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     setNewQuery(n);
     setLoading(false);
 
-    // PREPARE CHANGES ONLY — server groups correctly; we render as-is
     (async () => {
       try {
         const PAGE_SIZE = 24;
         const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: o, newQuery: n }), // RAW
+          body: JSON.stringify({ oldQuery: o, newQuery: n }),
         });
         const prepData = await prepRes.json().catch(() => ({}));
         if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
@@ -440,7 +426,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
           const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oldQuery: o, newQuery: n }), // RAW
+            body: JSON.stringify({ oldQuery: o, newQuery: n }),
           });
           const j = await r.json().catch(() => ({}));
           if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
@@ -452,19 +438,12 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         const byIndex = new Map<number, AnalysisResult["changes"][number]>();
         for (const c of prepared) if (typeof c.index === "number") byIndex.set(c.index, c);
         const mergedPlaceholders = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-
-        setAnalysis((prev) => ({
-          ...prev,
-          summary: "Analysis is ready. Click “Generate Analysis” (Fast/Expert) to stream detailed explanations.",
-          changes: mergedPlaceholders,
-        }));
       } catch (e: any) {
         setError(e?.message || "Unexpected error");
       }
     })();
   }, [router]);
 
-  // Sound toggles & persistence
   useEffect(() => {
     const audios = [
       doneAudioRef.current,
@@ -483,7 +462,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
       clearResumeHandler();
     }
 
-    // 🔇 Also enforce mute for any third-party/internal <audio> tags that play minimapbar.mp3 (e.g., inside <Changes />)
     try {
       const allMini = Array.from(
         document.querySelectorAll<HTMLAudioElement>('audio[src$="minimapbar.mp3"], audio[src*="minimapbar.mp3"]')
@@ -500,7 +478,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     } catch {}
   }, [soundOn]);
 
-  // ---- Diff + aligned rows (SOURCE OF TRUTH for QueryComparison + MiniMaps)
   const comparison: ComparisonResult | null = useMemo(() => {
     if (mode !== "compare" || !oldQuery || !newQuery) return null;
     return generateQueryDiff(oldQuery, newQuery, { basis: "raw" });
@@ -538,118 +515,10 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     scrollWrapperInstalled.current = true;
   }, [cmpRef, soundOn]);
 
-  async function fetchSummary(forAudience: Audience) {
-    if (summarizeAbortRef.current) summarizeAbortRef.current.abort();
-    summarizeAbortRef.current = new AbortController();
-
-    setSummarizing(true);
-    setLoadingAudience(forAudience);
-    try {
-      const res = await fetch(`/api/summarize?audience=${forAudience}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          newQuery, 
-          analysis,
-          audience: forAudience,
-        }),
-        signal: summarizeAbortRef.current.signal,
-      });
-      if (res.ok) {
-        const data = await res.json();
-        const t = String(data?.tldr || "");
-        if (forAudience === "stakeholder") setSummaryStakeholder(t);
-        else setSummaryDeveloper(t);
-        setTimeout(() => {
-          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-          summaryHeaderRef.current?.focus();
-        }, 100);
-      } else {
-        const fallback =
-          "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.";
-        if (forAudience === "stakeholder") setSummaryStakeholder(fallback);
-        else setSummaryDeveloper(fallback);
-        setTimeout(() => {
-          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-          summaryHeaderRef.current?.focus();
-        }, 100);
-      }
-    } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        const fallback =
-          "This query prepares a concise business-facing dataset. It selects and joins the core tables, filters to the scope that matters for reporting, and applies grouping or ordering to make totals and trends easy to read. The output is intended for dashboards or scheduled reports and supports day-to-day monitoring and planning. Data is expected to be reasonably fresh and to run within normal batch windows.";
-        if (forAudience === "stakeholder") setSummaryStakeholder(fallback);
-        else setSummaryDeveloper(fallback);
-        setTimeout(() => {
-          summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-          summaryHeaderRef.current?.focus();
-        }, 100);
-      }
-    } finally {
-      setSummarizing(false);
-      setLoadingAudience(null);
-    }
-  }
-
-  const handleSwitchAudience = async (nextAudience: Audience) => {
-    setAudience(nextAudience);
-    playSfx(switchAudioRef);
-    setTimeout(() => {
-      summaryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      summaryHeaderRef.current?.focus();
-    }, 80);
-  };
-
-  const handleToggleSync = () => {
-    setSyncEnabled((v) => !v);
-    playSfx(switchAudioRef);
-  };
-
-  const toggleLightUI = () => {
-    setIsLight((v) => !v);
-    playSfx(switchAudioRef);
-  };
-
-  const handleToggleSound = () => {
-    setSoundOn((prev) => {
-      const next = !prev;
-      if (next) {
-        const el = switchAudioRef.current;
-        if (el) {
-          try {
-            el.muted = false;
-            el.pause();
-            el.currentTime = 0;
-            el.volume = 0.5;
-            el.play().catch(() => {});
-          } catch {}
-        }
-      } else {
-        [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach(
-          (a) => {
-            try {
-              if (a) {
-                a.muted = true;
-                a.pause();
-                a.currentTime = 0;
-              }
-            } catch {}
-          }
-        );
-      }
-      return next;
-    });
-  };
-
-  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
-  const headerBgClass = isLight
-    ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-    : "bg-black/30 border-white/10 text-white";
-
   const runAnalysis = async () => {
     if (mode !== "compare") return;
     if (streaming) return;
-    if (!oldQuery || !newQuery) return; // RAW guard
+    if (!oldQuery || !newQuery) return;
 
     setAnalysisStarted(true);
     analysisDoneSoundPlayedRef.current = false;
@@ -659,11 +528,10 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     try {
       const PAGE_SIZE = 24;
 
-      // Prep placeholders
       const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldQuery, newQuery }), // RAW
+        body: JSON.stringify({ oldQuery, newQuery }),
       });
       const prepData = await prepRes.json().catch(() => ({}));
       if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
@@ -676,7 +544,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery, newQuery }), // RAW
+          body: JSON.stringify({ oldQuery, newQuery }),
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
@@ -684,17 +552,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         nextCursor = j?.page?.nextCursor ?? null;
       }
 
-      const byIndex = new Map<number, AnalysisResult["changes"][number]>();
-      for (const c of placeholders) if (typeof c.index === "number") byIndex.set(c.index, c);
-      const mergedPlaceholders = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-
-      setAnalysis((prev) => ({
-        ...prev,
-        summary: `Streaming ${total} changes… 0 explained.`,
-        changes: mergedPlaceholders,
-      }));
-
-      // Stream each item explanation
       for (let i = 0; i < total; i++) {
         const r = await fetch(`/api/analyze?mode=item&index=${i}&analysisMode=${analysisMode}`, {
           method: "POST",
@@ -757,14 +614,18 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     };
   }, [soundOn]);
 
+  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
+  const headerBgClass = isLight
+    ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+    : "bg-black/30 border-white/10 text-white";
+
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
       {isLight ? gridBgLight : gridBg}
 
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
-            <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-3 md:py-2">
-            <div className="grid grid-cols-3 items-center gap-3">
-            {/* Left: Home */}
+        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-3 md:py-2">
+          <div className="grid grid-cols-3 items-center gap-3">
             <div className="flex">
               <Link
                 href="/"
@@ -778,20 +639,18 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
               </Link>
             </div>
 
-            {/* Center: Title */}
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
                 <span className="font-heading font-semibold text-lg">
-                  {mode === "single" ? "AI-Powered Query Companion — Single Query" : "AI-Powered Query Companion"}
+                  {mode === "single" ? "Analyze Mode" : "Compare Mode"}
                 </span>
               </span>
             </div>
 
-            {/* Right Controls */}
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
-                onClick={handleToggleSync}
+                onClick={() => setSyncEnabled((v) => !v)}
                 title="Toggle synced scrolling"
                 className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
                 disabled={mode === "single"}
@@ -815,7 +674,7 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
 
               <button
                 type="button"
-                onClick={toggleLightUI}
+                onClick={() => setIsLight((v) => !v)}
                 title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
                 className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
               >
@@ -824,7 +683,36 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
 
               <button
                 type="button"
-                onClick={handleToggleSound}
+                onClick={() => {
+                  setSoundOn((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      const el = switchAudioRef.current;
+                      if (el) {
+                        try {
+                          el.muted = false;
+                          el.pause();
+                          el.currentTime = 0;
+                          el.volume = 0.5;
+                          el.play().catch(() => {});
+                        } catch {}
+                      }
+                    } else {
+                      [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach(
+                        (a) => {
+                          try {
+                            if (a) {
+                              a.muted = true;
+                              a.pause();
+                              a.currentTime = 0;
+                            }
+                          } catch {}
+                        }
+                      );
+                    }
+                    return next;
+                  });
+                }}
                 aria-pressed={soundOn}
                 title={soundOn ? "Mute sounds" : "Enable sounds"}
                 className={`inline-flex items-center justify-center w-8 h-8 rounded-lg transition border border-transparent ${
@@ -849,8 +737,8 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={chatbotAudioRef} src="/chatbot.mp3" preload="metadata" muted={!soundOn} />
 
-          <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-1 pb-20 md:pb-4">
-            {loading && !error && <FancyLoader isLight={isLight} />}
+        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-1 pb-20 md:pb-4">
+          {loading && !error && <FancyLoader isLight={isLight} />}
 
           {!loading && error && (
             <Alert className={`${isLight ? "bg-white border-red-500/40" : "bg-black/40"} backdrop-blur text-inherit`}>
@@ -872,7 +760,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
 
           {!loading && !error && (
             <div className="space-y-8">
-              {/* Stats chips — compare only */}
               {mode === "compare" && stats && (
                 <section className="mt-0 mb-2">
                   <div
@@ -900,32 +787,30 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                 </section>
               )}
 
-              {/* TOP PANE(S) */}
               <section className="mt-1">
                 <div
                   ref={comparisonSectionRef}
-                  className="flex flex-col md:flex-row items-stretch gap-3 h-[72vh] sm:h-[74vh] md:h-[96vh] lg:h-[98vh] xl:h-[80vh] 2xl:h-[78vh] min-h-0">
+                  className={`flex flex-col md:flex-row items-stretch gap-3 ${topPaneHeights} min-h-0`}>
                   {mode === "single" ? (
-                    <>
-                      {/* Left: Single query */}
-                      <div className="md:flex-[2] min-w-0 h-full">
-                        <SingleQueryView query={singleQuery} isLight={isLight} />
-                      </div>
+                  <>
+                    <div className="md:flex-[2] min-w-0 h-full">
+                      <SingleQueryView query={singleQuery} isLight={isLight} />
+                    </div>
 
-                      {/* Right: Chat only */}
-                      <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
-                        <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg overflow-hidden">
-                          <CardContent className="p-0 h-full flex flex-col min-h-0">
-                            <div className="chatpanel-fit h-full min-h-0">
-                              <ChatPanel rawOld={""} rawNew={singleQuery} changeCount={0} stats={null} />
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
-                    </>
+                    <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
+                      {/* NEW: fullHeight flag ensures the module stretches */}
+                      <AnalysisPanel
+                        isLight={isLight}
+                        canonicalOld={""}
+                        canonicalNew={singleQuery}
+                        cmpRef={cmpRef}
+                        onJump={(side, line) => jumpAndFlash(side, line)}
+                        fullHeight
+                      />
+                    </div>
+                     </>
                   ) : (
                     <>
-                      {/* Query Comparison */}
                       <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
                         <QueryComparison
                           ref={cmpRef}
@@ -936,7 +821,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                         />
                       </div>
 
-                      {/* Dual minimaps (visual-row aligned) */}
                       <div className="hidden md:flex h-full items-stretch gap-2">
                         <MiniMap
                           alignedRows={alignedRows}
@@ -988,14 +872,12 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                   }`}
                 >
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
-                  {mode === "single" ? "Use the right panel to chat" : "Scroll for Changes & AI Analysis"}
+                  {mode === "single" ? "Use the right panel for AI Tools" : "Scroll for Changes & AI Analysis"}
                 </div>
               </section>
 
-              {/* LOWER PANELS */}
               {mode === "compare" ? (
                 <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-                  {/* LEFT: Changes + Summary */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
                     <Changes
                       oldQuery={oldQuery}
@@ -1012,135 +894,16 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
                         cmpRef.current.scrollTo({ side, line, flash: true });
                       }}
                     />
-
-                    {/* Summary */}
-                    <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
-                      <CardContent className="p-5">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3
-                            ref={summaryHeaderRef}
-                            tabIndex={-1}
-                            className="text-slate-900 font-semibold focus:outline-none"
-                          >
-                            Summary
-                          </h3>
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => fetchSummary(audience)}
-                                disabled={summarizing || !!loadingAudience}
-                                title="Generate summary"
-                                className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-                              >
-                                {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-                                <span className="text-sm">Generate Summary</span>
-                              </button>
-                              <div className="md:hidden">
-                                <label htmlFor="audienceSelect" className="sr-only">Audience</label>
-                                <select
-                                  id="audienceSelect"
-                                  value={audience}
-                                  onChange={(e) => handleSwitchAudience(e.target.value as Audience)}
-                                  disabled={!!loadingAudience}
-                                  className="h-8 px-3 rounded-md border border-gray-300 bg-gray-100 text-gray-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-black/10"
-                                >
-                                  <option value="stakeholder">
-                                    {loadingAudience === "stakeholder" ? "Stakeholder (loading…)" : "Stakeholder"}
-                                  </option>
-                                  <option value="developer">
-                                    {loadingAudience === "developer" ? "Developer (loading…)" : "Developer"}
-                                  </option>
-                                </select>
-                              </div>
-                              <div className="hidden md:inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleSwitchAudience("stakeholder")}
-                                  disabled={loadingAudience === "stakeholder"}
-                                  className={`px-3 h-8 rounded-full text-sm transition ${
-                                    audience === "stakeholder" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                                  }`}
-                                  title="Stakeholder-friendly summary"
-                                >
-                                  {loadingAudience === "stakeholder" ? (
-                                    <span className="inline-flex items-center gap-1">
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Stakeholder
-                                    </span>
-                                  ) : (
-                                    "Stakeholder"
-                                  )}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleSwitchAudience("developer")}
-                                  disabled={loadingAudience === "developer"}
-                                  className={`px-3 h-8 rounded-full text-sm transition ${
-                                    audience === "developer" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-                                  }`}
-                                  title="Developer-focused summary"
-                                >
-                                  {loadingAudience === "developer" ? (
-                                    <span className="inline-flex items-center gap-1">
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Developer
-                                    </span>
-                                  ) : (
-                                    "Developer"
-                                  )}
-                                </button>
-                              </div>
-                            </div>
-                        </div>
-                        <div className="min-h-[28.15rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
-                          {(() => {
-                            const currentSummary = audience === "stakeholder" ? summaryStakeholder : summaryDeveloper;
-                            if (!currentSummary && (summarizing || loadingAudience)) {
-                              return (
-                                <div className="space-y-4">
-                                  <div className="inline-flex items-center gap-2 text-gray-700">
-                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                    <span>Generating {audience} summary…</span>
-                                  </div>
-                                  <div className="space-y-2">
-                                    <div className="h-3 w/full bg-gray-200 rounded animate-pulse" />
-                                    <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
-                                    <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                                    <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
-                                  </div>
-                                </div>
-                              );
-                            }
-                            return currentSummary ? (
-                              <p className="text-gray-800 text-sm leading-relaxed break-words">{currentSummary}</p>
-                            ) : (
-                              <div className="text-gray-600 text-sm">The {audience} summary will appear here.</div>
-                            );
-                          })()}
-                        </div>
-                      </CardContent>
-                    </Card>
                   </div>
 
-                  {/* RIGHT: AI Analysis + Chat */}
                   <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                      <AnalysisPanel
-                        isLight={isLight}
-                        canonicalOld={oldQuery}
-                        canonicalNew={newQuery}
-                        cmpRef={cmpRef}
-                          onJump={(side, line) => jumpAndFlash(side, line)}
-                      />
-
-                    {/* Chat */}
-                    <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-                      <CardContent className="p-0">
-                        <ChatPanel
-                          rawOld={oldQuery}
-                          rawNew={newQuery}
-                          changeCount={analysis?.changes?.length ?? 0}
-                          stats={stats ?? null}
-                        />
-                      </CardContent>
-                    </Card>
+                    <AnalysisPanel
+                      isLight={isLight}
+                      canonicalOld={oldQuery}
+                      canonicalNew={newQuery}
+                      cmpRef={cmpRef}
+                      onJump={(side, line) => jumpAndFlash(side, line)}
+                    />
                   </div>
                 </section>
               ) : null}
@@ -1148,8 +911,6 @@ const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
           )}
         </div>
       </main>
-
-      {/* Global tweak: let ChatPanel grow to its parent in single-mode right column */}
       <style>{`
         .chatpanel-fit .h-\\[34rem\\] { height: 100% !important; }
       `}</style>

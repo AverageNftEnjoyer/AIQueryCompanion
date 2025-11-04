@@ -1,0 +1,27 @@
+.waves {
+  --x: 0px;
+  --y: 0px;
+}
+
+.wavesCanvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.waves::before {
+  content: "";
+  position: absolute;
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(19, 5, 32, 0.12) 0%, transparent 70%);
+  pointer-events: none;
+  transform: translate(calc(var(--x) - 110px), calc(var(--y) - 110px));
+  transition: opacity 0.3s ease;
+  opacity: 0;
+}
+
+.waves:hover::before {
+  opacity: 1;
+}

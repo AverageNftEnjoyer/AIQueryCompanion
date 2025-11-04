@@ -20,19 +20,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useUserPrefs } from "@/hooks/user-prefs";
 import Image from "next/image";
-
-const gridBg = (
-  <div className="pointer-events-none absolute inset-0 opacity-90">
-    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.08),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.08),transparent_60%)]" />
-    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
-  </div>
-);
-const gridBgLight = (
-  <div className="pointer-events-none absolute inset-0 opacity-80">
-    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.035),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.035),transparent_60%)]" />
-    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
-  </div>
-);
+import Waves from "@/components/waves";
 
 export default function Page() {
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
@@ -42,7 +30,6 @@ export default function Page() {
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
   const bgAudioRef = useRef<HTMLAudioElement | null>(null);
 
-  // ---- Autoplay helper (handles browser autoplay policies)
   const resumeHandlerRef = useRef<(() => void) | null>(null);
   const clearResumeHandlers = () => {
     if (resumeHandlerRef.current) {
@@ -58,7 +45,6 @@ export default function Page() {
       el.volume = volume;
       await el.play();
     } catch {
-      // Defer until first interaction
       const resume = () => {
         el
           .play()
@@ -105,7 +91,6 @@ export default function Page() {
     return { minW: 220, maxW: 720 };
   }, [bubbleText]);
 
-  // Keep effect: switch sound
   useEffect(() => {
     const a = switchAudioRef.current;
     if (!a) return;
@@ -118,7 +103,6 @@ export default function Page() {
     }
   }, [soundOn]);
 
-  // Keep effect: bot sound
   useEffect(() => {
     const a = botAudioRef.current;
     if (!a) return;
@@ -183,13 +167,6 @@ export default function Page() {
 
   const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
 
-  /**
-   * CARD COLOR SCHEME (matches mascot purple/blue/pink)
-   * Compare = violet/indigo accent
-   * Analysis = fuchsia/sky accent
-   */
-
-  // Light mode: clean white cards with colored borders; Dark mode: subtle neon-tinted gradients
   const compareCardClass = isLight
     ? "bg-white border-violet-200 hover:border-violet-300"
     : "bg-gradient-to-b from-violet-950/40 to-indigo-900/20 border-violet-700/40 hover:border-violet-400/50";
@@ -220,12 +197,29 @@ export default function Page() {
 
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
-      {isLight ? gridBgLight : gridBg}
+      {/* Waves background in purple/black scheme */}
+      <Waves
+        className="pointer-events-none"
+        lineColor={isLight ? "rgba(124, 58, 237, 0.22)" : "rgba(168, 85, 247, 0.32)"}   /* violet-600/700 */
+        backgroundColor="transparent"
+        waveSpeedX={0.0125}
+        waveSpeedY={0.006}
+        waveAmpX={36}
+        waveAmpY={18}
+        xGap={12}
+        yGap={28}
+        friction={0.93}
+        tension={0.006}
+        maxCursorMove={110}
+        style={{
+          opacity: isLight ? 0.65 : 0.85,
+          filter: isLight ? "saturate(0.9)" : "saturate(1.05)",
+        }}
+      />
 
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
-            {/* Left: Home */}
             <div className="flex">
               <Link
                 href="/"
@@ -240,14 +234,12 @@ export default function Page() {
               </Link>
             </div>
 
-            {/* Center: Title */}
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
                 <span className="font-heading font-semibold text-lg">AI-Powered Query Companion</span>
               </span>
             </div>
 
-            {/* Right Controls */}
             <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
@@ -292,13 +284,9 @@ export default function Page() {
         </div>
       </header>
 
-      {/* Main */}
       <main className="relative z-10">
-        {/* SFX elements */}
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
-
-        {/* NEW: Background music (auto-plays, loops, muted by Bell) */}
         <audio ref={bgAudioRef} src="/background.mp3" preload="auto" muted={!soundOn} loop />
 
         <section className="container mx-auto px-4 py-12">
@@ -312,25 +300,20 @@ export default function Page() {
             </h2>
 
             <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
-              {/* Query Compare (violet/indigo) */}
               <Card
                 className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-fuchsia-400/10 cursor-pointer backdrop-blur-sm card-animate-1 animate-glow-pulse min-h-[480px] flex flex-col border ${compareCardClass}`}
               >
-                {/* Full-card clickable overlay */}
                 <Link
                   href="/landingpage?mode=compare"
                   onClick={playSwitch}
                   className="absolute inset-0 z-20"
                   aria-label="Enter Compare Mode"
                 />
-                {/* Overlay tint on hover */}
                 <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 via-fuchsia-500/10 to-sky-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <CardHeader className="relative z-10 p-8 pb-4">
                   <div
                     className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-violet ${
-                      isLight
-                        ? "bg-violet-50 border border-violet-200"
-                        : "bg-gradient-to-br from-violet-600 to-indigo-700"
+                      isLight ? "bg-violet-50 border border-violet-200" : "bg-gradient-to-br from-violet-600 to-indigo-700"
                     }`}
                   >
                     <GitCompare className={`w-8 h-8 ${isLight ? "text-violet-700" : "text-white"}`} />
@@ -374,11 +357,9 @@ export default function Page() {
                 </CardContent>
               </Card>
 
-              {/* Query Analysis (fuchsia/sky) */}
               <Card
                 className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-fuchsia-400/10 cursor-pointer backdrop-blur-sm card-animate-2 min-h-[480px] flex flex-col border ${analysisCardClass}`}
               >
-                {/* Full-card clickable overlay */}
                 <Link
                   href="/landingpage?mode=analyze"
                   onClick={playSwitch}
@@ -389,9 +370,7 @@ export default function Page() {
                 <CardHeader className="relative z-10 p-8 pb-4">
                   <div
                     className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-neon ${
-                      isLight
-                        ? "bg-fuchsia-50 border border-fuchsia-200"
-                        : "bg-gradient-to-br from-fuchsia-600 to-sky-600"
+                      isLight ? "bg-fuchsia-50 border border-fuchsia-200" : "bg-gradient-to-br from-fuchsia-600 to-sky-600"
                     }`}
                   >
                     <BarChart3 className={`w-8 h-8 ${isLight ? "text-fuchsia-700" : "text-white"}`} />
@@ -438,7 +417,6 @@ export default function Page() {
           </div>
         </section>
 
-        {/* Floating mascot + speech bubble (bottom-right) */}
         <div
           className="
     mascot-wrap
@@ -470,16 +448,14 @@ export default function Page() {
                 {bubbleText}
               </span>
 
-              {/* Arrow */}
               <span
                 className={`absolute -bottom-1.5 right-8 w-3 h-3 rotate-45 
         ${isLight ? "bg-white border-r border-b border-slate-200" : "bg-neutral-900/90 border-r border-b border-white/10"}`}
               />
             </div>
           )}
-          {/* Mascot button */}
           <button type="button" onClick={handleMascotClick} aria-label="Play bot sound" className="block">
-           <Image
+            <Image
               src="/icon.png"
               alt="Query Companion"
               width={256}
@@ -510,21 +486,18 @@ export default function Page() {
         .animate-bounce-subtle { animation: bounce-subtle 2s ease-in-out infinite; }
         .animate-slide-up { animation: slide-up .8s ease-out; }
 
-        /* Updated glows to match neon palette */
         .glow-violet { box-shadow: 0 0 22px rgba(139,92,246,.45), 0 0 12px rgba(56,189,248,.25); }
         .glow-neon { box-shadow: 0 0 22px rgba(236,72,153,.45), 0 0 12px rgba(56,189,248,.25); }
 
         .card-animate-1 { animation: slide-up .8s ease-out .2s both; }
         .card-animate-2 { animation: slide-up .8s ease-out .4s both; }
 
-        /* Floating icon subtle idle motion */
         @keyframes mascot-float {
           0%, 100% { transform: translateY(0); }
           50%      { transform: translateY(-6px); }
         }
         .animate-mascot-float { animation: mascot-float 3s ease-in-out infinite; }
 
-        /* Speech bubble pop animation */
         @keyframes speech-pop {
           0%   { opacity: 0; transform: translateY(8px) scale(.95); }
           60%  { opacity: 1; transform: translateY(-2px) scale(1.02); }

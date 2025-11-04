@@ -128,61 +128,63 @@ const ChatPanel = memo(function ChatPanel({
     }
   }
 
-  return (
-    <div className={`p-5 ${containerHeightClass ?? heightClass} flex flex-col`}>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="text-slate-900 font-semibold">Query Companion</h3>
-        <span className="text-xs text-gray-500">{loading ? "" : ""}</span>
-      </div>
+ return (
+  <div className={`flex flex-col h-full ${containerHeightClass ?? heightClass}`}>
+    {/* Header spacer (removed title) */}
+    <div className="mb-2" />
 
-      <div
-        ref={scrollRef}
-        className="flex-1 min-h-0 bg-gray-50 border border-gray-200 rounded-lg p-3 overflow-y-auto scroll-overlay"
-        aria-live="polite"
-      >
-        <div className="space-y-3">
-          {messages.map((m, i) => (
-            <div
-              key={i}
-              className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
-               m.role === "user"
+    {/* Scrollable conversation */}
+    <div
+      ref={scrollRef}
+      className="flex-1 min-h-0 overflow-y-auto"
+      aria-live="polite"
+    >
+      <div className="space-y-3">
+        {messages.map((m, i) => (
+          <div
+            key={i}
+            className={`max-w-[85%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
+              m.role === "user"
                 ? "ml-auto bg-gray-100 text-gray-900 border border-gray-200"
                 : "mr-auto bg-white text-gray-900 border border-gray-200"
-              }`}
-            >
-              {m.content}
-            </div>
-          ))}
-          {loading && (
-  <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
-    <div className="flex items-center gap-2">
-      <div className="flex items-center justify-center gap-1 h-4">
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            className="w-2 h-2 rounded-full bg-gray-500"
-            style={{
-              animation: "dotFlash 1.2s infinite ease-in-out",
-              animationDelay: `${i * 0.2}s`,
-            }}
-          />
+            }`}
+          >
+            {m.content}
+          </div>
         ))}
+
+        {loading && (
+          <div className="mr-auto max-w-[70%] rounded-xl px-3 py-2 bg-white border border-gray-200 text-sm text-gray-600">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center justify-center gap-1 h-4">
+                {[0, 1, 2].map((i) => (
+                  <span
+                    key={i}
+                    className="w-2 h-2 rounded-full bg-gray-500"
+                    style={{
+                      animation: "dotFlash 1.2s infinite ease-in-out",
+                      animationDelay: `${i * 0.2}s`,
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+            <style>{`
+              @keyframes dotFlash {
+                0%, 100% { opacity: 0.4; transform: scale(0.9) translateY(0); }
+                25% { opacity: 1; transform: scale(1.15) translateY(-1px); }
+                50% { opacity: 0.8; transform: scale(1) translateY(1px); }
+                75% { opacity: 0.6; transform: scale(1.05) translateY(-0.5px); }
+              }
+            `}</style>
+          </div>
+        )}
       </div>
     </div>
-    <style>{`
-      @keyframes dotFlash {
-        0%, 100% { opacity: 0.4; transform: scale(0.9) translateY(0); }
-        25% { opacity: 1; transform: scale(1.15) translateY(-1px); }
-        50% { opacity: 0.8; transform: scale(1) translateY(1px); }
-        75% { opacity: 0.6; transform: scale(1.05) translateY(-0.5px); }
-      }
-    `}</style>
-  </div>
-)}
-        </div>
-      </div>
 
-      <div className="mt-3 flex gap-2">
+    {/* Fixed input footer (non-scrolling) */}
+    <div className="mt-3 shrink-0 border-t border-gray-200 pt-3 bg-transparent">
+      <div className="flex gap-2">
         <input
           ref={inputRef}
           type="text"
@@ -197,7 +199,10 @@ const ChatPanel = memo(function ChatPanel({
         />
       </div>
     </div>
-  );
+  </div>
+);
+
+
 });
 
 export default ChatPanel;

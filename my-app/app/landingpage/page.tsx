@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useUserPrefs } from "@/hooks/user-prefs";
+import Waves from "@/components/waves";
 
 export const dynamic = "force-dynamic";
 const MAX_QUERY_CHARS = 140_000;
@@ -34,7 +35,7 @@ const MAX_QUERY_CHARS = 140_000;
 type BusyMode = "analyze" | "compare" | null;
 type LandingMode = "analyze" | "compare";
 
-/** ---------- Top-level page exports a Suspense wrapper (fixes Vercel error) ---------- */
+/** ---------- Top-level page exports a Suspense wrapper ---------- */
 export default function LandingPage() {
   return (
     <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>}>
@@ -48,7 +49,7 @@ function QueryAnalyzer() {
   const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode;
   const [landingMode] = useState<LandingMode>(initialMode);
 
-  // ===== Shared user prefs (persisted across pages) =====
+  // ===== Shared user prefs =====
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -82,26 +83,13 @@ function QueryAnalyzer() {
     playSwitch();
   }, [setIsLight]);
 
-  // ===== Theme-aligned surfaces (match home page) =====
-  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
+  // ===== Theme surfaces =====
+  const pageBgClass = isLight ? "bg-white text-slate-900" : "bg-black text-white";
   const headerBgClass = isLight
-    ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-    : "bg-black/30 border-white/10 text-white";
+    ? "bg-white/80 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
+    : "bg-black/40 border-white/10 text-white";
 
-  const gridBg = (
-    <div className="pointer-events-none absolute inset-0 opacity-90">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.08),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.08),transparent_60%)]" />
-      <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
-    </div>
-  );
-  const gridBgLight = (
-    <div className="pointer-events-none absolute inset-0 opacity-80">
-      <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.035),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.035),transparent_60%)]" />
-      <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
-    </div>
-  );
-
-  // Panel & control classes to mirror home
+  // Panels
   const panelCardClass = isLight
     ? "bg-white border-slate-200 shadow-lg"
     : "bg-white/5 border-white/10 backdrop-blur-sm hover:border-white/20 transition";
@@ -115,8 +103,8 @@ function QueryAnalyzer() {
 
   const primaryBtnClass =
     "px-6 md:px-8 py-3 font-heading font-medium text-base rounded-md text-white border border-white/10 shadow-md transition-all";
-  const primaryAnalyze = "bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600 glow-teal";
-  const primaryCompare = "bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500 glow-slate";
+  const primaryAnalyze = "bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600";
+  const primaryCompare = "bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500";
 
   // ---- State ----
   const [oldQuery, setOldQuery] = useState("");
@@ -241,9 +229,8 @@ function QueryAnalyzer() {
     return true;
   };
 
-  // Analyze (SINGLE) — used when landingMode === "analyze"
   const handleAnalyze = () => {
-    const src = newQuery.trim() ? newQuery : oldQuery.trim(); // fallback if needed
+    const src = newQuery.trim() ? newQuery : oldQuery.trim();
     if (!src) {
       alert("Please provide a query before analyzing");
       return;
@@ -257,17 +244,12 @@ function QueryAnalyzer() {
 
     setBusyMode("analyze");
     setAnalysisError(null);
-
-    // ⬇️ Preserve indentation: normalize only line endings, no reformatting
     const raw = src.replace(/\r\n/g, "\n");
-
-    // Results page expects { mode: "single", singleQuery: string }
     sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "single", singleQuery: raw }));
     sessionStorage.setItem("qa:allowSound", "1");
     window.location.href = "/results";
   };
 
-  // Compare (DUAL) — used when landingMode === "compare"
   const handleCompare = () => {
     if (!oldQuery.trim() || !newQuery.trim()) {
       alert("Please provide both queries to compare");
@@ -277,16 +259,14 @@ function QueryAnalyzer() {
 
     setBusyMode("compare");
     setAnalysisError(null);
-
     const rawOld = oldQuery.replace(/\r\n/g, "\n");
     const rawNew = newQuery.replace(/\r\n/g, "\n");
-
     sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare", oldQuery: rawOld, newQuery: rawNew }));
     sessionStorage.setItem("qa:allowSound", "1");
     window.location.href = "/results";
   };
 
-  /* ---------------- Floating Mascot (same vibe as Home) ---------------- */
+  /* ---------------- Floating Mascot ---------------- */
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const lines = useMemo(
@@ -312,12 +292,8 @@ function QueryAnalyzer() {
   const bubbleTimerRef = useRef<number | null>(null);
   const bubbleDims = useMemo(() => {
     const len = (bubbleText || "").length;
-
-    if (len <= 24) {
-      return { minW: 140, maxW: 260 };
-    } else if (len <= 70) {
-      return { minW: 180, maxW: 480 };
-    }
+    if (len <= 24) return { minW: 140, maxW: 260 };
+    if (len <= 70) return { minW: 180, maxW: 480 };
     return { minW: 220, maxW: 720 };
   }, [bubbleText]);
 
@@ -371,9 +347,24 @@ function QueryAnalyzer() {
 
   return (
     <div className={`min-h-screen relative ${pageBgClass} home-page`}>
-      {isLight ? gridBgLight : gridBg}
+      {/* Waves background (black/white theme) */}
+      <Waves
+        className="pointer-events-none"
+        backgroundColor={isLight ? "#ffffff" : "#000000"}
+        lineColor={isLight ? "rgba(0,0,0,0.20)" : "rgba(255,255,255,0.22)"}
+        waveSpeedX={0.01}
+        waveSpeedY={0.006}
+        waveAmpX={28}
+        waveAmpY={14}
+        xGap={12}
+        yGap={28}
+        friction={0.92}
+        tension={0.006}
+        maxCursorMove={90}
+        style={{ opacity: 0.9 }}
+      />
 
-      {/* ---------- Header replicated from Results/Home ---------- */}
+      {/* ---------- Header ---------- */}
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
@@ -419,7 +410,7 @@ function QueryAnalyzer() {
               <button
                 type="button"
                 onClick={toggleLightUI}
-                title={isLight ? "Switch to Light Background" : "Switch to Dark Background"}
+                title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
                 className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
               >
                 {isLight ? <Sun className="h-5 w-5 text-gray-700" /> : <Moon className="h-5 w-5 text-white" />}
@@ -449,7 +440,6 @@ function QueryAnalyzer() {
       {/* ---------- Body ---------- */}
       <main className="relative z-10">
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
-        {/* Mascot SFX */}
         <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
         <div className="container mx-auto px-4 md:px-6 lg:px-8 py-8 md:py-10">
@@ -628,7 +618,7 @@ function QueryAnalyzer() {
                 </div>
               </div>
 
-              {/* Compare Button ONLY (sticky so it's always reachable) */}
+              {/* Compare Button */}
               <div className="sticky-buttons">
                 <div className="flex items-center justify-center gap-3">
                   <Button
@@ -739,7 +729,7 @@ function QueryAnalyzer() {
                 </div>
               </div>
 
-              {/* Analyze Button ONLY (sticky) */}
+              {/* Analyze Button */}
               <div className="sticky-buttons">
                 <div className="flex items-center justify-center gap-3">
                   <Button
@@ -785,7 +775,7 @@ function QueryAnalyzer() {
           )}
         </div>
 
-        {/* Floating mascot + speech bubble (bottom-right) - same as Home */}
+        {/* Floating mascot + speech bubble */}
         <div
           className="
             mascot-wrap
@@ -817,7 +807,6 @@ function QueryAnalyzer() {
                 {bubbleText}
               </span>
 
-              {/* Arrow */}
               <span
                 className={`absolute -bottom-1.5 right-8 w-3 h-3 rotate-45 
                   ${isLight ? "bg-white border-r border-b border-slate-200" : "bg-neutral-900/90 border-r border-b border-white/10"}`}
@@ -825,7 +814,6 @@ function QueryAnalyzer() {
             </div>
           )}
 
-          {/* Mascot button */}
           <button type="button" onClick={handleMascotClick} aria-label="Play bot sound" className="block">
             <Image
               src="/icon.png"
@@ -852,27 +840,8 @@ function QueryAnalyzer() {
         <style>{`
           @keyframes slide-up { 0%{opacity:0; transform:translateY(30px);} 100%{opacity:1; transform:translateY(0);} }
           @keyframes bounce-subtle { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-5px);} }
-          @keyframes glow-pulse { 0%,100%{ box-shadow:0 0 20px rgba(0,255,255,.2);} 50%{ box-shadow:0 0 40px rgba(0,255,255,.4);} }
-          .animate-glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
           .animate-bounce-subtle { animation: bounce-subtle 2s ease-in-out infinite; }
           .animate-slide-up { animation: slide-up .8s ease-out; }
-          .glow-slate { box-shadow: 0 0 20px rgba(100,116,139,.3); }
-          .glow-teal { box-shadow: 0 0 20px rgba(20,184,166,.3); }
-
-          /* Floating icon subtle idle motion */
-          @keyframes mascot-float {
-            0%, 100% { transform: translateY(0); }
-            50%      { transform: translateY(-6px); }
-          }
-          .animate-mascot-float { animation: mascot-float 3s ease-in-out infinite; }
-
-          /* Speech bubble pop animation */
-          @keyframes speech-pop {
-            0%   { opacity: 0; transform: translateY(8px) scale(.95); }
-            60%  { opacity: 1; transform: translateY(-2px) scale(1.02); }
-            100% { opacity: 1; transform: translateY(0) scale(1); }
-          }
-          .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
 
           /* Responsive card height so buttons remain visible on laptops/short screens */
           .card-dyn { height: 580px; }
@@ -886,26 +855,30 @@ function QueryAnalyzer() {
             .card-dyn { height: 420px; }
           }
 
-          /* Sticky action bar near the bottom for easy access */
           .sticky-buttons {
-            position: sticky;
-            bottom: 14px;
-            z-index: 30;
-            padding: 8px 0;
-            backdrop-filter: blur(6px);
-          }
-          .sticky-buttons:before {
-            content: "";
-            position: absolute;
-            inset: 0;
-            border-radius: 12px;
-            pointer-events: none;
-            ${/* subtle backdrop tint depending on theme */""}
-          }
+          position: sticky;
+          bottom: 14px;
+          z-index: 30;
+          padding: 8px 0;
+          background: transparent;
+          backdrop-filter: none;
+          -webkit-backdrop-filter: none;
+        }
 
-          @media (max-width: 1024px) {
-            .sticky-buttons { bottom: 10px; }
+          /* Floating icon subtle idle motion */
+          @keyframes mascot-float {
+            0%, 100% { transform: translateY(0); }
+            50%      { transform: translateY(-6px); }
           }
+          .animate-mascot-float { animation: mascot-float 3s ease-in-out infinite; }
+
+          /* Speech bubble pop */
+          @keyframes speech-pop {
+            0%   { opacity: 0; transform: translateY(8px) scale(.95); }
+            60%  { opacity: 1; transform: translateY(-2px) scale(1.02); }
+            100% { opacity: 1; transform: translateY(0) scale(1); }
+          }
+          .animate-speech-pop { animation: speech-pop .28s cubic-bezier(.2,.8,.2,1) both; }
 
           @media (max-width: 1536px) and (min-width: 1024px) {
             html { zoom: .90; }
