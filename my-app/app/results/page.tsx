@@ -642,7 +642,7 @@ export default function ResultsPage() {
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
                 <span className="font-heading font-semibold text-lg">
-                  {mode === "single" ? "Analyze Mode" : "Compare Mode"}
+                  {mode === "single" ? "Analysis Mode" : "Compare Mode"}
                 </span>
               </span>
             </div>
