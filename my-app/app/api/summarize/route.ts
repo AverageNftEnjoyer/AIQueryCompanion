@@ -27,21 +27,30 @@ const ANALYSIS_AGENT_ID = process.env.ANALYSIS_AGENT_ID || ""
 const ANALYSIS_AGENT_MODEL = process.env.ANALYSIS_AGENT_MODEL || "gpt-4.1-nano"
 const REQUEST_TIMEOUT_MS = Number(process.env.SUMMARY_REQUEST_TIMEOUT_MS || 65000)
 
-
+/**
+ * STRICT, FACT-ONLY SPEC
+ * Goal: produce a short human summary that NEVER invents fields, numbers, filters, limits, or rankings.
+ * If a detail is not literally present in the SQL, respond with “Not specified” or omit it.
+ * Echo numeric literals exactly as they appear. Do not round, infer, estimate, or generalize.
+ */
 const SUMMARY_SPEC = `
-Write a concise business overview (5–10 sentences, ~120–220 words).
-Explain:
-• Business purpose of the query and what the result will be used for.
-• Time window and scope of data included.
-• Who/what is included or excluded (e.g., customer segments, activity status, currencies).
-• Core calculations (how invoice totals are derived, discount handling, currency conversion).
-• Ranking/threshold logic (how invoices are ranked within a customer, the $750 cutoff).
-• Sorting/limiting behavior (by month and total, top 100 with ties).
-• Any important caveats or data quality risks that a stakeholder should understand.
-Style rules:
-• Plain English prose only. No headings, no bullets, no code, no lists.
-• Keep it neutral, specific, and directly tied to the provided SQL behavior.
-Return only the 5–10 sentence paragraph.
+Write a basic, fact-only overview of the provided SQL in 3–6 sentences.
+
+Hard rules:
+• Use only details that are explicitly present in the SQL text.
+• Never invent thresholds, limits, rankings, filters, joins, currencies, date ranges, or business intent.
+• If a detail is not explicitly in the SQL, say “Not specified” or omit it entirely.
+• Echo numeric literals and identifiers exactly as they appear in the SQL (no new numbers or units).
+• If the SQL has no LIMIT/TOP, say “Not specified” for row limiting.
+• If the SQL has no ORDER BY, say “Not specified” for ordering.
+• If the SQL has no GROUP BY or aggregates, do not claim any aggregation.
+• If the SQL has WHERE conditions, list only the fields and literal comparisons that appear.
+• Do not use domain assumptions (e.g., price caps, customer tiers) unless the literal words/numbers exist in the SQL.
+• No code, no headings, no bullets, no lists, no JSON—paragraph only.
+
+Style:
+• Plain English, neutral tone, concise.
+• Prefer phrasing like “The query selects …”, “It filters by …”, “It orders by … (or Not specified)”, “It limits rows by … (or Not specified)”.
 `
 
 /* ============================== Route ============================== */
@@ -62,17 +71,24 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "newQuery is required" }, { status: 400 })
     }
 
-    const agentPayload = JSON.stringify({
+    // Build a conservative “fact hint” from the raw SQL to further constrain the model.
+    const factHint = buildSqlFactHint(newQuery)
+    const userContent = [
+      "SQL:",
+      "```sql",
       newQuery,
-      analysis: body?.analysis ?? null
-    })
+      "```",
+      "",
+      "FACT HINT (do not mention unless present in SQL; use only to avoid hallucinations):",
+      factHint,
+    ].join("\n")
 
     let text = ""
     let modelUsed = ANALYSIS_AGENT_MODEL
     let metaPass: LLMResult["meta"]["pass"] = "model-p1"
     let lastError: string | undefined
 
-    // PRIMARY: Responses API
+    // PRIMARY: Responses API (assistant_id path)
     try {
       const r = await fetchWithTimeout(
         `${OPENAI_BASE_URL}/responses`,
@@ -84,6 +100,8 @@ export async function POST(req: Request) {
           },
           body: JSON.stringify({
             assistant_id: ANALYSIS_AGENT_ID,
+            // Force deterministic, conservative outputs.
+            temperature: 0,
             input: [
               {
                 role: "system",
@@ -91,7 +109,7 @@ export async function POST(req: Request) {
               },
               {
                 role: "user",
-                content: [{ type: "input_text", text: agentPayload }],
+                content: [{ type: "input_text", text: userContent }],
               },
             ],
           }),
@@ -116,6 +134,7 @@ export async function POST(req: Request) {
       lastError = String(e?.message || e)
       metaPass = "fallback"
 
+      // FALLBACK: chat.completions
       const rc = await fetchWithTimeout(
         `${OPENAI_BASE_URL}/chat/completions`,
         {
@@ -126,13 +145,12 @@ export async function POST(req: Request) {
           },
           body: JSON.stringify({
             model: ANALYSIS_AGENT_MODEL,
+            temperature: 0,
             messages: [
-              { role: "system", content: "Return exactly the paragraph. No extra narration." },
+              { role: "system", content: "Return exactly one paragraph. Do not add any extra narration." },
               { role: "system", content: SUMMARY_SPEC },
-              { role: "user", content: agentPayload },
+              { role: "user", content: userContent },
             ],
-            // Slight temperature helps avoid rigid repetition while staying concise
-            temperature: 0.2
           }),
         },
         REQUEST_TIMEOUT_MS
@@ -151,12 +169,15 @@ export async function POST(req: Request) {
       modelUsed = jc?.model || ANALYSIS_AGENT_MODEL
     }
 
-    // Hard trim: remove newlines, enforce paragraph only
+    // Enforce paragraph only, strip line breaks and extra whitespace.
     text = (text || "").replace(/\s+/g, " ").trim()
 
+    // Minimal “sanity” guard: if the summary introduces numbers not present in the SQL, drop them.
+    const sanitized = dropUnseenNumbers(text, newQuery)
+
     const res: LLMResult = {
-      tldr: text || "",
-      structured: tryParseLastJson(text) || {},
+      tldr: sanitized || "",
+      structured: {}, // No speculative structure—fact-only summary.
       meta: {
         model: modelUsed,
         latencyMs: Date.now() - t0,
@@ -208,13 +229,56 @@ function extractResponseText(j: any): string {
   return j?.choices?.[0]?.message?.content?.trim?.() ?? ""
 }
 
-function tryParseLastJson(text: string): any {
-  if (!text) return {}
-  const defenced = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, "$1")
-  try { return JSON.parse(defenced) } catch {}
-  const m = defenced.match(/\{[\s\S]*\}$/m)
-  if (!m) return {}
-  try { return JSON.parse(m[0]) } catch { return {} }
+/**
+ * Build a conservative hint from the SQL so the model avoids inventing numbers/constructs.
+ * We do not assert these to the user; they guide the model only.
+ */
+function buildSqlFactHint(sql: string): string {
+  const nums = extractNumbers(sql)
+  const hasLimit = /\bLIMIT\s+\d+/i.test(sql) || /\bFETCH\s+NEXT\s+\d+\s+ROWS\s+ONLY/i.test(sql) || /\bTOP\s+\(?\d+\)?/i.test(sql)
+  const hasOrder = /\bORDER\s+BY\b/i.test(sql)
+  const hasGroup = /\bGROUP\s+BY\b/i.test(sql)
+  const hasAgg = /\b(SUM|COUNT|AVG|MIN|MAX)\s*\(/i.test(sql)
+  const whereFields = Array.from(new Set((sql.match(/\bWHERE\b([\s\S]+)/i)?.[1] || "")
+    .split(/AND|OR/gi)
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(s => (s.match(/^[A-Za-z0-9_."]+/)?.[0] || ""))
+    .filter(Boolean)))
+
+  return [
+    `Allowed numeric literals (echo exactly, do not invent others): ${nums.length ? nums.join(", ") : "(none)"}`,
+    `Row limiting present: ${hasLimit ? "Yes (respect exact literal)" : "No"}`,
+    `Ordering present: ${hasOrder ? "Yes" : "No"}`,
+    `Grouping present: ${hasGroup ? "Yes" : "No"}`,
+    `Aggregates present: ${hasAgg ? "Yes" : "No"}`,
+    `WHERE fields seen: ${whereFields.length ? whereFields.join(", ") : "(none)"}`,
+  ].join("\n")
+}
+
+function extractNumbers(sql: string): string[] {
+  // capture integer and decimal literals (not dates; simple heuristic)
+  const matches = sql.match(/\b\d+(?:\.\d+)?\b/g) || []
+  // de-duplicate while preserving order
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const m of matches) {
+    if (!seen.has(m)) {
+      seen.add(m)
+      out.push(m)
+    }
+  }
+  return out
+}
+
+/**
+ * If the LLM introduces numbers not present in the SQL, remove them conservatively.
+ * Strategy: whitelist digits that appear in SQL; redact standalone numeric tokens not in whitelist.
+ */
+function dropUnseenNumbers(summary: string, sql: string): string {
+  const allowed = new Set(extractNumbers(sql))
+  // Replace tokens like 750 or 100.00 that are not allowed with “a numeric value” to keep grammar intact.
+  return summary.replace(/\b\d+(?:\.\d+)?\b/g, (m) => (allowed.has(m) ? m : "a numeric value"))
 }
 
 async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, timeoutMs = 15000) {
