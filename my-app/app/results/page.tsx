@@ -65,6 +65,10 @@ interface AnalysisResult {
   performanceImpact?: "Positive" | "Negative" | "Neutral";
 }
 
+type PairItem = { oldQuery: string; newQuery: string; oldName?: string; newName?: string };
+type FileItem = { id: number; name: string; content: string };
+type SingleIncoming = { name: string; content: string };
+
 const MAX_QUERY_CHARS = 140_000;
 
 const gridBg = (
@@ -96,9 +100,7 @@ function SingleQueryView({
 
   return (
     <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-      <Card
-        className={`h-full ${isLight ? "bg-white border-slate-200" : "bg-white border-slate-200"} ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)]`}
-      >
+      <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)]">
         <CardContent className="p-5 h-full min-h-0 flex flex-col">
           <div
             ref={scrollRef}
@@ -107,36 +109,16 @@ function SingleQueryView({
             data-single-container="1"
           >
             <div
-              className="
-                relative w-max min-w-full
-                p-2
-                font-mono
-                text-[12px]
-                leading-[1.22]
-                text-slate-800
-              "
-              style={{
-                fontVariantLigatures: "none",
-                MozTabSize: 4 as unknown as string,
-                OTabSize: 4 as unknown as string,
-                tabSize: 4 as unknown as string,
-              }}
+              className="relative w-max min-w-full p-2 font-mono text-[12px] leading-[1.22] text-slate-800"
+              style={{ fontVariantLigatures: "none", MozTabSize: 4 as any, OTabSize: 4 as any, tabSize: 4 as any }}
             >
               {lines.length ? (
                 lines.map((line, idx) => (
-                  <div
-                    key={idx}
-                    data-side="single"
-                    data-line={idx + 1}
-                    id={`single-line-${idx + 1}`}
-                    className="group flex items-start gap-2 px-2 py-[2px] rounded"
-                  >
+                  <div key={idx} data-side="single" data-line={idx + 1} id={`single-line-${idx + 1}`} className="group flex items-start gap-2 px-2 py-[2px] rounded">
                     <span className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent">
                       {idx + 1}
                     </span>
-                    <code className="block whitespace-pre pr-2 leading-[1.22]">
-                      {renderHighlightedSQL(line)}
-                    </code>
+                    <code className="block whitespace-pre pr-2 leading-[1.22]">{renderHighlightedSQL(line)}</code>
                   </div>
                 ))
               ) : (
@@ -208,20 +190,24 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
       <div className={`w-full max-w-3xl rounded-xl border ${cardBg} backdrop-blur p-6`}>
         <div className={`h-4 w-40 ${pulseBg} rounded mb-4 animate-pulse`} />
         <div className="space-y-2">
-          <div className={`h-3 w-full ${pulseBg} rounded animate-pulse`} />
+          <div className={`h-3 w/full ${pulseBg} rounded animate-pulse`} />
           <div className={`h-3 w-[92%] ${pulseBg} rounded animate-pulse`} />
           <div className={`h-3 w-[84%] ${pulseBg} rounded animate-pulse`} />
         </div>
         <div className={`mt-6 flex items-center gap-2 ${textColor}`} aria-live="polite">
           <Zap className="w-4 h-4 animate-pulse" />
-          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>
-            {messages[index]}
-          </span>
+          <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>{messages[index]}</span>
         </div>
       </div>
     </div>
   );
 }
+
+type SessionBlob = {
+  analysis: AnalysisResult;
+  chatMessages: { role: "user" | "assistant" | "system"; content: string }[];
+  chatLoading: boolean;
+};
 
 export default function ResultsPage() {
   const router = useRouter();
@@ -231,6 +217,15 @@ export default function ResultsPage() {
 
   const [oldQuery, setOldQuery] = useState<string>("");
   const [newQuery, setNewQuery] = useState<string>("");
+
+  const [files, setFiles] = useState<FileItem[]>([]);
+  const [oldSel, setOldSel] = useState<number>(-1);
+  const [newSel, setNewSel] = useState<number>(-1);
+  const [singleSel, setSingleSel] = useState<number>(-1);
+
+  // session cache keyed by sessionKey()
+  const sessionRef = useRef<Map<string, SessionBlob>>(new Map());
+  const currentSessionKeyRef = useRef<string>("");
 
   const [analysis, setAnalysis] = useState<AnalysisResult>({
     summary: "",
@@ -244,11 +239,11 @@ export default function ResultsPage() {
   const [streaming, setStreaming] = useState(false);
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const startedRef = useRef(false);
-  const [chatMessages, setChatMessages] = useState([
-    { role: "assistant", content: "Hello! How can I assist you today?" }
+  const [chatMessages, setChatMessages] = useState<{ role: "assistant" | "user" | "system"; content: string }[]>([
+    { role: "assistant", content: "Hello! How can I assist you today?" },
   ]);
-
   const [chatLoading, setChatLoading] = useState(false);
+
   const doneAudioRef = useRef<HTMLAudioElement | null>(null);
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const miniClickAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -256,7 +251,7 @@ export default function ResultsPage() {
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
   const comparisonSectionRef = useRef<HTMLDivElement | null>(null);
-  const singleScrollRef = useRef<HTMLDivElement | null>(null); // <-- single-view scroll container
+  const singleScrollRef = useRef<HTMLDivElement | null>(null);
 
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
@@ -283,12 +278,28 @@ export default function ResultsPage() {
   }, [sideFilter]);
 
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert");
-  const summaryRef = useRef<HTMLDivElement | null>(null);
-  const summaryHeaderRef = useRef<HTMLHeadingElement | null>(null);
-  const summarizeAbortRef = useRef<AbortController | null>(null);
   const SUSTAIN_MS = 4000;
 
-  // Single-mode jump + highlight
+  const sessionKey = (m: Mode, a: number, b?: number) => (m === "single" ? `single:${a}` : `pair:${a}-${b}`);
+  const saveCurrentSession = () => {
+    const k = currentSessionKeyRef.current;
+    if (!k) return;
+    sessionRef.current.set(k, {
+      analysis,
+      chatMessages,
+      chatLoading,
+    });
+  };
+  const loadSession = (k: string) => {
+    currentSessionKeyRef.current = k;
+    const snap = sessionRef.current.get(k);
+    if (snap) {
+      setAnalysis(snap.analysis);
+      setChatMessages(snap.chatMessages);
+      setChatLoading(snap.chatLoading);
+    }
+  };
+
   const jumpSingle = (line: number) => {
     const container = singleScrollRef.current;
     if (!container) return;
@@ -299,10 +310,7 @@ export default function ResultsPage() {
 
     if (!el) return;
 
-    const top =
-      el.offsetTop -
-      (parseInt(getComputedStyle(container).paddingTop || "0", 10) || 0) -
-      24;
+    const top = el.offsetTop - (parseInt(getComputedStyle(container).paddingTop || "0", 10) || 0) - 24;
 
     try {
       container.scrollTo({ top, behavior: "smooth" });
@@ -327,14 +335,25 @@ export default function ResultsPage() {
     }
   };
 
+  const playMiniClick = () => {
+    if (!soundOn) return;
+    const el = miniClickAudioRef.current;
+    if (!el) return;
+    try {
+      el.muted = false;
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.6;
+      el.play().catch(() => {});
+    } catch {}
+  };
+
   const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
     if (mode === "single") {
       jumpSingle(line);
       return;
     }
-
     comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-
     const targetSide = side === "both" ? "new" : side;
     cmpRef.current?.scrollTo({ side: targetSide, line });
     cmpRef.current?.flashRange?.(targetSide, line, line);
@@ -350,7 +369,7 @@ export default function ResultsPage() {
       }
     });
 
-    if (soundOn) playMiniClick();
+    playMiniClick();
   };
 
   const analysisDoneSoundPlayedRef = useRef(false);
@@ -396,19 +415,6 @@ export default function ResultsPage() {
     } catch {}
   };
 
-  const playMiniClick = () => {
-    if (!soundOn) return;
-    const el = miniClickAudioRef.current;
-    if (!el) return;
-    try {
-      el.muted = false;
-      el.pause();
-      el.currentTime = 0;
-      el.volume = 0.6;
-      el.play().catch(() => {});
-    } catch {}
-  };
-
   const playDoneSound = async () => {
     if (!soundOn) return;
     const el = doneAudioRef.current;
@@ -423,6 +429,7 @@ export default function ResultsPage() {
     await primeAutoplay(el);
   };
 
+  // payload intake + catalog build
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -434,8 +441,10 @@ export default function ResultsPage() {
     }
 
     type Payload =
-      | { mode: "single"; singleQuery?: string; newQuery?: string; oldQuery?: string }
-      | { mode: "compare"; oldQuery: string; newQuery: string };
+      | { mode: "single"; singleQuery?: string; newQuery?: string; oldQuery?: string; files?: SingleIncoming[] }
+      | { mode: "compare"; oldQuery: string; newQuery: string; oldName?: string; newName?: string }
+      | { mode: "compare-multi"; pairs: PairItem[] }
+      | Record<string, any>;
 
     let parsed: Payload | null = null;
     try {
@@ -447,112 +456,223 @@ export default function ResultsPage() {
 
     const normalizeEOL = (s: string) => s.replace(/\r\n/g, "\n");
 
-    if (!parsed || (parsed as any).mode === "single") {
-      const qRaw = String((parsed as any)?.singleQuery || (parsed as any)?.newQuery || "");
+    if (!parsed) {
+      router.push("/");
+      return;
+    }
+
+    const catalog: FileItem[] = [];
+    const pushUnique = (name: string, content: string) => {
+      const key = `${name}::${content.length}:${content.slice(0, 64)}`;
+      const exists = catalog.some((f) => `${f.name}::${f.content.length}:${f.content.slice(0, 64)}` === key);
+      if (!exists) catalog.push({ id: catalog.length, name, content });
+    };
+    const findId = (name: string, content: string) => {
+      const key = `${name}::${content.length}:${content.slice(0, 64)}`;
+      const found = catalog.find((f) => `${f.name}::${f.content.length}:${f.content.slice(0, 64)}` === key);
+      return found?.id ?? -1;
+    };
+
+    // SINGLE
+    if ((parsed as any).mode === "single") {
+      let incoming: SingleIncoming[] | undefined = (parsed as any).files;
+
+      // detect file-array fallback
+      if (!incoming) {
+        const arrCandidates = Object.values(parsed).filter(Array.isArray) as any[][];
+        for (const arr of arrCandidates) {
+          if (arr?.length && typeof arr[0] === "object" && "name" in arr[0] && "content" in arr[0]) {
+            incoming = arr as SingleIncoming[];
+            break;
+          }
+        }
+      }
+
+      // FIX: true multi-file support
+      if (incoming && incoming.length) {
+        const normalized = incoming
+          .map((f, i) => ({
+            name: f?.name || `Query_${i + 1}.sql`,
+            content: normalizeEOL(String(f?.content || "")),
+          }))
+          .filter((f) => f.content && f.content.length <= MAX_QUERY_CHARS);
+
+        normalized.forEach((f) => pushUnique(f.name, f.content));
+
+        if (catalog.length) {
+          setFiles(catalog);
+          setMode("single");
+
+          const first = catalog[0];
+          setSingleSel(first.id);
+          setSingleQuery(first.content);
+          setNewQuery(first.content);
+          setOldQuery("");
+
+          currentSessionKeyRef.current = sessionKey("single", first.id);
+          setLoading(false);
+          return;
+        }
+      }
+
+      // FALLBACK — single naked text payload
+      const qRaw =
+        String((parsed as any)?.singleQuery ||
+               (parsed as any)?.newQuery ||
+               (parsed as any)?.oldQuery ||
+               "");
       const q = normalizeEOL(qRaw);
       if (!q || q.length > MAX_QUERY_CHARS) {
         router.push("/");
         return;
       }
+
+      // no "Query.sql" hardcoding
+      pushUnique("Query_1.sql", q);
+
+      const first = catalog[0];
+      setFiles(catalog);
       setMode("single");
-      setSingleQuery(q);
-      setNewQuery(q);
+      setSingleSel(first.id);
+      setSingleQuery(first.content);
+      setNewQuery(first.content);
       setOldQuery("");
+
+      currentSessionKeyRef.current = sessionKey("single", first.id);
       setLoading(false);
       return;
     }
 
-    // compare
+    // COMPARE MULTI
+    if ((parsed as any).mode === "compare-multi") {
+      const incomingPairs = ((parsed as any).pairs || []) as PairItem[];
+      const cleaned = incomingPairs
+        .map((p, i) => ({
+          oldQuery: normalizeEOL(String(p.oldQuery || "")),
+          newQuery: normalizeEOL(String(p.newQuery || "")),
+          oldName: p.oldName || `Old_${i + 1}.sql`,
+          newName: p.newName || `New_${i + 1}.sql`,
+        }))
+        .filter((p) => p.oldQuery && p.newQuery && p.oldQuery.length <= MAX_QUERY_CHARS && p.newQuery.length <= MAX_QUERY_CHARS);
+
+      if (!cleaned.length) {
+        router.push("/");
+        return;
+      }
+
+      cleaned.forEach((p) => {
+        pushUnique(p.oldName!, p.oldQuery);
+        pushUnique(p.newName!, p.newQuery);
+      });
+
+      setFiles(catalog);
+      setMode("compare");
+
+      const first = (() => {
+        const pairs: { oldId: number; newId: number }[] = [];
+        cleaned.forEach((p) => {
+          const oid = findId(p.oldName!, p.oldQuery);
+          const nid = findId(p.newName!, p.newQuery);
+          if (oid >= 0 && nid >= 0) pairs.push({ oldId: oid, newId: nid });
+        });
+        return pairs[0] ?? { oldId: 0, newId: 1 };
+      })();
+
+      setOldSel(first.oldId);
+      setNewSel(first.newId);
+      setOldQuery(catalog[first.oldId].content);
+      setNewQuery(catalog[first.newId].content);
+
+      currentSessionKeyRef.current = sessionKey("compare", first.oldId, first.newId);
+      setLoading(false);
+      return;
+    }
+
+    // COMPARE (single pair)
     const o = normalizeEOL(String((parsed as any).oldQuery || ""));
     const n = normalizeEOL(String((parsed as any).newQuery || ""));
     if (!o || !n || o.length > MAX_QUERY_CHARS || n.length > MAX_QUERY_CHARS) {
       router.push("/");
       return;
     }
+
+    const on = (parsed as any).oldName || "Old.sql";
+    const nn = (parsed as any).newName || "New.sql";
+    pushUnique(on, o);
+    pushUnique(nn, n);
+
+    setFiles(catalog);
     setMode("compare");
+    setOldSel(0);
+    setNewSel(1);
     setOldQuery(o);
     setNewQuery(n);
+    currentSessionKeyRef.current = sessionKey("compare", 0, 1);
     setLoading(false);
-
-    (async () => {
-      try {
-        const PAGE_SIZE = 24;
-        const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery: o, newQuery: n }),
-        });
-        const prepData = await prepRes.json().catch(() => ({}));
-        if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
-
-        let placeholders = (prepData?.analysis?.changes ?? []) as AnalysisResult["changes"];
-        let nextCursor: number | null = prepData?.page?.nextCursor ?? null;
-        while (nextCursor !== null) {
-          const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ oldQuery: o, newQuery: n }),
-          });
-          const j = await r.json().catch(() => ({}));
-          if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
-          placeholders = placeholders.concat(j?.analysis?.changes ?? []);
-          nextCursor = j?.page?.nextCursor ?? null;
-        }
-
-        const prepared = placeholders.map((c) => ({ ...c, explanation: "Pending…" }));
-        const byIndex = new Map<number, AnalysisResult["changes"][number]>();
-        for (const c of prepared) if (typeof c.index === "number") byIndex.set(c.index, c);
-        const mergedPlaceholders = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-      } catch (e: any) {
-        setError(e?.message || "Unexpected error");
-      }
-    })();
   }, [router]);
 
+  // Sync single-mode selection
   useEffect(() => {
-    const audios = [
-      doneAudioRef.current,
-      switchAudioRef.current,
-      miniClickAudioRef.current,
-      chatbotAudioRef.current,
-    ].filter(Boolean) as HTMLAudioElement[];
-    audios.forEach((a) => (a.muted = !soundOn));
-    if (!soundOn) {
-      audios.forEach((a) => {
-        try {
-          a.pause();
-          a.currentTime = 0;
-        } catch {}
-      });
-      clearResumeHandler();
+    if (mode !== "single") return;
+    if (files.length === 0) return;
+    const idx = singleSel >= 0 ? singleSel : 0;
+    const f = files.find((x) => x.id === idx) || files[0];
+    if (!f) return;
+
+    const nextKey = sessionKey("single", f.id);
+    if (currentSessionKeyRef.current !== nextKey) {
+      saveCurrentSession();
+      currentSessionKeyRef.current = nextKey;
+      loadSession(nextKey);
     }
 
-    try {
-      const allMini = Array.from(
-        document.querySelectorAll<HTMLAudioElement>('audio[src$="minimapbar.mp3"], audio[src*="minimapbar.mp3"]')
-      );
-      allMini.forEach((a) => {
-        a.muted = !soundOn;
-        if (!soundOn) {
-          try {
-            a.pause();
-            a.currentTime = 0;
-          } catch {}
-        }
-      });
-    } catch {}
-  }, [soundOn]);
+    setSingleQuery(f.content);
+    setNewQuery(f.content);
+  }, [mode, files, singleSel]);
+
+  // Sync compare-mode selections
+  useEffect(() => {
+    if (mode !== "compare") return;
+    if (!files.length) return;
+    const fo = files.find((f) => f.id === oldSel) || files[0];
+    const fn = files.find((f) => f.id === newSel) || files[(files.length > 1 ? 1 : 0)];
+    if (!fo || !fn) return;
+
+    const nextKey = sessionKey("compare", fo.id, fn.id);
+    if (currentSessionKeyRef.current !== nextKey) {
+      saveCurrentSession();
+      currentSessionKeyRef.current = nextKey;
+      loadSession(nextKey);
+    }
+
+    setOldQuery(fo.content);
+    setNewQuery(fn.content);
+    setError(null);
+  }, [oldSel, newSel, files, mode]);
+
+  // Stats for chips (compare mode)
+  const { additions = 0, modifications = 0, deletions = 0, unchanged = 0 } = useMemo<{
+    additions: number;
+    modifications: number;
+    deletions: number;
+    unchanged: number;
+  }>(() => {
+    const c = mode === "compare" ? generateQueryDiff(oldQuery, newQuery, { basis: "raw" }) : null;
+    return {
+      additions: c?.stats?.additions ?? 0,
+      modifications: c?.stats?.modifications ?? 0,
+      deletions: c?.stats?.deletions ?? 0,
+      unchanged: c?.stats?.unchanged ?? 0,
+    };
+  }, [mode, oldQuery, newQuery]);
 
   const comparison: ComparisonResult | null = useMemo(() => {
     if (mode !== "compare" || !oldQuery || !newQuery) return null;
     return generateQueryDiff(oldQuery, newQuery, { basis: "raw" });
   }, [mode, oldQuery, newQuery]);
 
-  const alignedRows: AlignedRow[] = useMemo(() => {
-    return comparison ? buildAlignedRows(comparison) : [];
-  }, [comparison]);
+  const alignedRows: AlignedRow[] = useMemo(() => (comparison ? buildAlignedRows(comparison) : []), [comparison]);
 
-  const stats = useMemo(() => comparison?.stats ?? null, [comparison]);
   const scrollWrapperInstalled = useRef(false);
   useEffect(() => {
     const inst = cmpRef.current as any;
@@ -563,13 +683,10 @@ export default function ResultsPage() {
 
     inst.scrollTo = (opts: { side: "old" | "new"; line: number; flash?: boolean }) => {
       playMiniClick();
-
       try {
         comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       } catch {}
-
       originalScrollTo(opts);
-
       try {
         if (typeof inst.flashRange === "function" && opts?.line) {
           inst.flashRange(opts.side, opts.line, opts.line);
@@ -603,7 +720,6 @@ export default function ResultsPage() {
 
       const total = prepData?.page?.total ?? 0;
 
-      let placeholders = (prepData?.analysis?.changes ?? []) as AnalysisResult["changes"];
       let nextCursor: number | null = prepData?.page?.nextCursor ?? null;
       while (nextCursor !== null) {
         const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
@@ -613,7 +729,6 @@ export default function ResultsPage() {
         });
         const j = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
-        placeholders = placeholders.concat(j?.analysis?.changes ?? []);
         nextCursor = j?.page?.nextCursor ?? null;
       }
 
@@ -688,31 +803,48 @@ export default function ResultsPage() {
     <div className={`min-h-screen relative ${pageBgClass}`}>
       {isLight ? gridBgLight : gridBg}
 
+      {/* HEADER — single mode gets a file dropdown; compare mode does not */}
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-3 md:py-2">
           <div className="grid grid-cols-3 items-center gap-3">
+            {/* Left: Home */}
             <div className="flex">
               <Link
                 href="/"
                 className={`inline-flex items-center justify-center w-10 h-10 rounded-lg transition border ${
-                  isLight
-                    ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700"
-                    : "bg-white/5 hover:bg-white/10 border-white/10 text-white"
+                  isLight ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700" : "bg-white/5 hover:bg-white/10 border-white/10 text-white"
                 }`}
               >
                 <Home className="w-5 h-5" />
               </Link>
             </div>
 
+            {/* Center: Title */}
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
-                <span className="font-heading font-semibold text-lg">
-                  {mode === "single" ? "Analysis Mode" : "Compare Mode"}
-                </span>
+                <span className="font-heading font-semibold text-lg">{mode === "single" ? "Analysis Mode" : "Compare Mode"}</span>
               </span>
             </div>
 
+            {/* Right: controls + single-mode file dropdown */}
             <div className="flex items-center justify-end gap-2">
+              {mode === "single" && files.length > 0 && (
+                <select
+                  value={singleSel >= 0 ? singleSel : 0}
+                  onChange={(e) => setSingleSel(Number(e.target.value))}
+                  className={`text-xs sm:text-sm px-2 py-1 rounded-md border min-w-[220px] ${
+                    isLight ? "bg-white border-slate-300 text-slate-800" : "bg-neutral-900 border-white/15 text-white"
+                  }`}
+                  title="Select query"
+                >
+                  {files.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+
               <button
                 type="button"
                 onClick={() => setSyncEnabled((v) => !v)}
@@ -748,10 +880,20 @@ export default function ResultsPage() {
 
               <button
                 type="button"
-                onClick={() => {
+                onClick={() =>
                   setSoundOn((prev) => {
                     const next = !prev;
-                    if (next) {
+                    if (!next) {
+                      [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach((a) => {
+                        try {
+                          if (a) {
+                            a.muted = true;
+                            a.pause();
+                            a.currentTime = 0;
+                          }
+                        } catch {}
+                      });
+                    } else {
                       const el = switchAudioRef.current;
                       if (el) {
                         try {
@@ -762,33 +904,17 @@ export default function ResultsPage() {
                           el.play().catch(() => {});
                         } catch {}
                       }
-                    } else {
-                      [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach(
-                        (a) => {
-                          try {
-                            if (a) {
-                              a.muted = true;
-                              a.pause();
-                              a.currentTime = 0;
-                            }
-                          } catch {}
-                        }
-                      );
                     }
                     return next;
-                  });
-                }}
+                  })
+                }
                 aria-pressed={soundOn}
                 title={soundOn ? "Mute sounds" : "Enable sounds"}
                 className={`inline-flex items-center justify-center w-8 h-8 rounded-lg transition border border-transparent ${
                   isLight ? "hover:bg-black/10" : "hover:bg-white/10"
                 }`}
               >
-                {soundOn ? (
-                  <Bell className={`h-5 w-5 ${isLight ? "text-gray-700" : "text-white"}`} />
-                ) : (
-                  <BellOff className={`h-5 w-5 ${isLight ? "text-gray-400" : "text-white/60"}`} />
-                )}
+                {soundOn ? <Bell className={`h-5 w-5 ${isLight ? "text-gray-700" : "text-white"}`} /> : <BellOff className={`h-5 w-5 ${isLight ? "text-gray-400" : "text-white/60"}`} />}
                 <span className="sr-only">{soundOn ? "Mute sounds" : "Enable sounds"}</span>
               </button>
             </div>
@@ -811,64 +937,85 @@ export default function ResultsPage() {
               <AlertDescription className="flex-1">
                 <strong className={isLight ? "text-red-700" : "text-red-300"}>Error:</strong> {error}
               </AlertDescription>
-              <Button
-                asChild
-                variant="outline"
-                className={`${
-                  isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"
-                }`}
-              >
+              <Button asChild variant="outline" className={`${isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"}`}>
                 <Link href="/">Go Home</Link>
               </Button>
             </Alert>
           )}
 
           {!loading && !error && (
-            <div className="space-y-8">
-              {mode === "compare" && stats && (
-                <section className="mt-0 mb-2">
+            <div className="space-y-6">
+              {/* Compare toolbar with centered stat chips */}
+              {mode === "compare" && (
+                <section className="mt-1">
                   <div
-                    className={`flex items-center justify-center gap-2 text-xs ${
-                      isLight ? "text-slate-700" : "text-white/80"
+                    className={`sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-3 flex flex-col gap-2 rounded-lg px-3 py-2 ${
+                      isLight ? "bg-white border border-slate-200 shadow-sm" : "bg-white/5 border border-white/10"
                     }`}
                   >
-                    <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">
-                      {stats.additions} additions
-                    </span>
-                    <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">
-                      {stats.modifications} modifications
-                    </span>
-                    <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">
-                      {stats.deletions} deletions
-                    </span>
-                    <span
-                      className={`px-2 py-1 rounded ${
-                        isLight ? "bg-black/5 border-black/15" : "bg-white/10 border-white/20"
-                      }`}
-                    >
-                      {stats.unchanged} unchanged
-                    </span>
+                    {/* LEFT: old file */}
+                    <div className="justify-self-start">
+                      <select
+                        value={oldSel}
+                        onChange={(e) => setOldSel(Number(e.target.value))}
+                        className={`text-xs sm:text-sm px-2 py-1 rounded-md border min-w-[180px] ${
+                          isLight ? "bg-white border-slate-300 text-slate-800" : "bg-neutral-900 border-white/15 text-white"
+                        }`}
+                        title="Old file"
+                      >
+                        {files.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* CENTER: stat chips */}
+                    <div className="justify-self-center flex items-center justify-center gap-2 text-xs">
+                      <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">{additions} additions</span>
+                      <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">{modifications} modifications</span>
+                      <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">{deletions} deletions</span>
+                      <span className={`px-2 py-1 rounded ${isLight ? "bg-black/5 border-black/15" : "bg-white/10 border-white/20"}`}>{unchanged} unchanged</span>
+                    </div>
+
+                    {/* RIGHT: new file */}
+                    <div className="justify-self-end">
+                      <select
+                        value={newSel}
+                        onChange={(e) => setNewSel(Number(e.target.value))}
+                        className={`text-xs sm:text-sm px-2 py-1 rounded-md border min-w-[180px] ${
+                          isLight ? "bg-white border-slate-300 text-slate-800" : "bg-neutral-900 border-white/15 text-white"
+                        }`}
+                        title="New file"
+                      >
+                        {files.map((f) => (
+                          <option key={f.id} value={f.id}>
+                            {f.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
                   </div>
                 </section>
               )}
 
+              {/* Single toolbar removed — selection now lives in header */}
+
               <section className="mt-1">
-                <div
-                  ref={comparisonSectionRef}
-                  className={`flex flex-col md:flex-row items-stretch gap-3 ${topPaneHeights} min-h-0`}>
+                <div ref={comparisonSectionRef} className={`flex flex-col md:flex-row items-stretch gap-3 ${topPaneHeights} min-h-0`}>
                   {mode === "single" ? (
                     <>
                       <div className="md:flex-[2] min-w-0 h-full">
                         <SingleQueryView query={singleQuery} isLight={isLight} scrollRef={singleScrollRef} />
                       </div>
-
                       <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
                         <AnalysisPanel
                           isLight={isLight}
                           canonicalOld={""}
                           canonicalNew={singleQuery}
-                          cmpRef={undefined as any} // not used in single mode
-                          onJump={(side, line) => jumpAndFlash("new", line)} // route to single jump
+                          cmpRef={undefined as any}
+                          onJump={(side, line) => jumpAndFlash("new", line)}
                           fullHeight
                           externalMessages={chatMessages}
                           setExternalMessages={setChatMessages}
@@ -880,13 +1027,7 @@ export default function ResultsPage() {
                   ) : (
                     <>
                       <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-                        <QueryComparison
-                          ref={cmpRef}
-                          oldQuery={oldQuery}
-                          newQuery={newQuery}
-                          showTitle={false}
-                          syncScrollEnabled={syncEnabled}
-                        />
+                        <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} syncScrollEnabled={syncEnabled} />
                       </div>
 
                       <div className="hidden md:flex h-full items-stretch gap-2">
@@ -899,15 +1040,8 @@ export default function ResultsPage() {
                             comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                             cmpRef.current.scrollTo({ side: "old", line });
                           }}
-                          onFlashRange={({ startLine, endLine }) => {
-                            if (!cmpRef.current) return;
-                            cmpRef.current.flashRange?.("old", startLine, endLine);
-                          }}
-                          className={`w-6 h-full rounded-md ${
-                            isLight
-                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                              : "bg-white/5 border border-white/10 hover:border-white/20"
-                          }`}
+                          onFlashRange={({ startLine, endLine }) => cmpRef.current?.flashRange?.("old", startLine, endLine)}
+                          className={`w-6 h-full rounded-md ${isLight ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40" : "bg-white/5 border border-white/10 hover:border-white/20"}`}
                           soundEnabled={soundOn}
                         />
                         <MiniMap
@@ -919,26 +1053,15 @@ export default function ResultsPage() {
                             comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
                             cmpRef.current.scrollTo({ side: "new", line });
                           }}
-                          onFlashRange={({ startLine, endLine }) => {
-                            if (!cmpRef.current) return;
-                            cmpRef.current.flashRange?.("new", startLine, endLine);
-                          }}
-                          className={`w-6 h-full rounded-md ${
-                            isLight
-                              ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40"
-                              : "bg-white/5 border border-white/10 hover:border-white/20"
-                          }`}
+                          onFlashRange={({ startLine, endLine }) => cmpRef.current?.flashRange?.("new", startLine, endLine)}
+                          className={`w-6 h-full rounded-md ${isLight ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40" : "bg-white/5 border border-white/10 hover:border-white/20"}`}
                           soundEnabled={soundOn}
                         />
                       </div>
                     </>
                   )}
                 </div>
-                <div
-                  className={`relative z-20 flex items-center justify-center text-xs mt-3 ${
-                    isLight ? "text-gray-500" : "text-white/60"
-                  }`}
-                >
+                <div className={`relative z-20 flex items-center justify-center text-xs mt-3 ${isLight ? "text-gray-500" : "text-white/60"}`}>
                   <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
                   {mode === "single" ? "Use the right panel for AI Tools" : "Scroll for Changes & AI Analysis"}
                 </div>
@@ -986,7 +1109,7 @@ export default function ResultsPage() {
       <style>{`
         .chatpanel-fit .h-\\[34rem\\] { height: 100% !important; }
         .qa-persist-highlight {
-          background: rgba(250, 204, 21, 0.35) !important; /* amber-300/35 */
+          background: rgba(250, 204, 21, 0.35) !important;
           box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.55) inset;
           transition: background 150ms ease-in;
         }

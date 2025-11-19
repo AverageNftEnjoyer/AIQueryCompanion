@@ -11,8 +11,6 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   Upload,
   FileText,
-  Zap,
-  GitCompare,
   CheckCircle,
   AlertCircle,
   X,
@@ -34,7 +32,6 @@ const MAX_QUERY_CHARS = 140_000;
 type BusyMode = "analyze" | "compare" | null;
 type LandingMode = "analyze" | "compare";
 
-/** ---------- Top-level ---------- */
 export default function LandingPage() {
   return (
     <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>}>
@@ -48,7 +45,6 @@ function QueryAnalyzer() {
   const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode;
   const [landingMode] = useState<LandingMode>(initialMode);
 
-  /** Prefs */
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
   const pageBgClass = isLight ? "bg-white text-slate-900" : "bg-black text-white";
   const headerBgClass = isLight
@@ -70,7 +66,6 @@ function QueryAnalyzer() {
   const primaryAnalyze = "bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600";
   const primaryCompare = "bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500";
 
-  /** Header controls */
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const botAudioRef = useRef<HTMLAudioElement | null>(null);
   const playSwitch = () => {
@@ -112,9 +107,12 @@ function QueryAnalyzer() {
     }
   }, [soundOn]);
 
-  /** Inputs / Upload */
+  type UFile = { name: string; content: string };
+
   const [oldQuery, setOldQuery] = useState("");
   const [newQuery, setNewQuery] = useState("");
+  const [oldFiles, setOldFiles] = useState<UFile[]>([]);
+  const [newFiles, setNewFiles] = useState<UFile[]>([]);
   const [busyMode, setBusyMode] = useState<BusyMode>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [uploadStatus, setUploadStatus] = useState<{
@@ -129,6 +127,14 @@ function QueryAnalyzer() {
   const charCountBadOld = useMemo(() => oldQuery.length > MAX_QUERY_CHARS, [oldQuery]);
   const charCountBadNew = useMemo(() => newQuery.length > MAX_QUERY_CHARS, [newQuery]);
 
+  const readOne = (file: File) =>
+    new Promise<UFile>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve({ name: file.name, content: String(e.target?.result ?? "") });
+      reader.onerror = () => reject(new Error("read error"));
+      reader.readAsText(file);
+    });
+
   const handleFileUpload = async (file: File, queryType: "old" | "new") => {
     setUploadStatus({ type: queryType, status: "uploading", message: "Reading file..." });
     if (!file.name.endsWith(".txt") && !file.name.endsWith(".sql")) {
@@ -140,61 +146,90 @@ function QueryAnalyzer() {
       return;
     }
     try {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const content = (e.target?.result as string) ?? "";
-        if (content.trim().length === 0) {
-          setUploadStatus({ type: queryType, status: "error", message: "File appears to be empty" });
-          return;
-        }
-        if (content.length > MAX_QUERY_CHARS) {
-          setUploadStatus({
-            type: queryType,
-            status: "error",
-            message: `File too large for analysis (${content.length.toLocaleString()} > ${MAX_QUERY_CHARS.toLocaleString()} chars)`,
-          });
-          return;
-        }
-        if (queryType === "old") setOldQuery(content);
-        else setNewQuery(content);
-        setUploadStatus({ type: queryType, status: "success", message: `Successfully loaded ${file.name}`, fileName: file.name });
-        setTimeout(() => setUploadStatus({ type: null, status: null, message: "" }), 3000);
-      };
-      reader.onerror = () => setUploadStatus({ type: queryType, status: "error", message: "Error reading file" });
-      reader.readAsText(file);
+      const { content, name } = await readOne(file);
+      if (content.trim().length === 0) {
+        setUploadStatus({ type: queryType, status: "error", message: "File appears to be empty" });
+        return;
+      }
+      if (content.length > MAX_QUERY_CHARS) {
+        setUploadStatus({
+          type: queryType,
+          status: "error",
+          message: `File too large for analysis (${content.length.toLocaleString()} > ${MAX_QUERY_CHARS.toLocaleString()} chars)`,
+        });
+        return;
+      }
+      if (queryType === "old") {
+        setOldQuery(content);
+        setOldFiles((p) => [...p.filter((f) => f.name !== name), { name, content }]);
+      } else {
+        setNewQuery(content);
+        setNewFiles((p) => [...p.filter((f) => f.name !== name), { name, content }]);
+      }
+      setUploadStatus({ type: queryType, status: "success", message: `Successfully loaded ${name}`, fileName: name });
+      setTimeout(() => setUploadStatus({ type: null, status: null, message: "" }), 3000);
     } catch {
       setUploadStatus({ type: queryType, status: "error", message: "Failed to process file" });
     }
   };
+
   const handleDragEnter = (e: React.DragEvent, queryType: "old" | "new") => {
-    e.preventDefault(); e.stopPropagation(); setDragActive((p) => ({ ...p, [queryType]: true }));
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive((p) => ({ ...p, [queryType]: true }));
   };
   const handleDragLeave = (e: React.DragEvent, queryType: "old" | "new") => {
-    e.preventDefault(); e.stopPropagation(); setDragActive((p) => ({ ...p, [queryType]: false }));
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive((p) => ({ ...p, [queryType]: false }));
   };
-  const handleDragOver = (e: React.DragEvent) => { e.preventDefault(); e.stopPropagation(); };
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
   const handleDrop = (e: React.DragEvent, queryType: "old" | "new") => {
-    e.preventDefault(); e.stopPropagation(); setDragActive((p) => ({ ...p, [queryType]: false }));
-    const f = e.dataTransfer.files?.[0]; if (f) handleFileUpload(f, queryType);
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive((p) => ({ ...p, [queryType]: false }));
+    const list = Array.from(e.dataTransfer.files ?? []);
+    list.forEach((f) => handleFileUpload(f, queryType));
   };
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>, queryType: "old" | "new") => {
-    const f = e.target.files?.[0]; if (f) handleFileUpload(f, queryType);
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>, queryType: "old" | "new") => {
+    const files = Array.from(e.target.files ?? []);
+    if (!files.length) return;
+    for (const f of files) {
+      if (!(f.name.endsWith(".txt") || f.name.endsWith(".sql"))) continue;
+      if (f.size > 5 * 1024 * 1024) continue;
+      await handleFileUpload(f, queryType);
+    }
   };
+
   const clearQuery = (queryType: "old" | "new") => {
     if (queryType === "old") {
-      setOldQuery(""); if (oldFileInputRef.current) oldFileInputRef.current.value = "";
+      setOldQuery("");
+      if (oldFileInputRef.current) oldFileInputRef.current.value = "";
+      setOldFiles([]);
     } else {
-      setNewQuery(""); if (newFileInputRef.current) newFileInputRef.current.value = "";
+      setNewQuery("");
+      if (newFileInputRef.current) newFileInputRef.current.value = "";
+      setNewFiles([]);
     }
     setUploadStatus({ type: null, status: null, message: "" });
   };
+
   const resetAll = () => {
-    setOldQuery(""); setNewQuery(""); setAnalysisError(null);
+    setOldQuery("");
+    setNewQuery("");
+    setAnalysisError(null);
     setUploadStatus({ type: null, status: null, message: "" });
     if (oldFileInputRef.current) oldFileInputRef.current.value = "";
     if (newFileInputRef.current) newFileInputRef.current.value = "";
+    setOldFiles([]);
+    setNewFiles([]);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
+
   const validateSizePair = (a: string, b: string) => {
     if (a.length > MAX_QUERY_CHARS || b.length > MAX_QUERY_CHARS) {
       setAnalysisError(
@@ -204,33 +239,131 @@ function QueryAnalyzer() {
     }
     return true;
   };
+
+  // ===== Compare helpers (multi) =====
+  const stem = (n: string) => n.replace(/\.(sql|txt)$/i, "").toLowerCase();
+  const buildPairs = () => {
+    const byStemOld = new Map(oldFiles.map((f) => [stem(f.name), f]));
+    const byStemNew = new Map(newFiles.map((f) => [stem(f.name), f]));
+    const matched: { oldQuery: string; newQuery: string; oldName?: string; newName?: string }[] = [];
+    const usedNew = new Set<string>();
+
+    for (const [k, fo] of byStemOld) {
+      const fn = byStemNew.get(k);
+      if (fn) {
+        matched.push({ oldQuery: fo.content, newQuery: fn.content, oldName: fo.name, newName: fn.name });
+        usedNew.add(k);
+      }
+    }
+
+    const remainingOld = oldFiles.filter((f) => !byStemNew.has(stem(f.name)));
+    const remainingNew = newFiles.filter((f) => !usedNew.has(stem(f.name)) && !byStemOld.has(stem(f.name)));
+    const len = Math.min(remainingOld.length, remainingNew.length);
+    for (let i = 0; i < len; i++) {
+      matched.push({
+        oldQuery: remainingOld[i].content,
+        newQuery: remainingNew[i].content,
+        oldName: remainingOld[i].name,
+        newName: remainingNew[i].name,
+      });
+    }
+    return matched;
+  };
+
+  // ===== Actions =====
   const handleAnalyze = () => {
+    // MULTI-FILE ANALYZE: send ALL uploaded files to results so header dropdown mirrors compare-mode logic.
+    if (newFiles.length > 0) {
+      const items = newFiles
+        .map((f) => ({
+          name: f.name || "Query.sql",
+          content: f.content.replace(/\r\n/g, "\n"),
+        }))
+        .filter((i) => i.content.trim().length > 0 && i.content.length <= MAX_QUERY_CHARS);
+
+      if (!items.length) {
+        alert("Upload at least one non-empty .sql/.txt file within size limits");
+        return;
+      }
+
+      setBusyMode("analyze");
+      sessionStorage.setItem(
+        "qa:payload",
+        JSON.stringify({
+          mode: "single",
+          files: items, // <-- pass full file catalog for analyze-mode dropdown parity
+        })
+      );
+      sessionStorage.setItem("qa:allowSound", "1");
+      window.location.href = "/results";
+      return;
+    }
+
+    // Fallback to textarea single — still pass as a single-file catalog for uniform behavior.
     const src = newQuery.trim() ? newQuery : oldQuery.trim();
-    if (!src) { alert("Paste a query to analyze"); return; }
+    if (!src) {
+      alert("Paste a query to analyze");
+      return;
+    }
     if (src.length > MAX_QUERY_CHARS) {
       setAnalysisError(`Query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters. current: ${src.length.toLocaleString()}`);
       return;
     }
     setBusyMode("analyze");
     const raw = src.replace(/\r\n/g, "\n");
-    sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "single", singleQuery: raw }));
-    sessionStorage.setItem("qa:allowSound", "1");
-    window.location.href = "/results";
-  };
-  const handleCompare = () => {
-    if (!oldQuery.trim() || !newQuery.trim()) { alert("Provide both queries"); return; }
-    if (!validateSizePair(oldQuery, newQuery)) return;
-    setBusyMode("compare");
-    sessionStorage.setItem("qa:payload", JSON.stringify({
-      mode: "compare",
-      oldQuery: oldQuery.replace(/\r\n/g, "\n"),
-      newQuery: newQuery.replace(/\r\n/g, "\n"),
-    }));
+    sessionStorage.setItem(
+      "qa:payload",
+      JSON.stringify({
+        mode: "single",
+        files: [{ name: "Query_1.sql", content: raw }], // <-- uniform catalog path for results header dropdown
+      })
+    );
     sessionStorage.setItem("qa:allowSound", "1");
     window.location.href = "/results";
   };
 
-  /** -------- Mascot Chatbot (from basis) -------- */
+  const handleCompare = () => {
+    // If any files were uploaded, compare all detected pairs
+    if (oldFiles.length > 0 || newFiles.length > 0) {
+      const pairs = buildPairs();
+      if (!pairs.length) {
+        alert("Upload at least one matching pair or paste queries.");
+        return;
+      }
+      const ok = pairs.every(
+        (p) => p.oldQuery && p.newQuery && p.oldQuery.length <= MAX_QUERY_CHARS && p.newQuery.length <= MAX_QUERY_CHARS
+      );
+      if (!ok) {
+        alert("One or more files are empty or exceed size limit");
+        return;
+      }
+      setBusyMode("compare");
+      sessionStorage.setItem("qa:payload", JSON.stringify({ mode: "compare-multi", pairs }));
+      sessionStorage.setItem("qa:allowSound", "1");
+      window.location.href = "/results";
+      return;
+    }
+
+    // Fallback: single pair from text areas
+    if (!oldQuery.trim() || !newQuery.trim()) {
+      alert("Provide both queries");
+      return;
+    }
+    if (!validateSizePair(oldQuery, newQuery)) return;
+    setBusyMode("compare");
+    sessionStorage.setItem(
+      "qa:payload",
+      JSON.stringify({
+        mode: "compare",
+        oldQuery: oldQuery.replace(/\r\n/g, "\n"),
+        newQuery: newQuery.replace(/\r\n/g, "\n"),
+      })
+    );
+    sessionStorage.setItem("qa:allowSound", "1");
+    window.location.href = "/results";
+  };
+
+  // ===== Assistant Bubble =====
   const bubbleBgClass = isLight ? "bg-white" : "bg-neutral-900/95";
   const bubbleTextClass = isLight ? "text-slate-900" : "text-white";
   const bubbleBorderClass = isLight ? "border-slate-200" : "border-white/15";
@@ -264,7 +397,10 @@ function QueryAnalyzer() {
     const el = botAudioRef.current;
     if (!el) return;
     try {
-      el.pause(); el.currentTime = 0; el.volume = 0.6; el.play()?.catch(() => {});
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.6;
+      el.play()?.catch(() => {});
     } catch {}
   };
 
@@ -317,11 +453,9 @@ function QueryAnalyzer() {
       }
     }
   };
-  /** ---------------------------------------------- */
 
   return (
     <div className={`min-h-screen relative ${pageBgClass} home-page`}>
-      {/* Waves */}
       <Waves
         className="pointer-events-none"
         backgroundColor={isLight ? "#ffffff" : "#000000"}
@@ -338,7 +472,6 @@ function QueryAnalyzer() {
         style={{ opacity: 0.9 }}
       />
 
-      {/* Header */}
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
@@ -402,7 +535,6 @@ function QueryAnalyzer() {
         </div>
       </header>
 
-      {/* Body */}
       <main className="relative z-10">
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
@@ -484,13 +616,27 @@ function QueryAnalyzer() {
                               variant="ghost"
                               size="sm"
                               onClick={() => clearQuery("old")}
-                              className={isLight ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0" : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"}
+                              className={
+                                isLight
+                                  ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0"
+                                  : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"
+                              }
                             >
                               <X className="w-4 h-4" />
                             </Button>
                           )}
                         </div>
-                        <input ref={oldFileInputRef} type="file" accept=".txt,.sql" onChange={(e) => handleFileInputChange(e, "old")} className="hidden" />
+                        <input
+                          ref={oldFileInputRef}
+                          type="file"
+                          accept=".txt,.sql"
+                          multiple
+                          onChange={(e) => handleFileInputChange(e, "old")}
+                          className="hidden"
+                        />
+                        {oldFiles.length > 1 && (
+                          <p className={`mt-2 text-xs ${isLight ? "text-slate-600" : "text-white/70"}`}>{oldFiles.length} files loaded</p>
+                        )}
                         {charCountBadOld && (
                           <p className="mt-2 text-xs text-red-400">
                             {oldQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
@@ -529,13 +675,27 @@ function QueryAnalyzer() {
                               variant="ghost"
                               size="sm"
                               onClick={() => clearQuery("new")}
-                              className={isLight ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0" : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"}
+                              className={
+                                isLight
+                                  ? "text-slate-500 hover:text-slate-700 hover:bg-black/5 rounded-full w-8 h-8 p-0"
+                                  : "text-white/70 hover:text-white hover:bg-white/10 rounded-full w-8 h-8 p-0"
+                              }
                             >
                               <X className="w-4 h-4" />
                             </Button>
                           )}
                         </div>
-                        <input ref={newFileInputRef} type="file" accept=".txt,.sql" onChange={(e) => handleFileInputChange(e, "new")} className="hidden" />
+                        <input
+                          ref={newFileInputRef}
+                          type="file"
+                          accept=".txt,.sql"
+                          multiple
+                          onChange={(e) => handleFileInputChange(e, "new")}
+                          className="hidden"
+                        />
+                        {newFiles.length > 1 && (
+                          <p className={`mt-2 text-xs ${isLight ? "text-slate-600" : "text-white/70"}`}>{newFiles.length} files loaded</p>
+                        )}
                         {charCountBadNew && (
                           <p className="mt-2 text-xs text-red-400">
                             {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
@@ -551,10 +711,25 @@ function QueryAnalyzer() {
                 <div className="flex items-center justify-center gap-3">
                   <Button
                     onClick={handleCompare}
-                    disabled={busyMode !== null || !oldQuery.trim() || !newQuery.trim() || charCountBadOld || charCountBadNew}
+                    disabled={
+                      busyMode !== null ||
+                      (
+                        oldFiles.length === 0 &&
+                        newFiles.length === 0 &&
+                        (!oldQuery.trim() || !newQuery.trim())
+                      ) ||
+                      charCountBadOld ||
+                      charCountBadNew
+                    }
                     size="lg"
                     className={`${primaryBtnClass} ${primaryCompare}`}
-                    title={!oldQuery.trim() || !newQuery.trim() ? "Paste both queries to enable" : undefined}
+                    title={
+                      oldFiles.length === 0 &&
+                      newFiles.length === 0 &&
+                      (!oldQuery.trim() || !newQuery.trim())
+                        ? "Paste both queries or upload files to enable"
+                        : undefined
+                    }
                   >
                     {busyMode === "compare" ? (
                       <div className="flex items-center gap-3">
@@ -573,7 +748,7 @@ function QueryAnalyzer() {
                     )}
                   </Button>
 
-                  {(oldQuery || newQuery) && (
+                  {(Boolean(oldQuery) || Boolean(newQuery) || oldFiles.length > 0 || newFiles.length > 0) && (
                     <Button
                       type="button"
                       variant="outline"
@@ -626,7 +801,10 @@ function QueryAnalyzer() {
                           </Button>
                         )}
                       </div>
-                      <input ref={newFileInputRef} type="file" accept=".txt,.sql" onChange={(e) => handleFileInputChange(e, "new")} className="hidden" />
+                      <input ref={newFileInputRef} type="file" accept=".txt,.sql" multiple onChange={(e) => handleFileInputChange(e, "new")} className="hidden" />
+                      {newFiles.length > 1 && (
+                        <p className={`mt-2 text-xs ${isLight ? "text-slate-600" : "text-white/70"}`}>{newFiles.length} files loaded</p>
+                      )}
                       {charCountBadNew && (
                         <p className="mt-2 text-xs text-red-400">
                           {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
@@ -641,10 +819,21 @@ function QueryAnalyzer() {
                 <div className="flex items-center justify-center gap-3">
                   <Button
                     onClick={handleAnalyze}
-                    disabled={busyMode !== null || !newQuery.trim() || charCountBadNew}
+                    disabled={
+                      busyMode !== null ||
+                      (
+                        newFiles.length === 0 &&
+                        !newQuery.trim()
+                      ) ||
+                      charCountBadNew
+                    }
                     size="lg"
                     className={`${primaryBtnClass} ${primaryAnalyze}`}
-                    title={!newQuery.trim() ? "Paste a query to enable" : undefined}
+                    title={
+                      newFiles.length === 0 && !newQuery.trim()
+                        ? "Paste a query or upload file(s) to enable"
+                        : undefined
+                    }
                   >
                     {busyMode === "analyze" ? (
                       <div className="flex items-center gap-3">
@@ -663,7 +852,7 @@ function QueryAnalyzer() {
                     )}
                   </Button>
 
-                  {newQuery && (
+                  {(Boolean(newQuery) || newFiles.length > 0) && (
                     <Button
                       type="button"
                       variant="outline"
@@ -680,7 +869,6 @@ function QueryAnalyzer() {
           )}
         </div>
 
-        {/* Mascot + Chatbot bubbles (basis-aligned) */}
         <div
           className="
             mascot-wrap
@@ -691,9 +879,7 @@ function QueryAnalyzer() {
             select-none
           "
         >
-          {/* Unified anchor */}
           <div className="bubble-anchor">
-            {/* Input bubble (1/3 narrower) */}
             {inputOpen && (
               <div
                 className={`relative inline-block rounded-2xl border ${bubbleBorderClass} ${bubbleBgClass} px-4 py-4 shadow-[0_16px_50px_rgba(0,0,0,0.28)] animate-chat-in`}
@@ -710,14 +896,14 @@ function QueryAnalyzer() {
                   }}
                   placeholder="Ask your question…"
                   className={`w-full h-14 rounded-md border px-4 text-base outline-none ${
-                    isLight ? "bg-white text-slate-900 border-slate-300 focus:ring-2 focus:ring-slate-300"
-                            : "bg-neutral-800 text-white border-white/15 focus:ring-2 focus:ring-white/20"
+                    isLight
+                      ? "bg-white text-slate-900 border-slate-300 focus:ring-2 focus:ring-slate-300"
+                      : "bg-neutral-800 text-white border-white/15 focus:ring-2 focus:ring-white/20"
                   }`}
                 />
               </div>
             )}
 
-            {/* Answer / loading bubble */}
             {assistantVisible && (
               <div
                 className={`relative inline-block rounded-2xl border ${bubbleBorderClass} ${bubbleBgClass} px-3 py-2 shadow-[0_16px_50px_rgba(0,0,0,0.28)] animate-chat-in`}
@@ -784,7 +970,6 @@ function QueryAnalyzer() {
           @keyframes chat-in { 0% { opacity: 0; transform: translateY(8px) scale(.98); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
           .animate-chat-in { animation: chat-in .22s cubic-bezier(.2,.8,.2,1) both; }
 
-          /* Anchor above mascot; shifted right (basis) */
           .bubble-anchor{
             position: absolute;
             bottom: calc(100% - 30px);
@@ -813,7 +998,6 @@ function QueryAnalyzer() {
             75% { opacity: 0.6; transform: scale(1.05) translateY(-0.5px); }
           }
 
-          /* Tiny, consistent loading animation */
           .loader-bubble { display: flex; align-items: center; justify-content: center; height: 28px; }
           .dots { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
           .dots span { width: 5px; height: 5px; border-radius: 9999px; background: currentColor; animation: dotFlash 1.1s infinite ease-in-out; }
