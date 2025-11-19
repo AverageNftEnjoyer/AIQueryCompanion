@@ -1,6 +1,6 @@
 "use client";
 
-import React, { memo, useRef, useState, useEffect } from "react";
+import React, { memo, useRef, useEffect } from "react";
 
 type ChatMsg = { role: "user" | "assistant"; content: string };
 
@@ -14,9 +14,12 @@ type ChatPanelProps = {
   placeholder?: string;
   heightClass?: string;
   containerHeightClass?: string;
-
   queuedQuestion?: string;
   onQueuedConsumed?: () => void;
+  externalMessages?: ChatMsg[];
+  setExternalMessages?: React.Dispatch<React.SetStateAction<ChatMsg[]>>;
+  externalLoading?: boolean;
+  setExternalLoading?: React.Dispatch<React.SetStateAction<boolean>>;
 };
 
 function findLineMention(q: string): number | null {
@@ -45,6 +48,10 @@ const ChatPanel = memo(function ChatPanel({
   containerHeightClass,
   queuedQuestion,
   onQueuedConsumed,
+  externalMessages,
+  setExternalMessages,
+  externalLoading,
+  setExternalLoading
 }: ChatPanelProps) {
   const compareMode = !!rawOld && !!rawNew;
 
@@ -54,26 +61,33 @@ const ChatPanel = memo(function ChatPanel({
   const oldTextRaw = (rawOld ?? "").toString();
   const newTextRaw = (rawNew ?? "").toString();
 
-  const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [loading, setLoading] = useState(false);
+  const messages = externalMessages ?? [];
+  const setMessages = setExternalMessages ?? (() => {});
+
+  const loading = externalLoading ?? false;
+  const setLoading = setExternalLoading ?? (() => {});
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-
   const pendingIdRef = useRef<string | null>(null);
-  const consumedQueuedRef = useRef<string | null>(null); 
+  const consumedQueuedRef = useRef<string | null>(null);
 
-  const scrollToBottom = () => {
+  useEffect(() => {
     queueMicrotask(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     });
-  };
-  useEffect(scrollToBottom, [messages.length, loading]);
+  }, [messages.length, loading]);
+
+  useEffect(() => {
+    if (messages.length === 0) {
+      setMessages([{ role: "assistant", content: "Hello! How can I assist you today?" }]);
+    }
+  }, []);
 
   useEffect(() => {
     const q = (queuedQuestion || "").trim();
     if (!q) return;
-    if (consumedQueuedRef.current === q) return; // guard double-fire in StrictMode
+    if (consumedQueuedRef.current === q) return;
     consumedQueuedRef.current = q;
     void send(q);
     onQueuedConsumed?.();
@@ -86,7 +100,6 @@ const ChatPanel = memo(function ChatPanel({
 
     setMessages((m) => [...m, { role: "user", content: q }]);
     setLoading(true);
-    scrollToBottom();
 
     const reqId = Math.random().toString(36).slice(2);
     pendingIdRef.current = reqId;
@@ -109,16 +122,16 @@ const ChatPanel = memo(function ChatPanel({
           context: { stats, changeCount },
           history: [...messages, { role: "user", content: q }]
             .slice(-8)
-            .map((m) => ({ role: m.role, content: m.content })),
-        }),
+            .map((m) => ({ role: m.role, content: m.content }))
+        })
       });
 
       if (pendingIdRef.current !== reqId) return;
 
-      const data = await res.json().catch(() => ({} as any));
+      const data = await res.json().catch(() => ({}));
       const answer = res.ok
-        ? String((data as any)?.answer ?? "").trim()
-        : `⚠️ ${(data as any)?.error || `Chat error (${res.status})`}`;
+        ? String(data?.answer ?? "").trim()
+        : `⚠️ ${data?.error || `Chat error (${res.status})`}`;
 
       setMessages((m) => [...m, { role: "assistant", content: answer || "I didn’t get a reply." }]);
     } catch {
@@ -128,28 +141,26 @@ const ChatPanel = memo(function ChatPanel({
     } finally {
       if (pendingIdRef.current === reqId) {
         setLoading(false);
-        scrollToBottom();
+        queueMicrotask(() => {
+          scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+        });
       }
     }
   }
 
   return (
     <div className={`flex flex-col h-full ${containerHeightClass ?? heightClass}`}>
-      <div
-        ref={scrollRef}
-        className="flex-1 min-h-0 overflow-y-auto"
-        aria-live="polite"
-      >
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto" aria-live="polite">
         <div className="space-y-2.5 p-0.5">
           {messages.map((m, i) => (
             <div
               key={i}
               className={[
                 "rounded-2xl px-3.5 py-2.5 text-[13.5px] leading-relaxed shadow-sm transition",
-                "max-w-[92%] sm:max-w-[85%] md:max-w-[78%]", 
+                "max-w-[92%] sm:max-w-[85%] md:max-w-[78%]",
                 m.role === "user"
                   ? "ml-auto bg-gray-100 text-gray-900 border border-gray-200"
-                  : "mr-auto bg-white text-gray-900 border border-gray-200 animate-speech-pop",
+                  : "mr-auto bg-white text-gray-900 border border-gray-200 animate-speech-pop"
               ].join(" ")}
             >
               {m.content}
@@ -166,27 +177,13 @@ const ChatPanel = memo(function ChatPanel({
                       className="w-2 h-2 rounded-full bg-gray-500"
                       style={{
                         animation: "dotFlash 1.2s infinite ease-in-out",
-                        animationDelay: `${i * 0.2}s`,
+                        animationDelay: `${i * 0.2}s`
                       }}
                     />
                   ))}
                 </div>
                 <span className="text-gray-500">Thinking…</span>
               </div>
-              <style>{`
-                @keyframes dotFlash {
-                  0%, 100% { opacity: 0.4; transform: scale(0.9) translateY(0); }
-                  25% { opacity: 1; transform: scale(1.15) translateY(-1px); }
-                  50% { opacity: 0.8; transform: scale(1) translateY(1px); }
-                  75% { opacity: 0.6; transform: scale(1.05) translateY(-0.5px); }
-                }
-                @keyframes speech-pop {
-                  0%   { opacity: 0; transform: translateY(8px) scale(.95); }
-                  60%  { opacity: 1; transform: translateY(-2px) scale(1.02); }
-                  100% { opacity: 1; transform: translateY(0) scale(1); }
-                }
-                .animate-speech-pop { animation: speech-pop .24s cubic-bezier(.2,.8,.2,1) both; }
-              `}</style>
             </div>
           )}
         </div>

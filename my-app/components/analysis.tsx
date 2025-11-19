@@ -41,32 +41,56 @@ interface Props {
   canonicalOld: string;
   canonicalNew: string;
   cmpRef?: React.RefObject<QueryComparisonHandle>;
-  onJump?: (side: Side, line: number) => void;
-  fullHeight?: boolean
+  onJump?: (side: Exclude<Side, "both">, line: number) => void;
+  fullHeight?: boolean;
+  externalMessages: any[];
+  setExternalMessages: React.Dispatch<React.SetStateAction<any[]>>;
+  externalLoading: boolean;
+  setExternalLoading: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 const toLF = (s: string) => s.replace(/\r\n/g, "\n");
 
-export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmpRef, onJump, fullHeight }: Props) {  
-  
+export default function AnalysisPanel({
+  isLight,
+  canonicalOld,
+  canonicalNew,
+  cmpRef,
+  onJump,
+  fullHeight,
+  externalMessages,
+  setExternalMessages,
+  externalLoading,
+  setExternalLoading,
+}: Props) {
   const [mode, setMode] = React.useState<"analysis" | "hardcode" | "summary" | "chat">("analysis");
-
-  // Analysis state
   const [streaming, setStreaming] = React.useState(false);
   const [analysisBanner, setAnalysisBanner] = React.useState("Click Generate to review each change.");
   const [changes, setChanges] = React.useState<ChangeItem[]>([]);
   const [error, setError] = React.useState<string | null>(null);
-
-  // Hardcode scan state
   const [hcLoading, setHcLoading] = React.useState(false);
   const [hcError, setHcError] = React.useState<string | null>(null);
   const [hcFindings, setHcFindings] = React.useState<HardcodeFinding[]>([]);
-
-  // Summary state
   const [sumLoading, setSumLoading] = React.useState(false);
   const [sumError, setSumError] = React.useState<string | null>(null);
   const [summaryText, setSummaryText] = React.useState<string>("");
   const sumAbortRef = React.useRef<AbortController | null>(null);
+
+  // click sound
+  const clickAudioRef = React.useRef<HTMLAudioElement | null>(null);
+  const [soundEnabled] = React.useState(true);
+  const playClick = () => {
+    if (!soundEnabled) return;
+    const el = clickAudioRef.current;
+    if (!el) return;
+    try {
+      el.muted = false;
+      el.pause();
+      el.currentTime = 0;
+      el.volume = 0.6;
+      void el.play();
+    } catch {}
+  };
 
   const displayOld = React.useMemo(() => toLF(canonicalOld || ""), [canonicalOld]);
   const displayNew = React.useMemo(() => toLF(canonicalNew || ""), [canonicalNew]);
@@ -80,7 +104,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     return comparison ? buildAlignedRows(comparison) : [];
   }, [comparison]);
 
-  // Loading message sets per tool
   const analysisMessages = React.useMemo(
     () => [
       "Building semantic diff graph…",
@@ -129,6 +152,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     return () => clearInterval(id);
   }, [sumLoading, summaryMessages.length]);
 
+  // map raw line numbers to NEW-side display lines (respecting placeholders)
   const { newLineToDisplay, oldLineToDisplay } = React.useMemo(() => {
     const n2d = new Map<number, number>();
     const o2d = new Map<number, number>();
@@ -150,18 +174,26 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     [newLineToDisplay, oldLineToDisplay]
   );
 
-  function handleJump(line: number, side: Side = "new") {
-    const dl = toDisplayLine(side, line);
-    if (typeof onJump === "function") {
-      onJump("new", dl);
-      return;
-    }
+  // normalized jump that also scrolls page to query viewport
+  function jump(side: Side, rawLine: number) {
+    // normalize: "both" should jump on the NEW pane
+    const pane: Exclude<Side, "both"> = side === "old" ? "old" : "new";
+    const dl = toDisplayLine(pane, rawLine);
+
     if (cmpRef?.current) {
-      cmpRef.current.scrollTo({ side: "new", line: dl, flash: false });
+      cmpRef.current.scrollTo({
+        side: pane,
+        line: dl,
+        flash: true,
+      });
+    } else if (onJump) {
+      onJump(pane, dl);
     }
+
+    // ensure the query viewer is in view (simple, non-fragile)
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // Unified Generate button handler
   async function handleGenerate() {
     if (mode === "analysis") return runAnalysis();
     if (mode === "hardcode") return runHardcodeScan();
@@ -173,7 +205,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     setError(null);
     setChanges([]);
     setAnalysisBanner("Streaming 0 changes… 0 explained.");
-
     try {
       const PAGE_SIZE = 24;
       async function prepPage(cursor: number) {
@@ -186,46 +217,38 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
         if (!res.ok) throw new Error(data?.error || `Prep failed (${res.status})`);
         return data;
       }
-
       let page = await prepPage(0);
       let placeholders: ChangeItem[] = page?.analysis?.changes ?? [];
       let nextCursor: number | null = page?.page?.nextCursor ?? null;
       const total: number = page?.page?.total ?? placeholders.length;
-
       while (nextCursor !== null) {
         const p = await prepPage(nextCursor);
         placeholders = placeholders.concat(p?.analysis?.changes ?? []);
         nextCursor = p?.page?.nextCursor ?? null;
       }
-
       const byIndex = new Map<number, ChangeItem>();
       for (const c of placeholders) {
         const pending = { ...c, explanation: "Pending…" as const };
         if (typeof pending.index === "number") byIndex.set(pending.index, pending);
       }
       const merged = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-
       setChanges(merged);
       setAnalysisBanner(`Streaming ${total} changes… 0 explained.`);
-
       let explained = 0;
       for (let i = 0; i < merged.length; i++) {
         const item = merged[i];
         if (typeof item.index !== "number") continue;
-
         const res = await fetch(`/api/analyze?mode=item&index=${item.index}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ oldQuery: canonicalOld, newQuery: canonicalNew }),
         });
-
         const data = await res.json().catch(() => ({}));
         if (res.ok && data?.analysis?.changes?.[0]) {
           const inc = data.analysis.changes[0] as Partial<ChangeItem>;
           const explanation = inc.explanation || "No analysis was produced.";
           const syntax = inc.syntax === "bad" ? "bad" : "good";
           const performance = inc.performance === "bad" ? "bad" : "good";
-
           setChanges((prev) =>
             prev.map((p) => (p.index === item.index ? { ...p, explanation, syntax, performance } : p))
           );
@@ -234,7 +257,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
         }
         await new Promise((r) => setTimeout(r, 120));
       }
-
       setStreaming(false);
     } catch (e: any) {
       setStreaming(false);
@@ -246,7 +268,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     setHcLoading(true);
     setHcError(null);
     setHcFindings([]);
-
     try {
       const res = await fetch("/api/hardcode?side=new&scanMode=newOnly", {
         method: "POST",
@@ -258,12 +279,9 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
           scanMode: "newOnly",
         }),
       });
-
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Scan failed (${res.status})`);
-
       const items = data?.analysis?.changes ?? [];
-
       const normalized: HardcodeFinding[] = items.map((it: any) => {
         const ln =
           typeof it?.lineNumberNew === "number"
@@ -271,10 +289,8 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
             : typeof it?.lineNumber === "number"
             ? it.lineNumber
             : 0;
-
         const desc = String(it?.description ?? "unknown");
         const serverSeverity = (it?.severity as "block" | "warn" | "info" | undefined) || undefined;
-
         const severity: "error" | "warn" | "info" = (() => {
           if (serverSeverity === "block") return "error";
           if (serverSeverity === "warn") return "warn";
@@ -284,7 +300,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
           if (it?.syntax === "bad") return "warn";
           return "info";
         })();
-
         return {
           kind: desc,
           detail: String(it?.explanation ?? ""),
@@ -293,7 +308,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
           severity,
         };
       });
-
       setHcFindings(normalized);
       setHcLoading(false);
     } catch (e: any) {
@@ -309,7 +323,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     setSumLoading(true);
     setSumError(null);
     setSummaryText("");
-
     try {
       const res = await fetch(`/api/summarize`, {
         method: "POST",
@@ -317,7 +330,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
         body: JSON.stringify({ newQuery: canonicalNew, analysis: null }),
         signal: ac.signal,
       });
-
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Summarize failed (${res.status})`);
       const t = String(data?.tldr || "").trim();
@@ -337,11 +349,16 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
     (mode === "summary" && (sumLoading || !canonicalNew));
 
   return (
-   <Card className={`mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg ${fullHeight ? "h-full" : ""}`}>
-     <CardContent className={`p-5 ${fullHeight ? "h-full flex flex-col min-h-0" : ""}`}>
+    <Card
+      className={`mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg ${
+        fullHeight ? "h-full" : ""
+      }`}
+    >
+      <CardContent className={`p-5 ${fullHeight ? "h-full flex flex-col min-h-0" : ""}`}>
+        <audio ref={clickAudioRef} src="/minimapbar.mp3" preload="auto" muted={!soundEnabled} />
+
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-slate-900 font-semibold">AI Tools</h3>
-
           <div className="flex items-center gap-2">
             {showGenerateButton && (
               <button
@@ -353,55 +370,56 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                 <span className="text-sm">Generate</span>
               </button>
             )}
-          <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
-            {/* Hide Analysis button if no old query (single mode) */}
-            {canonicalOld && (
+            <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+              {canonicalOld && (
+                <button
+                  type="button"
+                  onClick={() => setMode("analysis")}
+                  className={`px-3 h-8 rounded-full text-sm transition ${
+                    mode === "analysis" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                  }`}
+                  title="Model-driven change analysis"
+                >
+                  Analysis
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => setMode("analysis")}
+                onClick={() => setMode("hardcode")}
                 className={`px-3 h-8 rounded-full text-sm transition ${
-                  mode === "analysis" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                  mode === "hardcode" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
                 }`}
-                title="Model-driven change analysis"
               >
-                Analysis
+                Hardcoding
               </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setMode("hardcode")}
-              className={`px-3 h-8 rounded-full text-sm transition ${
-                mode === "hardcode" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-              }`}
-            >
-              Hardcoding
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMode("summary")}
-              className={`px-3 h-8 rounded-full text-sm transition ${
-                mode === "summary" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-              }`}
-            >
-              Summary
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMode("chat")}
-              className={`px-3 h-8 rounded-full text-sm transition ${
-                mode === "chat" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
-              }`}
-            >
-              Chat
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => setMode("summary")}
+                className={`px-3 h-8 rounded-full text-sm transition ${
+                  mode === "summary" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                }`}
+              >
+                Summary
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("chat")}
+                className={`px-3 h-8 rounded-full text-sm transition ${
+                  mode === "chat" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                }`}
+              >
+                Chat
+              </button>
+            </div>
           </div>
         </div>
-            <div className={`${fullHeight ? "flex-1 min-h-0" : "h-[27.7rem]"} bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-y-auto`}>
-            {mode === "analysis" ? (
+
+        <div
+          className={`${
+            fullHeight ? "flex-1 min-h-0" : "h-[27.7rem]"
+          } bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-y-auto`}
+        >
+          {mode === "analysis" ? (
             error ? (
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
                 {error}
@@ -423,8 +441,9 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
             ) : changes.length > 0 ? (
               <div className="space-y-4">
                 {changes.map((chg, i) => {
+                  const sideForJump: Exclude<Side, "both"> = chg.side === "old" ? "old" : "new";
                   const dispLine =
-                    chg.side === "old"
+                    sideForJump === "old"
                       ? toDisplayLine("old", chg.lineNumber)
                       : toDisplayLine("new", chg.lineNumber);
                   return (
@@ -432,13 +451,15 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                       key={i}
                       onClick={(e) => {
                         e.preventDefault();
-                        handleJump(chg.lineNumber, chg.side === "old" ? "old" : "new");
+                        playClick();
+                        jump(sideForJump, chg.lineNumber);
                         (e.currentTarget as HTMLButtonElement).blur();
                       }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          handleJump(chg.lineNumber, chg.side === "old" ? "old" : "new");
+                          playClick();
+                          jump(sideForJump, chg.lineNumber);
                           (e.currentTarget as HTMLButtonElement).blur();
                         }
                       }}
@@ -481,7 +502,6 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                             </span>
                           </div>
                         </div>
-
                         <div className="flex-1">
                           {chg.explanation === "Pending…" ? (
                             <div className="space-y-2" aria-busy="true" aria-live="polite">
@@ -533,13 +553,16 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                       key={i}
                       onClick={(e) => {
                         e.preventDefault();
-                        handleJump(f.lineNumber, "new");
+                        playClick();
+                        // hardcode findings always reference NEW
+                        jump("new", f.lineNumber);
                         (e.currentTarget as HTMLButtonElement).blur();
                       }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
-                          handleJump(f.lineNumber, "new");
+                          playClick();
+                          jump("new", f.lineNumber);
                           (e.currentTarget as HTMLButtonElement).blur();
                         }
                       }}
@@ -571,9 +594,7 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                 })}
               </div>
             ) : (
-              <div className="text-gray-600 text-sm">
-                Run Generate to scan for hardcoded values or configuration issues.
-              </div>
+              <div className="text-gray-600 text-sm">Run Generate to scan for hardcoded values or configuration issues.</div>
             )
           ) : mode === "summary" ? (
             sumError ? (
@@ -614,6 +635,10 @@ export default function AnalysisPanel({ isLight, canonicalOld, canonicalNew, cmp
                 stats={null}
                 placeholder="Ask about this query…"
                 containerHeightClass="h-[27.7rem] p-0"
+                externalMessages={externalMessages}
+                setExternalMessages={setExternalMessages}
+                externalLoading={externalLoading}
+                setExternalLoading={setExternalLoading}
               />
             </div>
           )}

@@ -80,7 +80,15 @@ const gridBgLight = (
   </div>
 );
 
-function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }) {
+function SingleQueryView({
+  query,
+  isLight,
+  scrollRef,
+}: {
+  query: string;
+  isLight: boolean;
+  scrollRef: React.RefObject<HTMLDivElement>;
+}) {
   const lines = useMemo(() => {
     const t = query.endsWith("\n") ? query.slice(0, -1) : query;
     return t ? t.split("\n") : [];
@@ -93,8 +101,10 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
       >
         <CardContent className="p-5 h-full min-h-0 flex flex-col">
           <div
+            ref={scrollRef}
             className="flex-1 min-h-0 rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
             style={{ scrollbarGutter: "stable" }}
+            data-single-container="1"
           >
             <div
               className="
@@ -114,7 +124,13 @@ function SingleQueryView({ query, isLight }: { query: string; isLight: boolean }
             >
               {lines.length ? (
                 lines.map((line, idx) => (
-                  <div key={idx} className="group flex items-start gap-2 px-2 py-[2px] rounded">
+                  <div
+                    key={idx}
+                    data-side="single"
+                    data-line={idx + 1}
+                    id={`single-line-${idx + 1}`}
+                    className="group flex items-start gap-2 px-2 py-[2px] rounded"
+                  >
                     <span className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent">
                       {idx + 1}
                     </span>
@@ -228,7 +244,11 @@ export default function ResultsPage() {
   const [streaming, setStreaming] = useState(false);
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const startedRef = useRef(false);
+  const [chatMessages, setChatMessages] = useState([
+    { role: "assistant", content: "Hello! How can I assist you today?" }
+  ]);
 
+  const [chatLoading, setChatLoading] = useState(false);
   const doneAudioRef = useRef<HTMLAudioElement | null>(null);
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
   const miniClickAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -236,6 +256,7 @@ export default function ResultsPage() {
 
   const cmpRef = useRef<QueryComparisonHandle>(null);
   const comparisonSectionRef = useRef<HTMLDivElement | null>(null);
+  const singleScrollRef = useRef<HTMLDivElement | null>(null); // <-- single-view scroll container
 
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
@@ -267,12 +288,55 @@ export default function ResultsPage() {
   const summarizeAbortRef = useRef<AbortController | null>(null);
   const SUSTAIN_MS = 4000;
 
+  // Single-mode jump + highlight
+  const jumpSingle = (line: number) => {
+    const container = singleScrollRef.current;
+    if (!container) return;
+
+    const el =
+      (container.querySelector(`[data-side="single"][data-line="${line}"]`) as HTMLElement | null) ||
+      (document.getElementById(`single-line-${line}`) as HTMLElement | null);
+
+    if (!el) return;
+
+    const top =
+      el.offsetTop -
+      (parseInt(getComputedStyle(container).paddingTop || "0", 10) || 0) -
+      24;
+
+    try {
+      container.scrollTo({ top, behavior: "smooth" });
+    } catch {
+      container.scrollTop = top;
+    }
+
+    el.classList.add("qa-persist-highlight");
+    window.setTimeout(() => el.classList.remove("qa-persist-highlight"), SUSTAIN_MS);
+
+    if (soundOn) {
+      try {
+        const elS = miniClickAudioRef.current;
+        if (elS) {
+          elS.muted = false;
+          elS.pause();
+          elS.currentTime = 0;
+          elS.volume = 0.6;
+          elS.play().catch(() => {});
+        }
+      } catch {}
+    }
+  };
+
   const jumpAndFlash = (side: "old" | "new" | "both", line: number) => {
+    if (mode === "single") {
+      jumpSingle(line);
+      return;
+    }
+
     comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 
     const targetSide = side === "both" ? "new" : side;
     cmpRef.current?.scrollTo({ side: targetSide, line });
-
     cmpRef.current?.flashRange?.(targetSide, line, line);
 
     requestAnimationFrame(() => {
@@ -288,6 +352,7 @@ export default function ResultsPage() {
 
     if (soundOn) playMiniClick();
   };
+
   const analysisDoneSoundPlayedRef = useRef(false);
 
   const clearResumeHandler = (() => {
@@ -792,23 +857,26 @@ export default function ResultsPage() {
                   ref={comparisonSectionRef}
                   className={`flex flex-col md:flex-row items-stretch gap-3 ${topPaneHeights} min-h-0`}>
                   {mode === "single" ? (
-                  <>
-                    <div className="md:flex-[2] min-w-0 h-full">
-                      <SingleQueryView query={singleQuery} isLight={isLight} />
-                    </div>
+                    <>
+                      <div className="md:flex-[2] min-w-0 h-full">
+                        <SingleQueryView query={singleQuery} isLight={isLight} scrollRef={singleScrollRef} />
+                      </div>
 
-                    <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
-                      {/* NEW: fullHeight flag ensures the module stretches */}
-                      <AnalysisPanel
-                        isLight={isLight}
-                        canonicalOld={""}
-                        canonicalNew={singleQuery}
-                        cmpRef={cmpRef}
-                        onJump={(side, line) => jumpAndFlash(side, line)}
-                        fullHeight
-                      />
-                    </div>
-                     </>
+                      <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
+                        <AnalysisPanel
+                          isLight={isLight}
+                          canonicalOld={""}
+                          canonicalNew={singleQuery}
+                          cmpRef={undefined as any} // not used in single mode
+                          onJump={(side, line) => jumpAndFlash("new", line)} // route to single jump
+                          fullHeight
+                          externalMessages={chatMessages}
+                          setExternalMessages={setChatMessages}
+                          externalLoading={chatLoading}
+                          setExternalLoading={setChatLoading}
+                        />
+                      </div>
+                    </>
                   ) : (
                     <>
                       <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
@@ -903,6 +971,10 @@ export default function ResultsPage() {
                       canonicalNew={newQuery}
                       cmpRef={cmpRef}
                       onJump={(side, line) => jumpAndFlash(side, line)}
+                      externalMessages={chatMessages}
+                      setExternalMessages={setChatMessages}
+                      externalLoading={chatLoading}
+                      setExternalLoading={setChatLoading}
                     />
                   </div>
                 </section>
@@ -913,6 +985,11 @@ export default function ResultsPage() {
       </main>
       <style>{`
         .chatpanel-fit .h-\\[34rem\\] { height: 100% !important; }
+        .qa-persist-highlight {
+          background: rgba(250, 204, 21, 0.35) !important; /* amber-300/35 */
+          box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.55) inset;
+          transition: background 150ms ease-in;
+        }
       `}</style>
     </div>
   );

@@ -71,7 +71,6 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "newQuery is required" }, { status: 400 })
     }
 
-    // Build a conservative “fact hint” from the raw SQL to further constrain the model.
     const factHint = buildSqlFactHint(newQuery)
     const userContent = [
       "SQL:",
@@ -88,7 +87,6 @@ export async function POST(req: Request) {
     let metaPass: LLMResult["meta"]["pass"] = "model-p1"
     let lastError: string | undefined
 
-    // PRIMARY: Responses API (assistant_id path)
     try {
       const r = await fetchWithTimeout(
         `${OPENAI_BASE_URL}/responses`,
@@ -100,7 +98,6 @@ export async function POST(req: Request) {
           },
           body: JSON.stringify({
             assistant_id: ANALYSIS_AGENT_ID,
-            // Force deterministic, conservative outputs.
             temperature: 0,
             input: [
               {
@@ -134,7 +131,6 @@ export async function POST(req: Request) {
       lastError = String(e?.message || e)
       metaPass = "fallback"
 
-      // FALLBACK: chat.completions
       const rc = await fetchWithTimeout(
         `${OPENAI_BASE_URL}/chat/completions`,
         {
@@ -169,15 +165,13 @@ export async function POST(req: Request) {
       modelUsed = jc?.model || ANALYSIS_AGENT_MODEL
     }
 
-    // Enforce paragraph only, strip line breaks and extra whitespace.
     text = (text || "").replace(/\s+/g, " ").trim()
 
-    // Minimal “sanity” guard: if the summary introduces numbers not present in the SQL, drop them.
     const sanitized = dropUnseenNumbers(text, newQuery)
 
     const res: LLMResult = {
       tldr: sanitized || "",
-      structured: {}, // No speculative structure—fact-only summary.
+      structured: {}, 
       meta: {
         model: modelUsed,
         latencyMs: Date.now() - t0,
@@ -229,10 +223,7 @@ function extractResponseText(j: any): string {
   return j?.choices?.[0]?.message?.content?.trim?.() ?? ""
 }
 
-/**
- * Build a conservative hint from the SQL so the model avoids inventing numbers/constructs.
- * We do not assert these to the user; they guide the model only.
- */
+
 function buildSqlFactHint(sql: string): string {
   const nums = extractNumbers(sql)
   const hasLimit = /\bLIMIT\s+\d+/i.test(sql) || /\bFETCH\s+NEXT\s+\d+\s+ROWS\s+ONLY/i.test(sql) || /\bTOP\s+\(?\d+\)?/i.test(sql)
@@ -257,9 +248,7 @@ function buildSqlFactHint(sql: string): string {
 }
 
 function extractNumbers(sql: string): string[] {
-  // capture integer and decimal literals (not dates; simple heuristic)
   const matches = sql.match(/\b\d+(?:\.\d+)?\b/g) || []
-  // de-duplicate while preserving order
   const seen = new Set<string>()
   const out: string[] = []
   for (const m of matches) {
@@ -277,7 +266,6 @@ function extractNumbers(sql: string): string[] {
  */
 function dropUnseenNumbers(summary: string, sql: string): string {
   const allowed = new Set(extractNumbers(sql))
-  // Replace tokens like 750 or 100.00 that are not allowed with “a numeric value” to keep grammar intact.
   return summary.replace(/\b\d+(?:\.\d+)?\b/g, (m) => (allowed.has(m) ? m : "a numeric value"))
 }
 
