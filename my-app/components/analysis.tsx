@@ -10,6 +10,7 @@ import {
   type AlignedRow,
 } from "@/lib/query-differ";
 import ChatPanel from "@/components/chatpanel";
+import type { PanelSession } from "@/app/results/page";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -43,10 +44,15 @@ interface Props {
   cmpRef?: React.RefObject<QueryComparisonHandle>;
   onJump?: (side: Exclude<Side, "both">, line: number) => void;
   fullHeight?: boolean;
+
   externalMessages: any[];
   setExternalMessages: React.Dispatch<React.SetStateAction<any[]>>;
   externalLoading: boolean;
   setExternalLoading: React.Dispatch<React.SetStateAction<boolean>>;
+
+  // NEW: fully controlled per-session state
+  externalSession: PanelSession;
+  setExternalSession: React.Dispatch<React.SetStateAction<PanelSession>>;
 }
 
 const toLF = (s: string) => s.replace(/\r\n/g, "\n");
@@ -62,21 +68,9 @@ export default function AnalysisPanel({
   setExternalMessages,
   externalLoading,
   setExternalLoading,
+  externalSession,
+  setExternalSession,
 }: Props) {
-  const [mode, setMode] = React.useState<"analysis" | "hardcode" | "summary" | "chat">("analysis");
-  const [streaming, setStreaming] = React.useState(false);
-  const [analysisBanner, setAnalysisBanner] = React.useState("Click Generate to review each change.");
-  const [changes, setChanges] = React.useState<ChangeItem[]>([]);
-  const [error, setError] = React.useState<string | null>(null);
-  const [hcLoading, setHcLoading] = React.useState(false);
-  const [hcError, setHcError] = React.useState<string | null>(null);
-  const [hcFindings, setHcFindings] = React.useState<HardcodeFinding[]>([]);
-  const [sumLoading, setSumLoading] = React.useState(false);
-  const [sumError, setSumError] = React.useState<string | null>(null);
-  const [summaryText, setSummaryText] = React.useState<string>("");
-  const sumAbortRef = React.useRef<AbortController | null>(null);
-
-  // click sound
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null);
   const [soundEnabled] = React.useState(true);
   const playClick = () => {
@@ -115,10 +109,10 @@ export default function AnalysisPanel({
   );
   const [analysisMsgIdx, setAnalysisMsgIdx] = React.useState(0);
   React.useEffect(() => {
-    if (!streaming || changes.length > 0) return;
+    if (!externalSession.streaming || externalSession.changes.length > 0) return;
     const id = setInterval(() => setAnalysisMsgIdx((i) => (i + 1) % analysisMessages.length), 3000);
     return () => clearInterval(id);
-  }, [streaming, changes.length, analysisMessages.length]);
+  }, [externalSession.streaming, externalSession.changes.length, analysisMessages.length]);
 
   const hcMessages = React.useMemo(
     () => [
@@ -131,10 +125,10 @@ export default function AnalysisPanel({
   );
   const [hcMsgIdx, setHcMsgIdx] = React.useState(0);
   React.useEffect(() => {
-    if (!hcLoading) return;
+    if (!externalSession.hcLoading) return;
     const id = setInterval(() => setHcMsgIdx((i) => (i + 1) % hcMessages.length), 3000);
     return () => clearInterval(id);
-  }, [hcLoading, hcMessages.length]);
+  }, [externalSession.hcLoading, hcMessages.length]);
 
   const summaryMessages = React.useMemo(
     () => [
@@ -147,10 +141,10 @@ export default function AnalysisPanel({
   );
   const [sumMsgIdx, setSumMsgIdx] = React.useState(0);
   React.useEffect(() => {
-    if (!sumLoading) return;
+    if (!externalSession.sumLoading) return;
     const id = setInterval(() => setSumMsgIdx((i) => (i + 1) % summaryMessages.length), 3000);
     return () => clearInterval(id);
-  }, [sumLoading, summaryMessages.length]);
+  }, [externalSession.sumLoading, summaryMessages.length]);
 
   // map raw line numbers to NEW-side display lines (respecting placeholders)
   const { newLineToDisplay, oldLineToDisplay } = React.useMemo(() => {
@@ -176,7 +170,6 @@ export default function AnalysisPanel({
 
   // normalized jump that also scrolls page to query viewport
   function jump(side: Side, rawLine: number) {
-    // normalize: "both" should jump on the NEW pane
     const pane: Exclude<Side, "both"> = side === "old" ? "old" : "new";
     const dl = toDisplayLine(pane, rawLine);
 
@@ -190,21 +183,17 @@ export default function AnalysisPanel({
       onJump(pane, dl);
     }
 
-    // ensure the query viewer is in view (simple, non-fragile)
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   async function handleGenerate() {
-    if (mode === "analysis") return runAnalysis();
-    if (mode === "hardcode") return runHardcodeScan();
-    if (mode === "summary") return runSummary();
+    if (externalSession.mode === "analysis") return runAnalysis();
+    if (externalSession.mode === "hardcode") return runHardcodeScan();
+    if (externalSession.mode === "summary") return runSummary();
   }
 
   async function runAnalysis() {
-    setStreaming(true);
-    setError(null);
-    setChanges([]);
-    setAnalysisBanner("Streaming 0 changes… 0 explained.");
+    setExternalSession((p) => ({ ...p, streaming: true, error: null, changes: [], analysisBanner: "Streaming 0 changes… 0 explained." }));
     try {
       const PAGE_SIZE = 24;
       async function prepPage(cursor: number) {
@@ -232,8 +221,7 @@ export default function AnalysisPanel({
         if (typeof pending.index === "number") byIndex.set(pending.index, pending);
       }
       const merged = Array.from(byIndex.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-      setChanges(merged);
-      setAnalysisBanner(`Streaming ${total} changes… 0 explained.`);
+      setExternalSession((p) => ({ ...p, changes: merged, analysisBanner: `Streaming ${total} changes… 0 explained.` }));
       let explained = 0;
       for (let i = 0; i < merged.length; i++) {
         const item = merged[i];
@@ -249,25 +237,22 @@ export default function AnalysisPanel({
           const explanation = inc.explanation || "No analysis was produced.";
           const syntax = inc.syntax === "bad" ? "bad" : "good";
           const performance = inc.performance === "bad" ? "bad" : "good";
-          setChanges((prev) =>
-            prev.map((p) => (p.index === item.index ? { ...p, explanation, syntax, performance } : p))
-          );
-          explained++;
-          setAnalysisBanner(`Streaming ${total} changes… ${explained} explained.`);
+          setExternalSession((prev) => ({
+            ...prev,
+            changes: prev.changes.map((p) => (p.index === item.index ? { ...p, explanation, syntax, performance } : p)),
+            analysisBanner: `Streaming ${total} changes… ${++explained} explained.`,
+          }));
         }
         await new Promise((r) => setTimeout(r, 120));
       }
-      setStreaming(false);
+      setExternalSession((p) => ({ ...p, streaming: false }));
     } catch (e: any) {
-      setStreaming(false);
-      setError(e?.message || "Unexpected error while analyzing changes.");
+      setExternalSession((p) => ({ ...p, streaming: false, error: e?.message || "Unexpected error while analyzing changes." }));
     }
   }
 
   async function runHardcodeScan() {
-    setHcLoading(true);
-    setHcError(null);
-    setHcFindings([]);
+    setExternalSession((p) => ({ ...p, hcLoading: true, hcError: null, hcFindings: [] }));
     try {
       const res = await fetch("/api/hardcode?side=new&scanMode=newOnly", {
         method: "POST",
@@ -308,21 +293,18 @@ export default function AnalysisPanel({
           severity,
         };
       });
-      setHcFindings(normalized);
-      setHcLoading(false);
+      setExternalSession((p) => ({ ...p, hcFindings: normalized, hcLoading: false }));
     } catch (e: any) {
-      setHcLoading(false);
-      setHcError(e?.message || "Unexpected error while scanning for hardcoding.");
+      setExternalSession((p) => ({ ...p, hcLoading: false, hcError: e?.message || "Unexpected error while scanning for hardcoding." }));
     }
   }
 
+  const sumAbortRef = React.useRef<AbortController | null>(null);
   async function runSummary() {
     if (sumAbortRef.current) sumAbortRef.current.abort();
     const ac = new AbortController();
     sumAbortRef.current = ac;
-    setSumLoading(true);
-    setSumError(null);
-    setSummaryText("");
+    setExternalSession((p) => ({ ...p, sumLoading: true, sumError: null, summaryText: "" }));
     try {
       const res = await fetch(`/api/summarize`, {
         method: "POST",
@@ -333,20 +315,19 @@ export default function AnalysisPanel({
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Summarize failed (${res.status})`);
       const t = String(data?.tldr || "").trim();
-      setSummaryText(t);
-      setSumLoading(false);
+      setExternalSession((p) => ({ ...p, sumLoading: false, summaryText: t }));
     } catch (e: any) {
       if (e?.name === "AbortError") return;
-      setSumError(e?.message || "Unexpected error while generating summary.");
-      setSumLoading(false);
+      setExternalSession((p) => ({ ...p, sumLoading: false, sumError: e?.message || "Unexpected error while generating summary." }));
     }
   }
 
-  const showGenerateButton = mode === "analysis" || mode === "hardcode" || mode === "summary";
+  const showGenerateButton =
+    externalSession.mode === "analysis" || externalSession.mode === "hardcode" || externalSession.mode === "summary";
   const generateDisabled =
-    (mode === "analysis" && (streaming || !canonicalNew)) ||
-    (mode === "hardcode" && (hcLoading || !canonicalNew)) ||
-    (mode === "summary" && (sumLoading || !canonicalNew));
+    (externalSession.mode === "analysis" && (externalSession.streaming || !canonicalNew)) ||
+    (externalSession.mode === "hardcode" && (externalSession.hcLoading || !canonicalNew)) ||
+    (externalSession.mode === "summary" && (externalSession.sumLoading || !canonicalNew));
 
   return (
     <Card
@@ -374,9 +355,9 @@ export default function AnalysisPanel({
               {canonicalOld && (
                 <button
                   type="button"
-                  onClick={() => setMode("analysis")}
+                  onClick={() => setExternalSession((p) => ({ ...p, mode: "analysis" }))}
                   className={`px-3 h-8 rounded-full text-sm transition ${
-                    mode === "analysis" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                    externalSession.mode === "analysis" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
                   }`}
                   title="Model-driven change analysis"
                 >
@@ -385,27 +366,27 @@ export default function AnalysisPanel({
               )}
               <button
                 type="button"
-                onClick={() => setMode("hardcode")}
+                onClick={() => setExternalSession((p) => ({ ...p, mode: "hardcode" }))}
                 className={`px-3 h-8 rounded-full text-sm transition ${
-                  mode === "hardcode" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                  externalSession.mode === "hardcode" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
                 }`}
               >
                 Hardcoding
               </button>
               <button
                 type="button"
-                onClick={() => setMode("summary")}
+                onClick={() => setExternalSession((p) => ({ ...p, mode: "summary" }))}
                 className={`px-3 h-8 rounded-full text-sm transition ${
-                  mode === "summary" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                  externalSession.mode === "summary" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
                 }`}
               >
                 Summary
               </button>
               <button
                 type="button"
-                onClick={() => setMode("chat")}
+                onClick={() => setExternalSession((p) => ({ ...p, mode: "chat" }))}
                 className={`px-3 h-8 rounded-full text-sm transition ${
-                  mode === "chat" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                  externalSession.mode === "chat" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
                 }`}
               >
                 Chat
@@ -419,12 +400,12 @@ export default function AnalysisPanel({
             fullHeight ? "flex-1 min-h-0" : "h-[27.7rem]"
           } bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-y-auto`}
         >
-          {mode === "analysis" ? (
-            error ? (
+          {externalSession.mode === "analysis" ? (
+            externalSession.error ? (
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
-                {error}
+                {externalSession.error}
               </div>
-            ) : streaming && changes.length === 0 ? (
+            ) : externalSession.streaming && externalSession.changes.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center text-gray-700 space-y-5">
                 <div className="relative w-14 h-14">
                   <div className="absolute inset-0 rounded-full border-2 border-gray-300/60 animate-[spin_2.2s_linear_infinite]" />
@@ -438,9 +419,9 @@ export default function AnalysisPanel({
                   @keyframes spin { to { transform: rotate(360deg); } }
                 `}</style>
               </div>
-            ) : changes.length > 0 ? (
+            ) : externalSession.changes.length > 0 ? (
               <div className="space-y-4">
-                {changes.map((chg, i) => {
+                {externalSession.changes.map((chg, i) => {
                   const sideForJump: Exclude<Side, "both"> = chg.side === "old" ? "old" : "new";
                   const dispLine =
                     sideForJump === "old"
@@ -522,14 +503,14 @@ export default function AnalysisPanel({
                 })}
               </div>
             ) : (
-              <div className="text-gray-700 text-sm">{analysisBanner}</div>
+              <div className="text-gray-700 text-sm">{externalSession.analysisBanner}</div>
             )
-          ) : mode === "hardcode" ? (
-            hcError ? (
+          ) : externalSession.mode === "hardcode" ? (
+            externalSession.hcError ? (
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
-                {hcError}
+                {externalSession.hcError}
               </div>
-            ) : hcLoading ? (
+            ) : externalSession.hcLoading ? (
               <div className="flex flex-col items-center justify-center h-full text-center text-gray-700 space-y-5">
                 <div className="relative w-16 h-16">
                   <div className="absolute inset-0 rounded-full bg-gray-300 opacity-20 animate-ping" />
@@ -544,9 +525,9 @@ export default function AnalysisPanel({
                   @keyframes spin { to { transform: rotate(360deg); } }
                 `}</style>
               </div>
-            ) : hcFindings.length > 0 ? (
+            ) : externalSession.hcFindings.length > 0 ? (
               <div className="space-y-4">
-                {hcFindings.map((f, i) => {
+                {externalSession.hcFindings.map((f, i) => {
                   const dispLine = toDisplayLine("new", f.lineNumber);
                   return (
                     <button
@@ -554,7 +535,6 @@ export default function AnalysisPanel({
                       onClick={(e) => {
                         e.preventDefault();
                         playClick();
-                        // hardcode findings always reference NEW
                         jump("new", f.lineNumber);
                         (e.currentTarget as HTMLButtonElement).blur();
                       }}
@@ -596,12 +576,12 @@ export default function AnalysisPanel({
             ) : (
               <div className="text-gray-600 text-sm">Run Generate to scan for hardcoded values or configuration issues.</div>
             )
-          ) : mode === "summary" ? (
-            sumError ? (
+          ) : externalSession.mode === "summary" ? (
+            externalSession.sumError ? (
               <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
-                {sumError}
+                {externalSession.sumError}
               </div>
-            ) : sumLoading ? (
+            ) : externalSession.sumLoading ? (
               <div className="flex flex-col items-center justify-center h-full text-center text-gray-700 space-y-5">
                 <div className="relative w-16 h-16">
                   <div className="absolute inset-0 rounded-lg bg-gray-300/20 animate-pulse" />
@@ -621,8 +601,8 @@ export default function AnalysisPanel({
                   }
                 `}</style>
               </div>
-            ) : summaryText ? (
-              <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{summaryText}</p>
+            ) : externalSession.summaryText ? (
+              <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{externalSession.summaryText}</p>
             ) : (
               <div className="text-gray-600 text-sm">Click Generate to produce a concise overview.</div>
             )
@@ -631,7 +611,7 @@ export default function AnalysisPanel({
               <ChatPanel
                 rawOld={canonicalOld}
                 rawNew={canonicalNew}
-                changeCount={changes.length}
+                changeCount={externalSession.changes.length}
                 stats={null}
                 placeholder="Ask about this query…"
                 containerHeightClass="h-[27.7rem] p-0"

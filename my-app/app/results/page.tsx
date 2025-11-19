@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Card, CardContent } from "@/components/ui/card";
@@ -22,7 +22,6 @@ import { QueryComparison, type QueryComparisonHandle } from "@/components/query-
 import {
   generateQueryDiff,
   buildAlignedRows,
-  renderHighlightedSQL,
   type ComparisonResult,
   type AlignedRow,
 } from "@/lib/query-differ";
@@ -32,38 +31,8 @@ import { Changes } from "@/components/changes";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
-type GoodBad = "good" | "bad";
 type AnalysisMode = "fast" | "expert";
 type Mode = "single" | "compare";
-
-interface AnalysisResult {
-  summary: string;
-  changes: Array<{
-    type: ChangeType;
-    description: string;
-    explanation: string;
-    lineNumber: number;
-    side: Side;
-    syntax: GoodBad;
-    performance: GoodBad;
-    span?: number;
-    index?: number;
-    meta?: {
-      clauses?: string[];
-      change_kind?: string;
-      business_impact?: "clear" | "weak" | "none";
-      risk?: "low" | "medium" | "high";
-      suggestions?: string[];
-    };
-  }>;
-  recommendations: Array<{
-    type: "optimization" | "best_practice" | "warning" | "analysis";
-    title: string;
-    description: string;
-  }>;
-  riskAssessment?: "Low" | "Medium" | "High";
-  performanceImpact?: "Positive" | "Negative" | "Neutral";
-}
 
 type PairItem = { oldQuery: string; newQuery: string; oldName?: string; newName?: string };
 type FileItem = { id: number; name: string; content: string };
@@ -83,6 +52,64 @@ const gridBgLight = (
     <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
   </div>
 );
+
+// ===== Session payload stored per file/session =====
+export type PanelSession = {
+  // AI Tools tab + states
+  mode: "analysis" | "hardcode" | "summary" | "chat";
+  // Analysis
+  streaming: boolean;
+  analysisBanner: string;
+  changes: Array<{
+    type: "addition" | "modification" | "deletion";
+    description: string;
+    explanation: string;
+    lineNumber: number;
+    side: "old" | "new" | "both";
+    syntax: "good" | "bad";
+    performance: "good" | "bad";
+    span?: number;
+    index?: number;
+    severity?: "block" | "warn" | "info";
+  }>;
+  error: string | null;
+  // Hardcode
+  hcLoading: boolean;
+  hcError: string | null;
+  hcFindings: Array<{
+    kind: string;
+    detail: string;
+    lineNumber: number;
+    side: "old" | "new" | "both";
+    severity?: "info" | "warn" | "error";
+  }>;
+  // Summary
+  sumLoading: boolean;
+  sumError: string | null;
+  summaryText: string;
+
+  // Chat
+  chatMessages: { role: "user" | "assistant" | "system"; content: string }[];
+  chatLoading: boolean;
+};
+
+function makeEmptyPanelSession(): PanelSession {
+  return {
+    mode: "analysis",
+    streaming: false,
+    analysisBanner: "Click Generate to review each change.",
+    changes: [],
+    error: null,
+    hcLoading: false,
+    hcError: null,
+    hcFindings: [],
+    sumLoading: false,
+    sumError: null,
+    summaryText: "",
+    chatMessages: [{ role: "assistant", content: "Hello! How can I assist you today?" }],
+    chatLoading: false,
+  };
+}
 
 function SingleQueryView({
   query,
@@ -118,7 +145,7 @@ function SingleQueryView({
                     <span className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent">
                       {idx + 1}
                     </span>
-                    <code className="block whitespace-pre pr-2 leading-[1.22]">{renderHighlightedSQL(line)}</code>
+                    <code className="block whitespace-pre pr-2 leading-[1.22]">{line}</code>
                   </div>
                 ))
               ) : (
@@ -204,9 +231,7 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
 }
 
 type SessionBlob = {
-  analysis: AnalysisResult;
-  chatMessages: { role: "user" | "assistant" | "system"; content: string }[];
-  chatLoading: boolean;
+  panel: PanelSession;
 };
 
 export default function ResultsPage() {
@@ -223,26 +248,12 @@ export default function ResultsPage() {
   const [newSel, setNewSel] = useState<number>(-1);
   const [singleSel, setSingleSel] = useState<number>(-1);
 
-  // session cache keyed by sessionKey()
+  // session cache keyed by stable session keys
   const sessionRef = useRef<Map<string, SessionBlob>>(new Map());
   const currentSessionKeyRef = useRef<string>("");
 
-  const [analysis, setAnalysis] = useState<AnalysisResult>({
-    summary: "",
-    changes: [],
-    recommendations: [],
-    riskAssessment: "Low",
-    performanceImpact: "Neutral",
-  });
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [streaming, setStreaming] = useState(false);
-  const [analysisStarted, setAnalysisStarted] = useState(false);
-  const startedRef = useRef(false);
-  const [chatMessages, setChatMessages] = useState<{ role: "assistant" | "user" | "system"; content: string }[]>([
-    { role: "assistant", content: "Hello! How can I assist you today?" },
-  ]);
-  const [chatLoading, setChatLoading] = useState(false);
 
   const doneAudioRef = useRef<HTMLAudioElement | null>(null);
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -277,27 +288,28 @@ export default function ResultsPage() {
     if (typeof window !== "undefined") localStorage.setItem("qa:sideFilter", sideFilter);
   }, [sideFilter]);
 
-  const [analysisMode, setAnalysisMode] = useState<AnalysisMode>("expert");
+  const [analysisMode] = useState<AnalysisMode>("expert");
   const SUSTAIN_MS = 4000;
 
-  const sessionKey = (m: Mode, a: number, b?: number) => (m === "single" ? `single:${a}` : `pair:${a}-${b}`);
+  const fileKey = (f: FileItem) => `${f.name}::${f.content.length}:${f.content.slice(0, 64)}`;
+  const sessionKeySingle = (f: FileItem) => `single:${fileKey(f)}`;
+  const sessionKeyPair = (fo: FileItem, fn: FileItem) => `pair:${fileKey(fo)}→${fileKey(fn)}`;
+
+  const getOrInitPanel = useCallback((key: string) => {
+    const existing = sessionRef.current.get(key);
+    if (existing) return existing.panel;
+    const fresh = makeEmptyPanelSession();
+    sessionRef.current.set(key, { panel: fresh });
+    return fresh;
+  }, []);
+
   const saveCurrentSession = () => {
     const k = currentSessionKeyRef.current;
     if (!k) return;
-    sessionRef.current.set(k, {
-      analysis,
-      chatMessages,
-      chatLoading,
-    });
+    // state is already kept in sessionRef via React setters below
   };
   const loadSession = (k: string) => {
     currentSessionKeyRef.current = k;
-    const snap = sessionRef.current.get(k);
-    if (snap) {
-      setAnalysis(snap.analysis);
-      setChatMessages(snap.chatMessages);
-      setChatLoading(snap.chatLoading);
-    }
   };
 
   const jumpSingle = (line: number) => {
@@ -372,8 +384,6 @@ export default function ResultsPage() {
     playMiniClick();
   };
 
-  const analysisDoneSoundPlayedRef = useRef(false);
-
   const clearResumeHandler = (() => {
     let handler: ((e?: any) => void) | null = null;
     return () => {
@@ -394,25 +404,13 @@ export default function ResultsPage() {
     } catch {
       const resume = () => {
         el.play().finally(() => {
-          clearResumeHandler();
+          (clearResumeHandler as any)();
         });
       };
       (clearResumeHandler as any).handler = resume;
       window.addEventListener("pointerdown", resume, { once: true });
       window.addEventListener("keydown", resume, { once: true });
     }
-  };
-
-  const playSfx = (ref: React.RefObject<HTMLAudioElement>) => {
-    if (!soundOn) return;
-    const el = ref.current;
-    if (!el) return;
-    try {
-      el.pause();
-      el.currentTime = 0;
-      el.volume = 0.5;
-      el.play().catch(() => {});
-    } catch {}
   };
 
   const playDoneSound = async () => {
@@ -430,6 +428,7 @@ export default function ResultsPage() {
   };
 
   // payload intake + catalog build
+  const startedRef = useRef(false);
   useEffect(() => {
     if (startedRef.current) return;
     startedRef.current = true;
@@ -477,7 +476,6 @@ export default function ResultsPage() {
     if ((parsed as any).mode === "single") {
       let incoming: SingleIncoming[] | undefined = (parsed as any).files;
 
-      // detect file-array fallback
       if (!incoming) {
         const arrCandidates = Object.values(parsed).filter(Array.isArray) as any[][];
         for (const arr of arrCandidates) {
@@ -488,7 +486,6 @@ export default function ResultsPage() {
         }
       }
 
-      // FIX: true multi-file support
       if (incoming && incoming.length) {
         const normalized = incoming
           .map((f, i) => ({
@@ -509,13 +506,14 @@ export default function ResultsPage() {
           setNewQuery(first.content);
           setOldQuery("");
 
-          currentSessionKeyRef.current = sessionKey("single", first.id);
+          const k = sessionKeySingle(first);
+          currentSessionKeyRef.current = k;
+          getOrInitPanel(k);
           setLoading(false);
           return;
         }
       }
 
-      // FALLBACK — single naked text payload
       const qRaw =
         String((parsed as any)?.singleQuery ||
                (parsed as any)?.newQuery ||
@@ -527,7 +525,6 @@ export default function ResultsPage() {
         return;
       }
 
-      // no "Query.sql" hardcoding
       pushUnique("Query_1.sql", q);
 
       const first = catalog[0];
@@ -538,7 +535,9 @@ export default function ResultsPage() {
       setNewQuery(first.content);
       setOldQuery("");
 
-      currentSessionKeyRef.current = sessionKey("single", first.id);
+      const k = sessionKeySingle(first);
+      currentSessionKeyRef.current = k;
+      getOrInitPanel(k);
       setLoading(false);
       return;
     }
@@ -583,7 +582,9 @@ export default function ResultsPage() {
       setOldQuery(catalog[first.oldId].content);
       setNewQuery(catalog[first.newId].content);
 
-      currentSessionKeyRef.current = sessionKey("compare", first.oldId, first.newId);
+      const k = sessionKeyPair(catalog[first.oldId], catalog[first.newId]);
+      currentSessionKeyRef.current = k;
+      getOrInitPanel(k);
       setLoading(false);
       return;
     }
@@ -607,9 +608,12 @@ export default function ResultsPage() {
     setNewSel(1);
     setOldQuery(o);
     setNewQuery(n);
-    currentSessionKeyRef.current = sessionKey("compare", 0, 1);
+
+    const k = sessionKeyPair(catalog[0], catalog[1]);
+    currentSessionKeyRef.current = k;
+    getOrInitPanel(k);
     setLoading(false);
-  }, [router]);
+  }, [router, getOrInitPanel]);
 
   // Sync single-mode selection
   useEffect(() => {
@@ -619,16 +623,17 @@ export default function ResultsPage() {
     const f = files.find((x) => x.id === idx) || files[0];
     if (!f) return;
 
-    const nextKey = sessionKey("single", f.id);
+    const nextKey = sessionKeySingle(f);
     if (currentSessionKeyRef.current !== nextKey) {
       saveCurrentSession();
-      currentSessionKeyRef.current = nextKey;
       loadSession(nextKey);
+      getOrInitPanel(nextKey);
     }
 
+    currentSessionKeyRef.current = nextKey;
     setSingleQuery(f.content);
     setNewQuery(f.content);
-  }, [mode, files, singleSel]);
+  }, [mode, files, singleSel, getOrInitPanel]);
 
   // Sync compare-mode selections
   useEffect(() => {
@@ -638,17 +643,18 @@ export default function ResultsPage() {
     const fn = files.find((f) => f.id === newSel) || files[(files.length > 1 ? 1 : 0)];
     if (!fo || !fn) return;
 
-    const nextKey = sessionKey("compare", fo.id, fn.id);
+    const nextKey = sessionKeyPair(fo, fn);
     if (currentSessionKeyRef.current !== nextKey) {
       saveCurrentSession();
-      currentSessionKeyRef.current = nextKey;
       loadSession(nextKey);
+      getOrInitPanel(nextKey);
     }
 
+    currentSessionKeyRef.current = nextKey;
     setOldQuery(fo.content);
     setNewQuery(fn.content);
     setError(null);
-  }, [oldSel, newSel, files, mode]);
+  }, [oldSel, newSel, files, mode, getOrInitPanel]);
 
   // Stats for chips (compare mode)
   const { additions = 0, modifications = 0, deletions = 0, unchanged = 0 } = useMemo<{
@@ -697,77 +703,6 @@ export default function ResultsPage() {
     scrollWrapperInstalled.current = true;
   }, [cmpRef, soundOn]);
 
-  const runAnalysis = async () => {
-    if (mode !== "compare") return;
-    if (streaming) return;
-    if (!oldQuery || !newQuery) return;
-
-    setAnalysisStarted(true);
-    analysisDoneSoundPlayedRef.current = false;
-    setStreaming(true);
-    setError(null);
-
-    try {
-      const PAGE_SIZE = 24;
-
-      const prepRes = await fetch(`/api/analyze?cursor=0&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ oldQuery, newQuery }),
-      });
-      const prepData = await prepRes.json().catch(() => ({}));
-      if (!prepRes.ok) throw new Error((prepData as any)?.error || `Prep failed (${prepRes.status})`);
-
-      const total = prepData?.page?.total ?? 0;
-
-      let nextCursor: number | null = prepData?.page?.nextCursor ?? null;
-      while (nextCursor !== null) {
-        const r = await fetch(`/api/analyze?cursor=${nextCursor}&limit=${PAGE_SIZE}&prepOnly=1&mode=${analysisMode}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery, newQuery }),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error((j as any)?.error || `Prep page failed (${r.status})`);
-        nextCursor = j?.page?.nextCursor ?? null;
-      }
-
-      for (let i = 0; i < total; i++) {
-        const r = await fetch(`/api/analyze?mode=item&index=${i}&analysisMode=${analysisMode}`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ oldQuery, newQuery }),
-        });
-        const j = await r.json().catch(() => ({}));
-        if (!r.ok) continue;
-
-        const [incoming] = j?.analysis?.changes ?? [];
-        if (!incoming || typeof incoming.index !== "number") continue;
-
-        setAnalysis((prev) => {
-          const map = new Map<number, AnalysisResult["changes"][number]>();
-          for (const c of prev.changes) if (typeof c.index === "number") map.set(c.index, c);
-          map.set(incoming.index, incoming);
-          const merged = Array.from(map.values()).sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-          const done = merged.filter((m) => m.explanation && m.explanation !== "Pending…").length;
-          return { ...prev, summary: `Streaming ${total} changes… ${done} explained.`, changes: merged };
-        });
-        playSfx(doneAudioRef);
-        await new Promise((res) => setTimeout(res, 0));
-      }
-
-      setStreaming(false);
-
-      if (!analysisDoneSoundPlayedRef.current) {
-        analysisDoneSoundPlayedRef.current = true;
-        playDoneSound();
-      }
-    } catch (e: any) {
-      setStreaming(false);
-      setError(e?.message || "Unexpected error");
-    }
-  };
-
   useEffect(() => {
     if (typeof window === "undefined") return;
     const originalFetch = window.fetch;
@@ -799,11 +734,23 @@ export default function ResultsPage() {
     ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
     : "bg-black/30 border-white/10 text-white";
 
+  // derive current panel session
+  const panelSession = sessionRef.current.get(currentSessionKeyRef.current)?.panel ?? makeEmptyPanelSession();
+  const setPanelSession = (updater: React.SetStateAction<PanelSession>) => {
+    const k = currentSessionKeyRef.current;
+    const prev = sessionRef.current.get(k)?.panel ?? makeEmptyPanelSession();
+    const next = typeof updater === "function" ? (updater as (p: PanelSession) => PanelSession)(prev) : updater;
+    sessionRef.current.set(k, { panel: next });
+    // force react to re-render
+    setTick((n) => n + 1);
+  };
+  const [, setTick] = useState(0);
+
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
       {isLight ? gridBgLight : gridBg}
 
-      {/* HEADER — single mode gets a file dropdown; compare mode does not */}
+      {/* HEADER — single mode gets a file dropdown; compare mode gets two dropdowns in toolbar below */}
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-3 md:py-2">
           <div className="grid grid-cols-3 items-center gap-3">
@@ -1000,8 +947,6 @@ export default function ResultsPage() {
                 </section>
               )}
 
-              {/* Single toolbar removed — selection now lives in header */}
-
               <section className="mt-1">
                 <div ref={comparisonSectionRef} className={`flex flex-col md:flex-row items-stretch gap-3 ${topPaneHeights} min-h-0`}>
                   {mode === "single" ? (
@@ -1017,10 +962,12 @@ export default function ResultsPage() {
                           cmpRef={undefined as any}
                           onJump={(side, line) => jumpAndFlash("new", line)}
                           fullHeight
-                          externalMessages={chatMessages}
-                          setExternalMessages={setChatMessages}
-                          externalLoading={chatLoading}
-                          setExternalLoading={setChatLoading}
+                          externalMessages={panelSession.chatMessages}
+                          setExternalMessages={(fn) => setPanelSession((p) => ({ ...p, chatMessages: typeof fn === "function" ? (fn as any)(p.chatMessages) : fn }))}
+                          externalLoading={panelSession.chatLoading}
+                          setExternalLoading={(v) => setPanelSession((p) => ({ ...p, chatLoading: typeof v === "function" ? (v as any)(p.chatLoading) : v }))}
+                          externalSession={panelSession}
+                          setExternalSession={setPanelSession}
                         />
                       </div>
                     </>
@@ -1094,10 +1041,12 @@ export default function ResultsPage() {
                       canonicalNew={newQuery}
                       cmpRef={cmpRef}
                       onJump={(side, line) => jumpAndFlash(side, line)}
-                      externalMessages={chatMessages}
-                      setExternalMessages={setChatMessages}
-                      externalLoading={chatLoading}
-                      setExternalLoading={setChatLoading}
+                      externalMessages={panelSession.chatMessages}
+                      setExternalMessages={(fn) => setPanelSession((p) => ({ ...p, chatMessages: typeof fn === "function" ? (fn as any)(p.chatMessages) : fn }))}
+                      externalLoading={panelSession.chatLoading}
+                      setExternalLoading={(v) => setPanelSession((p) => ({ ...p, chatLoading: typeof v === "function" ? (v as any)(p.chatLoading) : v }))}
+                      externalSession={panelSession}
+                      setExternalSession={setPanelSession}
                     />
                   </div>
                 </section>
