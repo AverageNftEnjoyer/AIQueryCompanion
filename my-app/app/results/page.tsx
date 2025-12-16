@@ -38,7 +38,7 @@ type PairItem = { oldQuery: string; newQuery: string; oldName?: string; newName?
 type FileItem = { id: number; name: string; content: string };
 type SingleIncoming = { name: string; content: string };
 
-const MAX_QUERY_CHARS = 140_000;
+const MAX_QUERY_CHARS = 160_000;
 
 const gridBg = (
   <div className="pointer-events-none absolute inset-0 opacity-90">

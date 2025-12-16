@@ -27,7 +27,7 @@ import { useUserPrefs } from "@/hooks/user-prefs";
 import Waves from "@/components/waves";
 
 export const dynamic = "force-dynamic";
-const MAX_QUERY_CHARS = 140_000;
+const MAX_QUERY_CHARS = 160_000;
 
 type BusyMode = "analyze" | "compare" | null;
 type LandingMode = "analyze" | "compare";
