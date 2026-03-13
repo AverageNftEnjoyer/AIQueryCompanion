@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { useUserPrefs } from "@/hooks/user-prefs";
-import Waves from "@/components/waves";
+import { requestChatbotAnswer } from "@/lib/client/chatbot";
 
 export const dynamic = "force-dynamic";
 const MAX_QUERY_CHARS = 160_000;
@@ -34,7 +34,7 @@ type LandingMode = "analyze" | "compare";
 
 export default function LandingPage() {
   return (
-    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loading…</div>}>
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-sm text-gray-500">Loadingâ€¦</div>}>
       <QueryAnalyzer />
     </Suspense>
   );
@@ -42,11 +42,11 @@ export default function LandingPage() {
 
 function QueryAnalyzer() {
   const search = useSearchParams();
-  const initialMode = (search.get("mode") === "analyze" ? "analyze" : "compare") as LandingMode;
+  const initialMode: LandingMode = search?.get("mode") === "analyze" ? "analyze" : "compare";
   const [landingMode] = useState<LandingMode>(initialMode);
 
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
-  const pageBgClass = isLight ? "bg-white text-slate-900" : "bg-black text-white";
+  const pageBgClass = isLight ? "bg-transparent text-slate-900" : "bg-transparent text-white";
   const headerBgClass = isLight
     ? "bg-white/80 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
     : "bg-black/40 border-white/10 text-white";
@@ -121,7 +121,7 @@ function QueryAnalyzer() {
     message: string;
     fileName?: string;
   }>({ type: null, status: null, message: "" });
-  const [dragActive, setDragActive] = useState<{ old: boolean; new: boolean }>({ old: false, new: false });
+  const [_dragActive, setDragActive] = useState<{ old: boolean; new: boolean }>({ old: false, new: false });
   const oldFileInputRef = useRef<HTMLInputElement>(null);
   const newFileInputRef = useRef<HTMLInputElement>(null);
   const charCountBadOld = useMemo(() => oldQuery.length > MAX_QUERY_CHARS, [oldQuery]);
@@ -233,7 +233,7 @@ function QueryAnalyzer() {
   const validateSizePair = (a: string, b: string) => {
     if (a.length > MAX_QUERY_CHARS || b.length > MAX_QUERY_CHARS) {
       setAnalysisError(
-        `Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters. current: old=${a.length.toLocaleString()} new=${b.length.toLocaleString()}`
+        `Each query must be â‰¤ ${MAX_QUERY_CHARS.toLocaleString()} characters. current: old=${a.length.toLocaleString()} new=${b.length.toLocaleString()}`
       );
       return false;
     }
@@ -299,14 +299,14 @@ function QueryAnalyzer() {
       return;
     }
 
-    // Fallback to textarea single — still pass as a single-file catalog for uniform behavior.
+    // Fallback to textarea single â€” still pass as a single-file catalog for uniform behavior.
     const src = newQuery.trim() ? newQuery : oldQuery.trim();
     if (!src) {
       alert("Paste a query to analyze");
       return;
     }
     if (src.length > MAX_QUERY_CHARS) {
-      setAnalysisError(`Query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters. current: ${src.length.toLocaleString()}`);
+      setAnalysisError(`Query must be â‰¤ ${MAX_QUERY_CHARS.toLocaleString()} characters. current: ${src.length.toLocaleString()}`);
       return;
     }
     setBusyMode("analyze");
@@ -375,6 +375,7 @@ function QueryAnalyzer() {
   const [inputOpen, setInputOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const requestCounterRef = useRef(0);
 
   useEffect(() => {
     if (inputOpen) setTimeout(() => inputRef.current?.focus(), 0);
@@ -416,7 +417,6 @@ function QueryAnalyzer() {
     const w = base + growth;
     return Math.min(560, Math.max(220, w));
   }, [assistantText]);
-
   const sendQuestion = async () => {
     const q = inputVal.trim();
     if (!q) return;
@@ -427,51 +427,25 @@ function QueryAnalyzer() {
     setAssistantText("");
     setInputVal("");
 
-    const reqId = Math.random().toString(36).slice(2);
-    (window as any).__qc_last_req__ = reqId;
+    const requestId = requestCounterRef.current + 1;
+    requestCounterRef.current = requestId;
 
-    try {
-      const res = await fetch("/api/chatbot", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
-      });
+    const result = await requestChatbotAnswer(q);
+    if (requestCounterRef.current !== requestId) return;
 
-      if ((window as any).__qc_last_req__ !== reqId) return;
+    if (result.ok) {
+      setAssistantText(result.answer || "I didn't get a reply.");
+      playBot();
+    } else {
+      setAssistantText(`Warning: ${result.error}`);
+    }
 
-      const data = await res.json().catch(() => ({} as any));
-      const answer = res.ok ? String((data as any)?.answer ?? "").trim() : `⚠️ ${(data as any)?.error || `Chat error (${res.status})`}`;
-      setAssistantText(answer || "I didn’t get a reply.");
-      if (res.ok) playBot();
-    } catch {
-      if ((window as any).__qc_last_req__ === reqId) {
-        setAssistantText("⚠️ Network error while contacting the assistant.");
-      }
-    } finally {
-      if ((window as any).__qc_last_req__ === reqId) {
-        setAssistantLoading(false);
-      }
+    if (requestCounterRef.current === requestId) {
+      setAssistantLoading(false);
     }
   };
-
   return (
     <div className={`min-h-screen relative ${pageBgClass} home-page`}>
-      <Waves
-        className="pointer-events-none"
-        backgroundColor={isLight ? "#ffffff" : "#000000"}
-        lineColor={isLight ? "rgba(0,0,0,0.20)" : "rgba(255,255,255,0.22)"}
-        waveSpeedX={0.01}
-        waveSpeedY={0.006}
-        waveAmpX={28}
-        waveAmpY={14}
-        xGap={12}
-        yGap={28}
-        friction={0.92}
-        tension={0.006}
-        maxCursorMove={90}
-        style={{ opacity: 0.9 }}
-      />
-
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
@@ -490,7 +464,7 @@ function QueryAnalyzer() {
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
                 <span className="font-heading font-semibold text-lg">
-                  {landingMode === "analyze" ? "AI-Powered Query Companion — Analyze" : "AI-Powered Query Companion — Compare"}
+                  {landingMode === "analyze" ? "Query Analyzer Suite - Analyze" : "Query Analyzer Suite - Compare"}
                 </span>
               </span>
             </div>
@@ -639,7 +613,7 @@ function QueryAnalyzer() {
                         )}
                         {charCountBadOld && (
                           <p className="mt-2 text-xs text-red-400">
-                            {oldQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                            {oldQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters â€” reduce size to analyze.
                           </p>
                         )}
                       </CardContent>
@@ -698,7 +672,7 @@ function QueryAnalyzer() {
                         )}
                         {charCountBadNew && (
                           <p className="mt-2 text-xs text-red-400">
-                            {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                            {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters â€” reduce size to analyze.
                           </p>
                         )}
                       </CardContent>
@@ -807,7 +781,7 @@ function QueryAnalyzer() {
                       )}
                       {charCountBadNew && (
                         <p className="mt-2 text-xs text-red-400">
-                          {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters — reduce size to analyze.
+                          {newQuery.length.toLocaleString()} / {MAX_QUERY_CHARS.toLocaleString()} characters â€” reduce size to analyze.
                         </p>
                       )}
                     </CardContent>
@@ -894,7 +868,7 @@ function QueryAnalyzer() {
                     if (e.key === "Enter") sendQuestion();
                     if (e.key === "Escape") setInputOpen(false);
                   }}
-                  placeholder="Ask your question…"
+                  placeholder="Ask your questionâ€¦"
                   className={`w-full h-14 rounded-md border px-4 text-base outline-none ${
                     isLight
                       ? "bg-white text-slate-900 border-slate-300 focus:ring-2 focus:ring-slate-300"
@@ -1011,3 +985,4 @@ function QueryAnalyzer() {
     </div>
   );
 }
+

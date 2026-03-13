@@ -19,8 +19,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useUserPrefs } from "@/hooks/user-prefs";
+import { requestChatbotAnswer } from "@/lib/client/chatbot";
 import Image from "next/image";
-import Waves from "@/components/waves";
 
 export default function Page() {
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
@@ -37,6 +37,7 @@ export default function Page() {
   const [inputOpen, setInputOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const requestCounterRef = useRef(0);
 
   useEffect(() => {
     if (inputOpen) setTimeout(() => inputRef.current?.focus(), 0);
@@ -124,19 +125,20 @@ export default function Page() {
   const headerBgClass = useMemo(
     () =>
       isLight
-        ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-        : "bg-black/30 border-white/10 text-white",
+        ? "bg-white/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(15,23,42,0.06)]"
+        : "bg-slate-950/95 border-slate-800 text-slate-100 shadow-[0_1px_0_rgba(148,163,184,0.08)]",
     [isLight]
   );
-  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
-  const compareCardClass = isLight
-    ? "bg-white border-violet-200 hover:border-violet-300"
-    : "bg-gradient-to-b from-violet-950/40 to-indigo-900/20 border-violet-700/40 hover:border-violet-400/50";
-  const analysisCardClass = isLight
-    ? "bg-white border-fuchsia-200 hover:border-fuchsia-300"
-    : "bg-gradient-to-b from-fuchsia-950/40 to-sky-900/20 border-fuchsia-700/40 hover:border-fuchsia-400/50";
-  const featureTextClass = isLight ? "text-slate-700 group-hover:text-slate-900" : "text-slate-300 group-hover:text-white";
-  const descriptionTextClass = isLight ? "text-slate-600" : "text-slate-300";
+  const pageBgClass = isLight ? "bg-transparent text-slate-900" : "bg-transparent text-slate-100";
+  const panelCardClass = isLight
+    ? "bg-white border-slate-200 shadow-lg"
+    : "bg-white/5 border-white/10 backdrop-blur-sm hover:border-white/20 transition";
+  const featureTextClass = isLight ? "text-slate-700" : "text-white/80";
+  const descriptionTextClass = isLight ? "text-slate-600" : "text-white/70";
+  const primaryBtnClass =
+    "w-full px-6 md:px-8 py-3 font-heading font-medium text-base rounded-md text-white border border-white/10 shadow-md transition-all";
+  const primaryAnalyze = "bg-gradient-to-r from-teal-600 to-teal-700 hover:from-teal-500 hover:to-teal-600";
+  const primaryCompare = "bg-gradient-to-r from-slate-700 to-slate-600 hover:from-slate-600 hover:to-slate-500";
 
   const bubbleBgClass = isLight ? "bg-white" : "bg-neutral-900/95";
   const bubbleTextClass = isLight ? "text-slate-900" : "text-white";
@@ -168,28 +170,21 @@ export default function Page() {
     setAssistantText("");
     setInputVal("");
 
-    const reqId = Math.random().toString(36).slice(2);
-    (window as any).__qc_last_req__ = reqId;
+    const requestId = requestCounterRef.current + 1;
+    requestCounterRef.current = requestId;
 
     try {
-      const res = await fetch("/api/chatbot", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q }),
-      });
+      const result = await requestChatbotAnswer(q);
+      if (requestCounterRef.current !== requestId) return;
 
-      if ((window as any).__qc_last_req__ !== reqId) return;
-
-      const data = await res.json().catch(() => ({} as any));
-      const answer = res.ok ? String((data as any)?.answer ?? "").trim() : `⚠️ ${(data as any)?.error || `Chat error (${res.status})`}`;
-      setAssistantText(answer || "I didn’t get a reply.");
-      if (res.ok) playBot();
-    } catch {
-      if ((window as any).__qc_last_req__ === reqId) {
-        setAssistantText("⚠️ Network error while contacting the assistant.");
+      if (result.ok) {
+        setAssistantText(result.answer || "I didn't get a reply.");
+        playBot();
+      } else {
+        setAssistantText(`⚠️ ${result.error}`);
       }
     } finally {
-      if ((window as any).__qc_last_req__ === reqId) {
+      if (requestCounterRef.current === requestId) {
         setAssistantLoading(false);
       }
     }
@@ -197,23 +192,6 @@ export default function Page() {
 
   return (
     <div className={`min-h-screen relative ${pageBgClass}`}>
-      {/* Waves background */}
-      <Waves
-        className="pointer-events-none"
-        lineColor={isLight ? "rgba(124, 58, 237, 0.22)" : "rgba(168, 85, 247, 0.32)"}
-        backgroundColor="transparent"
-        waveSpeedX={0.0125}
-        waveSpeedY={0.006}
-        waveAmpX={36}
-        waveAmpY={18}
-        xGap={12}
-        yGap={28}
-        friction={0.93}
-        tension={0.006}
-        maxCursorMove={110}
-        style={{ opacity: isLight ? 0.65 : 0.85, filter: isLight ? "saturate(0.9)" : "saturate(1.05)" }}
-      />
-
       <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
         <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-4">
           <div className="grid grid-cols-3 items-center gap-3">
@@ -231,7 +209,7 @@ export default function Page() {
 
             <div className="flex items-center justify-center">
               <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
-                <span className="font-heading font-semibold text-lg">AI-Powered Query Companion</span>
+                <span className="font-heading font-semibold text-lg">Query Analyzer Suite</span>
               </span>
             </div>
 
@@ -281,62 +259,59 @@ export default function Page() {
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
-        <section className="container mx-auto px-4 py-12">
+        <section className="container mx-auto px-4 py-10 md:py-14">
           <div className="max-w-6xl mx-auto">
-            <h2 className={`text-4xl md:text-5xl font-light text-center mb-16 animate-bounce-subtle ${isLight ? "text-slate-900" : "text-white"}`}>
+            <h2 className={`text-3xl md:text-4xl font-light text-center mb-8 md:mb-10 ${isLight ? "text-slate-900" : "text-white"}`}>
               Choose Your Analysis Mode
             </h2>
-
-            <div className="grid md:grid-cols-2 gap-8 max-w-5xl mx-auto">
-              <Card className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-fuchsia-400/10 cursor-pointer backdrop-blur-sm card-animate-1 animate-glow-pulse min-h-[480px] flex flex-col border ${compareCardClass}`}>
+            <div className="grid md:grid-cols-2 gap-6 max-w-5xl mx-auto">
+              <Card className={`group relative overflow-hidden cursor-pointer min-h-[460px] flex flex-col border ${panelCardClass}`}>
                 <Link href="/landingpage?mode=compare" onClick={playSwitch} className="absolute inset-0 z-20" aria-label="Enter Compare Mode" />
-                <div className="absolute inset-0 bg-gradient-to-br from-violet-500/10 via-fuchsia-500/10 to-sky-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <CardHeader className="relative z-10 p-8 pb-4">
-                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-violet ${isLight ? "bg-violet-50 border border-violet-200" : "bg-gradient-to-br from-violet-600 to-indigo-700"}`}>
-                    <GitCompare className={`w-8 h-8 ${isLight ? "text-violet-700" : "text-white"}`} />
+                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 border ${isLight ? "bg-slate-100 border-slate-200" : "bg-white/10 border-white/20"}`}>
+                    <GitCompare className={`w-8 h-8 ${isLight ? "text-slate-700" : "text-white"}`} />
                   </div>
-                  <CardTitle className={`text-2xl mb-3 transition-colors font-medium ${isLight ? "text-slate-900" : "text-white"}`}>Query Compare</CardTitle>
-                  <CardDescription className={`text-base leading-relaxed font-light ${descriptionTextClass}`}>
-                    Advanced side by side query analysis with AI-powered performance insights, optimization recommendations and interactive support.
+                  <CardTitle className={`text-2xl mb-3 font-semibold ${isLight ? "text-slate-900" : "text-slate-100"}`}>Query Compare</CardTitle>
+                  <CardDescription className={`text-base leading-relaxed ${descriptionTextClass}`}>
+                    Side-by-side query diff with execution-focused insights for safe optimization decisions.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="relative z-10 p-8 pt-0 flex flex-col grow">
                   <div className="space-y-4 mb-8 grow">
-                    <div className={`flex items-center gap-3 text-sm transition-colors ${featureTextClass}`}><Zap className="w-4 h-4" />Syntax & Performance Scans</div>
-                    <div className={`flex items-center gap-3 text-sm transition-colors ${featureTextClass}`}><BarChart3 className="w-4 h-4" />Change Highlighted Analysis</div>
-                    <div className={`flex items-center gap-3 text-sm transition-colors ${featureTextClass}`}><Brain className="w-4 h-4" />AI Optimization Suggestions</div>
+                    <div className={`flex items-center gap-3 text-sm ${featureTextClass}`}><Zap className="w-4 h-4" />Syntax and performance scans</div>
+                    <div className={`flex items-center gap-3 text-sm ${featureTextClass}`}><BarChart3 className="w-4 h-4" />Change-focused impact analysis</div>
+                    <div className={`flex items-center gap-3 text-sm ${featureTextClass}`}><Brain className="w-4 h-4" />Actionable optimization guidance</div>
                   </div>
                   <div className="mt-auto">
-                    <Button type="button" className="w-full bg-gradient-to-r from-violet-600 via-fuchsia-600 to-indigo-600 text-white hover:brightness-110 transition-all font-medium glow-violet group-hover:scale-105">
+                    <Button type="button" className={`${primaryBtnClass} ${primaryCompare}`}>
                       Enter Compare Mode
-                      <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-2 transition-transform" />
+                      <ArrowRight className="w-4 h-4 ml-2" />
                     </Button>
                   </div>
                 </CardContent>
               </Card>
 
-              <Card className={`group relative overflow-hidden transition-all duration-500 hover:shadow-2xl hover:shadow-fuchsia-400/10 cursor-pointer backdrop-blur-sm card-animate-2 min-h-[480px] flex flex-col border ${analysisCardClass}`}>
+              <Card className={`group relative overflow-hidden cursor-pointer min-h-[460px] flex flex-col border ${panelCardClass}`}>
                 <Link href="/landingpage?mode=analyze" onClick={playSwitch} className="absolute inset-0 z-20" aria-label="Enter Analysis Mode" />
-                <div className="absolute inset-0 bg-gradient-to-br from-fuchsia-500/10 via-violet-500/10 to-sky-400/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <CardHeader className="relative z-10 p-8 pb-4">
-                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 group-hover:rotate-3 transition-all duration-300 glow-neon ${isLight ? "bg-fuchsia-50 border border-fuchsia-200" : "bg-gradient-to-br from-fuchsia-600 to-sky-600"}`}>
-                    <BarChart3 className={`w-8 h-8 ${isLight ? "text-fuchsia-700" : "text-white"}`} />
+                  <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mb-6 border ${isLight ? "bg-slate-100 border-slate-200" : "bg-white/10 border-white/20"}`}>
+                    <BarChart3 className={`w-8 h-8 ${isLight ? "text-slate-700" : "text-white"}`} />
                   </div>
-                  <CardTitle className={`text-2xl mb-3 transition-colors font-medium ${isLight ? "text-slate-900" : "text-white"}`}>Query Analysis</CardTitle>
-                  <CardDescription className={`text-base leading-relaxed font-light ${descriptionTextClass}`}>
-                   Dive deep query examination with comprehensive metrics, bottleneck detection, and intelligent recommendations.
+                  <CardTitle className={`text-2xl mb-3 font-semibold ${isLight ? "text-slate-900" : "text-slate-100"}`}>Query Analysis</CardTitle>
+                  <CardDescription className={`text-base leading-relaxed ${descriptionTextClass}`}>
+                    Deep query diagnostics with bottleneck detection and implementation-ready recommendations.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="relative z-10 p-8 pt-0 flex flex-col grow">
                   <div className="space-y-4 mb-8 grow">
-                    <div className={`flex items-center gap-3 text-sm transition-colors ${featureTextClass}`}><Database className="w-4 h-4" />Comprehensive Query Guides</div>
-                    <div className={`flex items-center gap-3 text-sm transition-colors ${featureTextClass}`}><Zap className="w-4 h-4" />Bottleneck Identification</div>
-                    <div className={`flex items-center gap-3 text-sm transition-colors ${featureTextClass}`}><Brain className="w-4 h-4" />Hardcoding Scanner</div>
+                    <div className={`flex items-center gap-3 text-sm ${featureTextClass}`}><Database className="w-4 h-4" />Comprehensive query breakdowns</div>
+                    <div className={`flex items-center gap-3 text-sm ${featureTextClass}`}><Zap className="w-4 h-4" />Bottleneck identification</div>
+                    <div className={`flex items-center gap-3 text-sm ${featureTextClass}`}><Brain className="w-4 h-4" />Hardcode and anti-pattern detection</div>
                   </div>
                   <div className="mt-auto">
-                    <Button type="button" className="w-full bg-gradient-to-r from-fuchsia-600 via-violet-600 to-sky-600 text-white hover:brightness-110 transition-all font-medium glow-neon group-hover:scale-105">
+                    <Button type="button" className={`${primaryBtnClass} ${primaryAnalyze}`}>
                       Enter Analysis Mode
-                      <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-2 transition-transform" />
+                      <ArrowRight className="w-4 h-4 ml-2" />
                     </Button>
                   </div>
                 </CardContent>
@@ -430,8 +405,8 @@ export default function Page() {
               height={256}
               priority
               draggable={false}
-              className="block w-56 h-56 md:w-64 md:h-64 rounded-2xl animate-mascot-float"
-              style={{ filter: "drop-shadow(0 0 6px rgba(0,0,0,0.45))", outline: "none" }}
+              className="block w-52 h-52 md:w-56 md:h-56 rounded-2xl"
+              style={{ filter: "drop-shadow(0 0 4px rgba(0,0,0,0.35))", outline: "none" }}
               sizes="(min-width: 768px) 16rem, 14rem"
             />
           </button>
@@ -439,12 +414,6 @@ export default function Page() {
       </main>
 
       <style>{`
-        @keyframes bounce-subtle { 0%,100%{transform:translateY(0);} 50%{transform:translateY(-5px);} }
-        .animate-bounce-subtle { animation: bounce-subtle 2s ease-in-out infinite; }
-
-        @keyframes mascot-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
-        .animate-mascot-float { animation: mascot-float 3s ease-in-out infinite; }
-
         @keyframes chat-in { 0% { opacity: 0; transform: translateY(8px) scale(.98); } 100% { opacity: 1; transform: translateY(0) scale(1); } }
         .animate-chat-in { animation: chat-in .22s cubic-bezier(.2,.8,.2,1) both; }
 
