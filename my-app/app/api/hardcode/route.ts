@@ -2,7 +2,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-import { NextResponse } from "next/server";
+import { z } from "zod";
 import OpenAI from "openai";
 import {
   generateQueryDiff,
@@ -10,6 +10,7 @@ import {
   type ComparisonResult,
   type AlignedRow,
 } from "@/lib/query-differ";
+import { jsonNoStore, mapErrorStatus, safeErrorMessage } from "@/lib/server/http";
 
 /* ============================== Types ============================== */
 
@@ -42,21 +43,18 @@ type Finding = {
 };
 
 const MAX_QUERY_CHARS = 160_000;
+const payloadSchema = z.object({
+  oldQuery: z.string().max(MAX_QUERY_CHARS, `oldQuery must be <= ${MAX_QUERY_CHARS.toLocaleString()} characters`).optional(),
+  newQuery: z.string().trim().min(1, "newQuery must be a non-empty string.").max(MAX_QUERY_CHARS, `newQuery must be <= ${MAX_QUERY_CHARS.toLocaleString()} characters`),
+});
 
 /* ============================ Utilities ============================ */
 
-function isNonEmptyString(x: any): x is string {
-  return typeof x === "string" && x.trim().length > 0;
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 function lf(s: string): string {
   return (s ?? "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-function safeErrMessage(e: any, fallback = "Unexpected error") {
-  const raw = typeof e?.message === "string" ? e.message : fallback;
-  return raw
-    .replace(/(Bearer\s+)[\w.\-]+/gi, "$1[REDACTED]")
-    .replace(/(api[-_ ]?key\s*[:=]\s*)\w+/gi, "$1[REDACTED]")
-    .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]");
 }
 
 /* ============================ Heuristics =========================== */
@@ -71,10 +69,10 @@ const LOOKUP_COLUMN_WHITELIST = [
   /\bROLE(_CODE)?\b/i,
 ];
 const ENV_STRING_RE = /\b(dev|stage|staging|prod|production|uat)\b/i;
-const SECRET_RE = /\b(IDENTIFIED\s+BY|PASSWORD\s*=|ACCESS[_\-]?TOKEN|API[_\-]?KEY|SECRET)\b/i;
+const SECRET_RE = /\b(IDENTIFIED\s+BY|PASSWORD\s*=|ACCESS[-_]?TOKEN|API[-_]?KEY|SECRET)\b/i;
 const DATE_LIT_RE = /\bDATE\s*'[^']*'|\bTO_DATE\s*\(/i;
 const STRING_LIT_RE = /'((?:''|[^'])*)'/g;
-const NUMBER_LIT_RE = /(?<![\w\.])(?:\d+(?:\.\d+)?)(?![\w\.])/g;
+const NUMBER_LIT_RE = /(?<![\w.])(?:\d+(?:\.\d+)?)(?![\w.])/g;
 
 /* ---------- Comments handling ---------- */
 const FULL_LINE_COMMENT_RE = /^\s*(--|\/\*|\*|\*\/)/;
@@ -175,7 +173,7 @@ function newTouchedLinesFromRows(rows: AlignedRow[]): number[] {
 const STRINGY_COL_HINT = /\b(STATUS|STATE|TYPE|ROLE|CATEGORY|CLASS|CODE|_CD|_CODE|FLAG|DESC|DESCRIPTION)\b/i;
 
 /** equality like: COL = 1   or   COL = 1.2  */
-const EQ_CHAR_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s*=\s*(\d+(?:\.\d+)?)(?![\w\.])/i;
+const EQ_CHAR_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s*=\s*(\d+(?:\.\d+)?)(?![\w.])/i;
 
 /** IN-list like: COL IN (1,2,3) — unquoted numbers only */
 const IN_CHAR_NUM_RE = /\b([A-Z_][A-Z0-9_$#]*)\s+IN\s*\(\s*(\d+(?:\.\d+)?(?:\s*,\s*\d+(?:\.\d+)?)*)\s*\)/i;
@@ -437,16 +435,17 @@ export async function POST(req: Request) {
     const url = new URL(req.url);
     const scanMode = url.searchParams.get("scanMode") || undefined;
 
-    const body = await req.json().catch(() => null);
-
-    const oldQueryRaw = lf((body?.oldQuery ?? "") as string);
-    const newQueryRaw = lf((body?.newQuery ?? "") as string);
-
-    if (!isNonEmptyString(newQueryRaw)) {
-      throw new Error("newQuery must be a non-empty string.");
+    const rawBody: unknown = await req.json().catch(() => null);
+    const parsed = payloadSchema.safeParse(rawBody);
+    if (!parsed.success) {
+      return jsonNoStore({ error: parsed.error.issues[0]?.message || "Invalid request body" }, { status: 400 });
     }
-    if (newQueryRaw.length > MAX_QUERY_CHARS || oldQueryRaw.length > MAX_QUERY_CHARS) {
-      throw new Error(`Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters.`);
+
+    const oldQueryRaw = lf(parsed.data.oldQuery ?? "");
+    const newQueryRaw = lf(parsed.data.newQuery);
+
+    if (oldQueryRaw.length > MAX_QUERY_CHARS) {
+      return jsonNoStore({ error: `oldQuery must be <= ${MAX_QUERY_CHARS.toLocaleString()} characters` }, { status: 400 });
     }
 
     let targetLineNumbers: number[] = [];
@@ -461,10 +460,7 @@ export async function POST(req: Request) {
     }
 
     if (targetLineNumbers.length === 0) {
-      return NextResponse.json(
-        { analysis: { changes: [] }, page: { total: 0 } },
-        { headers: { "Cache-Control": "no-store" } }
-      );
+      return jsonNoStore({ analysis: { changes: [] }, page: { total: 0 } });
     }
 
     const findings: Finding[] = [];
@@ -473,10 +469,7 @@ export async function POST(req: Request) {
     }
 
     if (findings.length === 0) {
-      return NextResponse.json(
-        { analysis: { changes: [] }, page: { total: 0 } },
-        { headers: { "Cache-Control": "no-store" } }
-      );
+      return jsonNoStore({ analysis: { changes: [] }, page: { total: 0 } });
     }
 
     const explanations = await explainWithAgent(oldQueryRaw, newQueryRaw, findings);
@@ -498,16 +491,13 @@ export async function POST(req: Request) {
       })
       .sort((a, b) => a.lineNumber - b.lineNumber);
 
-    return NextResponse.json(
-      {
-        analysis: { changes, summary: `Hardcoding scan: ${changes.length} finding(s).` },
-        page: { total: changes.length },
-        meta: { mode: scanMode === "newOnly" || !isNonEmptyString(oldQueryRaw) ? "newOnly-raw" : "diff-new" },
-      },
-      { headers: { "Cache-Control": "no-store" } }
-    );
-  } catch (err: any) {
-    const msg = safeErrMessage(err);
-    return NextResponse.json({ error: msg }, { status: 400 });
+    return jsonNoStore({
+      analysis: { changes, summary: `Hardcoding scan: ${changes.length} finding(s).` },
+      page: { total: changes.length },
+      meta: { mode: scanMode === "newOnly" || !isNonEmptyString(oldQueryRaw) ? "newOnly-raw" : "diff-new" },
+    });
+  } catch (error: unknown) {
+    const msg = safeErrorMessage(error);
+    return jsonNoStore({ error: msg }, { status: mapErrorStatus(msg, 500) });
   }
 }
