@@ -1,12 +1,21 @@
 {
-  "name": "my-v0-project",
+  "name": "query-analyzer-web",
   "version": "0.1.0",
+  "description": "Enterprise-ready SQL comparison and AI analysis web application",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "lint:ci": "eslint . --quiet",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/**/*.test.ts",
+    "check": "npm run lint:ci && npm run typecheck && npm run test"
+  },
+  "engines": {
+    "node": ">=20.11.0",
+    "npm": ">=10.0.0"
   },
   "dependencies": {
     "@ai-sdk/openai": "^1.0.0",
@@ -75,6 +84,7 @@
     "postcss": "^8.5",
     "tailwindcss": "^4.1.12",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.21.0",
     "tw-animate-css": "1.3.3",
     "typescript": "^5",
     "typescript-eslint": "^8.42.0"

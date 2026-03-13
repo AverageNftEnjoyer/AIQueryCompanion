@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Query Analyzer Web App
 
-## Getting Started
+Next.js application for SQL compare/analyze workflows, hardcode detection, and AI-assisted summaries.
 
-First, run the development server:
+## Engineering Commands
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run lint
+npm run lint:ci
+npm run typecheck
+npm run test
+npm run build
+npm run check
+npm run start
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`npm run check` is the local quality gate (`lint:ci + typecheck + test`).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Runtime Configuration
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Copy `.env.example` to `.env.local` and set environment values before local development:
 
-## Learn More
+- `OPENAI_API_KEY`
+- `OPENAI_ASSISTANT_ID`
+- `ANALYSIS_AGENT_ID`
+- `HARDCODE_AGENT_ID`
 
-To learn more about Next.js, take a look at the following resources:
+## Architecture Boundaries
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `app/`: UI routes and API route handlers
+- `app/api/*`: request validation + orchestration only
+- `lib/query-differ.tsx`: SQL diff and alignment primitives
+- `lib/server/http.ts`: shared API response/error/timeout helpers
+- `lib/client/chatbot.ts`: typed assistant request client for UI surfaces
+- `components/`: presentational and feature UI components
+- `hooks/`: client state hooks (preferences, UI wiring)
+- `tests/`: Node test-runner suites for shared utilities
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## API Contract Notes
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- API handlers return `Cache-Control: no-store`.
+- Validation happens at route boundaries with `zod`.
+- Error strings are sanitized before returning to clients.
+- Existing response shapes remain backward compatible for current frontend consumers.

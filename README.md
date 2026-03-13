@@ -1,61 +1,63 @@
-# AI Powered Query Companion
+# Query Analyzer
 
-An AI-driven SQL query comparison and analysis tool powered by **xAI** and **Azure OpenAI**.  
-It highlights differences between SQL queries, groups changes intelligently, and provides natural-language explanations tailored for both **developers** and **stakeholders**.
+Query Analyzer is a production-oriented Next.js application for SQL comparison, AI-assisted analysis, hardcode detection, and stakeholder/developer summaries.
 
-> 🔍 Compare. Analyze. Understand.
+## Why This Repo Exists
 
----
+Engineering teams use this tool to:
+- Compare old vs new SQL and inspect differences quickly.
+- Generate AI explanations for query changes and likely impact.
+- Run hardcode and environment-sensitivity checks.
+- Create summaries for technical and non-technical audiences.
 
-## 🔴 Demo
+## Repository Structure
 
-<img src="demo.gif" alt="AI Query Companion Demo" width="100%"/>
+- `my-app/`: Next.js application (UI, API routes, core logic)
+- `README.md`: Project-level guide
+- `CONTRIBUTING.md`: Contribution workflow
+- `SECURITY.md`: Vulnerability reporting and secure development expectations
 
-> 🎥 Coming soon: 
+## Quick Start
 
----
+Prerequisites:
+- Node.js 20+
+- npm 10+
 
-## ✨ Features
-
-- 🔄 **Dual AI Model Support** – Switch between xAI and Azure OpenAI (GPT-4o) for analysis
-- 🧠 **Query Comparison Engine** – Highlights **additions, deletions, modifications**
-- 📊 **Change Grouping** – Groups nested subqueries and related changes intelligently
-- 📝 **AI-Powered Explanations** – Explains changes with business use case, syntax, and performance insights
-- 🧑‍💼 **Summary Generator** – Switch between **stakeholder** and **developer** summaries
-- 🎨 **Modern UI/UX** – 
-  - Sync scroll  
-  - Dark/light mode  
-  - Sound toggle  
-  - Change filters (Add / Modify / Delete)
-  - Jump-to-change functionality
-
----
-
-## 🧰 Tech Stack
-
-- **Frontend**: React (Next.js 14), Tailwind CSS
-- **Backend**: Node.js (Next.js API Routes)
-- **AI Providers**: 
-  - xAI (Grok-4) 
-  - Azure OpenAI 
-- **Diff Engine**: LCS-based canonical SQL differ
-- **Language**: TypeScript
-
----
-
-## 🚀 Getting Started
+Setup:
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/query-companion.git
-
-# Install dependencies
-cd query-companion
-npm install
-
-# Add environment variables
+git clone <your-repo-url>
+cd QueryAnalyzer/my-app
+npm ci
 cp .env.example .env.local
-# Fill in your API keys for xAI and Azure OpenAI
-
-# Run the development server
 npm run dev
+```
+
+Then open `http://localhost:3000`.
+
+## Quality Gates
+
+From `my-app/`:
+
+```bash
+npm run lint:ci
+npm run typecheck
+npm run test
+npm run build
+```
+
+CI runs these checks on every push and pull request.
+
+## Environment Configuration
+
+Copy `my-app/.env.example` to `my-app/.env.local` and set values for your OpenAI/Azure configuration.
+
+## Security
+
+- Never commit secrets (`.env.local` stays local).
+- Use least-privilege API credentials.
+- Follow `SECURITY.md` for reporting and remediation workflow.
+
+## License
+
+No license is currently declared. Add one before external distribution.
