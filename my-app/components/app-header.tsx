@@ -34,7 +34,7 @@ export function AppHeader({
       <div className="mx-auto flex h-full w-full max-w-[1800px] items-center justify-between gap-4 px-4 md:px-6">
         <Link href="/" className="group flex min-w-0 items-center gap-4">
           <span className="whitespace-nowrap font-heading text-sm font-bold uppercase tracking-[0.14em] text-foreground transition-colors duration-150 group-hover:text-accent-on-ground">
-            Query Companion
+            QueryLens
           </span>
           <span className="h-3.5 w-px shrink-0 bg-border" />
           <span className="truncate text-[13px] uppercase tracking-[0.06em] text-muted-foreground">

@@ -1,11 +1,11 @@
 "use client";
 
-import { useUserPrefs } from "@/hooks/user-prefs";
+import { UserPrefsProvider } from "@/hooks/user-prefs";
 
-// useUserPrefs() owns the single source of truth for the theme and toggles the
-// `dark` class on <html> itself (see hooks/user-prefs.ts) — this component just
-// needs to be mounted under the tree so that effect runs.
+// Mounted once in the root layout (app/layout.tsx) and never remounts across
+// client-side navigation, so prefs hydrate from localStorage exactly once per
+// app load and every page shares the same live isLight/soundOn/syncEnabled
+// state via useUserPrefs().
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  useUserPrefs();
-  return <>{children}</>;
+  return <UserPrefsProvider>{children}</UserPrefsProvider>;
 }

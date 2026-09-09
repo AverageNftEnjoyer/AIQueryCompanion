@@ -1,4 +1,4 @@
-# Query Analyzer Web App
+# QueryLens Web App
 
 Next.js application for SQL compare/analyze workflows, hardcode detection, and AI-assisted summaries.
 

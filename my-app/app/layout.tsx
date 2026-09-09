@@ -28,13 +28,13 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: {
-    default: "Query Analyzer",
-    template: "%s | Query Analyzer",
+    default: "QueryLens",
+    template: "%s | QueryLens",
   },
   description:
     "Enterprise SQL comparison and AI-assisted analysis platform for engineering teams.",
-  applicationName: "Query Analyzer",
-  creator: "Query Analyzer Team",
+  applicationName: "QueryLens",
+  creator: "QueryLens Team",
   keywords: [
     "SQL analysis",
     "query comparison",

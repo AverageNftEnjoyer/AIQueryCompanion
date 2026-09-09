@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 
 export const PREFS_KEY = "qa:prefs:v1";
 
@@ -13,7 +13,7 @@ type Prefs = {
 type BooleanUpdater = boolean | ((x: boolean) => boolean);
 
 const DEFAULT: Prefs = {
-  isLight: false, 
+  isLight: false,
   soundOn: true,
   syncEnabled: true,
 };
@@ -52,14 +52,29 @@ function save(p: Prefs) {
   }
 }
 
-export function useUserPrefs() {
-  // Always start from DEFAULT on both server and the first client render so the
-  // two markups match; the real, possibly-personalized value is hydrated right
-  // after mount below. Reading localStorage inside the useState initializer
-  // would make the client's first render disagree with the server's and trigger
-  // a React hydration mismatch.
+export type UserPrefs = Prefs & {
+  setIsLight: (v: BooleanUpdater) => void;
+  setSoundOn: (v: BooleanUpdater) => void;
+  setSyncEnabled: (v: BooleanUpdater) => void;
+};
+
+const UserPrefsContext = createContext<UserPrefs | null>(null);
+
+// Single source of truth, owned once by <ThemeProvider> in the root layout —
+// it never remounts on client-side navigation, so prefs are hydrated from
+// localStorage exactly once per app load instead of once per page. Each page
+// calling this independently used to re-run the pre-hydration -> hydration
+// transition on every navigation, which briefly forced the `dark` class onto
+// <html> before correcting itself a tick later (invisible in dark mode, a
+// visible flash in light mode).
+export function UserPrefsProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT);
-  const hydratedRef = useRef(false);
+  // Real state, not a ref: a ref mutation inside one effect is visible to a
+  // sibling effect within the *same* commit (especially under React Strict
+  // Mode's double-invoked effects in dev), which let a stale pre-hydration
+  // value slip through and briefly force the wrong theme. State guarantees
+  // every effect in a commit sees the same consistent snapshot.
+  const [hydrated, setHydrated] = useState(false);
 
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
@@ -80,25 +95,23 @@ export function useUserPrefs() {
   useEffect(() => {
     // Skip the very first (pre-hydration) commit — it still holds DEFAULT and
     // would otherwise clobber the real stored prefs before they're loaded below.
-    if (!hydratedRef.current) return;
+    if (!hydrated) return;
     save(prefs);
-  }, [prefs]);
+  }, [hydrated, prefs]);
 
-  // Runs after the save-guard effect above (declaration order), so on the
-  // initial commit the guard still sees hydratedRef.current === false.
   useEffect(() => {
     setPrefs(load());
-    hydratedRef.current = true;
+    setHydrated(true);
   }, []);
 
   useEffect(() => {
-    // Skip the pre-hydration commit too: app/layout.tsx's inline script already
-    // set the correct class synchronously before hydration, from the same
-    // localStorage key. Re-applying DEFAULT here first would flash the wrong
-    // theme for a frame before the load-on-mount effect corrects it.
-    if (!hydratedRef.current) return;
+    // Keeps <html>'s class in sync with the hydrated value, and with any
+    // *subsequent* change (the user clicking the theme toggle, or a synced
+    // update from another tab). Gated on `hydrated` so it never runs with the
+    // pre-hydration DEFAULT value.
+    if (!hydrated) return;
     document.documentElement.classList.toggle("dark", !prefs.isLight);
-  }, [prefs.isLight]);
+  }, [hydrated, prefs.isLight]);
 
   const setIsLight = useCallback((v: BooleanUpdater) => {
     setPrefs((p) => ({ ...p, isLight: resolveUpdater(p.isLight, v) }));
@@ -112,5 +125,15 @@ export function useUserPrefs() {
     setPrefs((p) => ({ ...p, syncEnabled: resolveUpdater(p.syncEnabled, v) }));
   }, []);
 
-  return { ...prefs, setIsLight, setSoundOn, setSyncEnabled };
+  const value: UserPrefs = { ...prefs, setIsLight, setSoundOn, setSyncEnabled };
+
+  return <UserPrefsContext.Provider value={value}>{children}</UserPrefsContext.Provider>;
+}
+
+export function useUserPrefs(): UserPrefs {
+  const ctx = useContext(UserPrefsContext);
+  if (!ctx) {
+    throw new Error("useUserPrefs must be used within <ThemeProvider>/<UserPrefsProvider>");
+  }
+  return ctx;
 }

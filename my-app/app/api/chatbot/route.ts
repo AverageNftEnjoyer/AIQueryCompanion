@@ -4,11 +4,14 @@ export const maxDuration = 60;
 
 import { NextResponse } from "next/server";
 import { canonicalizeSQL } from "@/lib/query-differ";
+import { fetchWithTimeout, mapErrorStatus, safeErrorMessage } from "@/lib/server/http";
 
-const REQUEST_TIMEOUT_MS = 50_000;
+const REQUEST_TIMEOUT_MS = Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || 50_000);
 const MAX_CONTENT = 240_000;
+const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
+const CHATBOT_MODEL = process.env.ANALYSIS_AGENT_MODEL || "gpt-4.1-nano";
 
-function requireEnv(name: "OPENAI_API_KEY" | "OPENAI_ASSISTANT_ID"): string {
+function requireEnv(name: "OPENAI_API_KEY"): string {
   const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`Missing ${name} in environment`);
@@ -40,28 +43,6 @@ function getRecordString(value: unknown, key: string): string | undefined {
   if (!isJsonRecord(value)) return undefined;
   const candidate = value[key];
   return typeof candidate === "string" ? candidate : undefined;
-}
-
-function safeErrMessage(e: unknown, fallback = "Unexpected error") {
-  const raw =
-    typeof e === "string"
-      ? e
-      : e instanceof Error
-        ? e.message
-        : getRecordString(e, "message") ?? fallback;
-  return raw
-    .replace(/(Bearer\s+)[\w.-]+/gi, "$1[REDACTED]")
-    .replace(/(api[-_ ]?key\s*[:=]\s*)\w+/gi, "$1[REDACTED]")
-    .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]");
-}
-
-function openAIHeaders() {
-  const apiKey = requireEnv("OPENAI_API_KEY");
-  return {
-    Authorization: `Bearer ${apiKey}`,
-    "Content-Type": "application/json",
-    "OpenAI-Beta": "assistants=v2",
-  };
 }
 
 /* ---------- Line helpers (VISIBLE-first, trims trailing empty line) ---------- */
@@ -159,109 +140,44 @@ function findLastUnscopedLine(history: ChatbotBody["history"]): number | null {
   return null;
 }
 
-/* ------------------------------ Assistants API ------------------------------ */
-async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timeout);
-  }
+/* ------------------------------ Chat Completions ------------------------------ */
+function extractResponseText(payload: unknown): string {
+  if (!isJsonRecord(payload) || !Array.isArray(payload.choices)) return "";
+  const first = payload.choices[0];
+  if (!isJsonRecord(first) || !isJsonRecord(first.message)) return "";
+  const content = first.message.content;
+  return typeof content === "string" ? content.trim() : "";
 }
 
-function requireId(payload: unknown, context: string): string {
-  const id = getRecordString(payload, "id");
-  if (!id) {
-    throw new Error(`Missing id in ${context} response.`);
-  }
-  return id;
-}
-
-function extractRunStatus(payload: unknown): string {
-  const status = getRecordString(payload, "status");
-  if (!status) {
-    throw new Error("Missing run status in Assistants response.");
-  }
-  return status;
-}
-
-function extractAssistantAnswer(payload: unknown): string | null {
-  if (!isJsonRecord(payload)) return null;
-  const data = payload.data;
-  if (!Array.isArray(data)) return null;
-
-  for (const message of data) {
-    if (!isJsonRecord(message) || message.role !== "assistant") continue;
-    if (!Array.isArray(message.content)) continue;
-
-    for (const part of message.content) {
-      if (!isJsonRecord(part)) continue;
-      const text = part.text;
-      const value = getRecordString(text, "value");
-      if (value?.trim()) return value.trim();
-    }
-  }
-
-  return null;
-}
-
-async function createThread() {
-  const res = await fetchWithTimeout("https://api.openai.com/v1/threads", {
-    method: "POST",
-    headers: openAIHeaders(),
-    body: JSON.stringify({}),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const payload: unknown = await res.json();
-  return { id: requireId(payload, "thread create") };
-}
-
-async function addMessage(threadId: string, fullContent: string) {
-  const res = await fetchWithTimeout(`https://api.openai.com/v1/threads/${threadId}/messages`, {
-    method: "POST",
-    headers: openAIHeaders(),
-    body: JSON.stringify({ role: "user", content: fullContent }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-async function runAssistant(threadId: string) {
-  const assistantId = requireEnv("OPENAI_ASSISTANT_ID");
-  const res = await fetchWithTimeout(`https://api.openai.com/v1/threads/${threadId}/runs`, {
-    method: "POST",
-    headers: openAIHeaders(),
-    body: JSON.stringify({ assistant_id: assistantId }),
-  });
-  if (!res.ok) throw new Error(await res.text());
-  const payload: unknown = await res.json();
-  return { id: requireId(payload, "run create") };
-}
-
-async function pollRun(threadId: string, runId: string) {
-  let status = "in_progress";
-  let run: unknown = null;
-  while (status === "in_progress" || status === "queued") {
-    await new Promise((r) => setTimeout(r, 1200));
-    const res = await fetchWithTimeout(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
-      headers: openAIHeaders(),
-      cache: "no-store",
-    });
-    if (!res.ok) throw new Error(await res.text());
-    run = await res.json();
-    status = extractRunStatus(run);
-  }
-  return run;
-}
-
-async function getMessages(threadId: string) {
+async function askChatModel(systemText: string, userText: string): Promise<string> {
+  const apiKey = requireEnv("OPENAI_API_KEY");
   const res = await fetchWithTimeout(
-    `https://api.openai.com/v1/threads/${threadId}/messages?limit=10`,
-    { headers: openAIHeaders() }
+    `${OPENAI_BASE_URL}/chat/completions`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: CHATBOT_MODEL,
+        temperature: 0.3,
+        messages: [
+          { role: "system", content: systemText },
+          { role: "user", content: userText },
+        ],
+      }),
+    },
+    REQUEST_TIMEOUT_MS
   );
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`OpenAI chat completions request failed (${res.status})${errText ? `: ${errText}` : ""}`);
+  }
+
+  const payload: unknown = await res.json().catch(() => ({}));
+  return extractResponseText(payload);
 }
 
 /* ----------------------- Prompt Builder (FORCE RAW NEW LINES) ----------------------- */
@@ -306,7 +222,7 @@ function buildPrompt(body: ChatbotBody) {
   if (body.context?.stats) metaBits.push(`Stats provided`);
 
  const header =
-  "You are Query Companion — a senior Oracle SQL/PLSQL and SQL tutor.\n" +
+  "You are QueryLens — a senior Oracle SQL/PLSQL and SQL tutor.\n" +
   "\n" +
   "Important Context Alignment Rules:\n" +
   "- Always reference the numbered NEW query display exactly as shown. This display may include blank placeholder lines to align with deletions from the OLD query.\n" +
@@ -324,10 +240,10 @@ function buildPrompt(body: ChatbotBody) {
     if (cNewBlk) ctxParts.push(`${cNewBlk.header}:\n\`\`\`\n${cNewBlk.content}\n\`\`\``);
     if (focusBlock) ctxParts.push(focusBlock);
     if (metaBits.length) ctxParts.push(metaBits.join("\n"));
-    return [header, ...(ctxParts.length ? [`Context:\n${ctxParts.join("\n\n")}`] : []), `User question: ${question}`].join("\n\n");
+    return [...(ctxParts.length ? [`Context:\n${ctxParts.join("\n\n")}`] : []), `User question: ${question}`].join("\n\n");
   };
 
-  let full = compose();
+  let userBody = compose();
 
   const shrinkSteps = [
     { head: 500, tail: 500 },
@@ -338,33 +254,32 @@ function buildPrompt(body: ChatbotBody) {
   ];
 
   let step = 0;
-  while (full.length > MAX_CONTENT && step < shrinkSteps.length) {
+  while (header.length + userBody.length > MAX_CONTENT && step < shrinkSteps.length) {
     if (cOldBlk) cOldBlk = buildDisplayBlock("DISPLAY_CANONICAL_OLD (do not use for numbering)", canOld, shrinkSteps[step]);
     if (cNewBlk) cNewBlk = buildDisplayBlock("DISPLAY_CANONICAL_NEW (do not use for numbering)", canNew, shrinkSteps[step]);
     if (vOldBlk) vOldBlk = buildDisplayBlock("DISPLAY_OLD (raw numbering)", visOld, shrinkSteps[step]);
     if (vNewBlk) vNewBlk = buildDisplayBlock("DISPLAY_NEW (raw numbering)", visNew, shrinkSteps[step]);
-    full = compose();
+    userBody = compose();
     step++;
   }
 
-  if (full.length > MAX_CONTENT) {
+  if (header.length + userBody.length > MAX_CONTENT) {
     cOldBlk = null;
-    full = compose();
+    userBody = compose();
   }
-  if (full.length > MAX_CONTENT) {
+  if (header.length + userBody.length > MAX_CONTENT) {
     cNewBlk = null;
-    full = compose();
+    userBody = compose();
   }
 
   // Last resort: keep only NEW raw with focus
-  if (full.length > MAX_CONTENT) {
+  if (header.length + userBody.length > MAX_CONTENT) {
     const tiny = buildDisplayBlock(`DISPLAY_NEW (raw numbering)`, visNew, { head: 40, tail: 40 });
     vNewBlk = tiny;
     vOldBlk = null;
     cOldBlk = null;
     cNewBlk = null;
-    full = [
-      header,
+    userBody = [
       "Context:\n" + (focusBlock || ""),
       tiny ? `${tiny.header}:\n\`\`\`\n${tiny.content}\n\`\`\`` : "",
       `User question: ${question}`,
@@ -373,7 +288,7 @@ function buildPrompt(body: ChatbotBody) {
       .join("\n\n");
   }
 
-  return { full };
+  return { system: header, user: userBody };
 }
 
 /* ---------------------------------- Route ---------------------------------- */
@@ -459,24 +374,16 @@ export async function POST(req: Request) {
       );
     }
 
-    const { full } = buildPrompt({ ...body, indexing: "visible", question: body.question || question });
+    const { system, user } = buildPrompt({ ...body, indexing: "visible", question: body.question || question });
 
-    // Assistants flow
-    const thread = await createThread();
-    await addMessage(thread.id, full);
-    const run = await runAssistant(thread.id);
-    await pollRun(thread.id, run.id);
-    const messages = await getMessages(thread.id);
-
-    const answer = extractAssistantAnswer(messages) ?? "I couldn't generate an answer for that query.";
+    const answer = (await askChatModel(system, user)).trim() || "I couldn't generate an answer for that query.";
 
     return NextResponse.json({
       answer,
       meta: { mode: "assistant", playSound: true },
     });
   } catch (err: unknown) {
-    const msg = safeErrMessage(err);
-    const status = /AbortError|aborted|timeout|timed out/i.test(msg) ? 504 : 500;
-    return NextResponse.json({ error: msg }, { status });
+    const msg = safeErrorMessage(err);
+    return NextResponse.json({ error: msg }, { status: mapErrorStatus(msg) });
   }
 }

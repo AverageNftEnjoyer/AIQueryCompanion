@@ -1,6 +1,6 @@
-# Query Analyzer
+# QueryLens
 
-Query Analyzer is a production-oriented Next.js application for SQL comparison, AI-assisted analysis, hardcode detection, and stakeholder/developer summaries.
+QueryLens is a production-oriented Next.js application for SQL comparison, AI-assisted analysis, hardcode detection, and stakeholder/developer summaries.
 
 ## Why This Repo Exists
 

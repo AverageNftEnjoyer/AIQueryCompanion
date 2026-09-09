@@ -1,5 +1,5 @@
 {
-  "name": "query-analyzer-web",
+  "name": "querylens-web",
   "version": "0.1.0",
   "description": "Enterprise-ready SQL comparison and AI analysis web application",
   "private": true,
