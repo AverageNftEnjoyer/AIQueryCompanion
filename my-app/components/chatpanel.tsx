@@ -201,7 +201,7 @@ const ChatPanel = memo(function ChatPanel({
                 if (!loading) void send();
               }
             }}
-            className="flex-1 h-10 rounded-md border border-border bg-card px-3 text-[13.5px] text-foreground placeholder:text-muted-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="flex-1 h-10 rounded-md border border-border bg-card px-3 text-[13.5px] text-foreground placeholder:text-muted-foreground outline-none transition-colors duration-150 focus:!border-[var(--primary)]"
           />
         </div>
       </div>

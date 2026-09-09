@@ -211,6 +211,14 @@ a { color: inherit; text-decoration: none; }
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
+/* Text-entry fields get a border-color focus affordance (set per-component)
+   instead of the glowing outline ring — a ring reads as a "flash" every time
+   you click into or type in a field, which is noisy for text inputs. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+}
 ::selection { background: var(--flash); }
 
 /* ---- SQL syntax tokens (lib/query-differ.tsx renderHighlightedSQL) ----- */

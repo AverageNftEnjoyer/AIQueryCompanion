@@ -8,12 +8,14 @@ export type ChatbotResult =
   | { ok: true; answer: string }
   | { ok: false; error: string };
 
-export async function requestChatbotAnswer(question: string): Promise<ChatbotResult> {
+export type ChatMessage = { role: "user" | "assistant"; content: string };
+
+export async function requestChatbotAnswer(question: string, history?: ChatMessage[]): Promise<ChatbotResult> {
   try {
     const response = await fetch("/api/chatbot", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
+      body: JSON.stringify({ question, history }),
     });
 
     const payload: unknown = await response.json().catch(() => ({}));

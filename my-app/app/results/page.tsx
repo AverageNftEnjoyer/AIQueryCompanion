@@ -18,8 +18,7 @@ import {
 import AnalysisPanel from "@/components/analysis";
 import { useUserPrefs } from "@/hooks/user-prefs";
 import { Changes } from "@/components/changes";
-import { AppHeader, AskPopover } from "@/components/app-header";
-import { requestChatbotAnswer } from "@/lib/client/chatbot";
+import { AppHeader } from "@/components/app-header";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -705,43 +704,6 @@ export default function ResultsPage() {
   };
   const [, setTick] = useState(0);
 
-  // ===== Header Ask assistant =====
-  const [assistantVisible, setAssistantVisible] = useState(false);
-  const [assistantLoading, setAssistantLoading] = useState(false);
-  const [assistantText, setAssistantText] = useState<string>("");
-  const [inputOpen, setInputOpen] = useState(false);
-  const [inputVal, setInputVal] = useState("");
-  const askInputRef = useRef<HTMLInputElement | null>(null);
-  const askCounterRef = useRef(0);
-
-  useEffect(() => {
-    if (inputOpen) setTimeout(() => askInputRef.current?.focus(), 0);
-  }, [inputOpen]);
-
-  const handleAskClick = () => {
-    setInputOpen((v) => !v);
-    setAssistantVisible(false);
-  };
-
-  const sendAskQuestion = async () => {
-    const q = inputVal.trim();
-    if (!q) return;
-    setInputOpen(false);
-    setAssistantVisible(true);
-    setAssistantLoading(true);
-    setAssistantText("");
-    setInputVal("");
-    const requestId = askCounterRef.current + 1;
-    askCounterRef.current = requestId;
-    try {
-      const result = await requestChatbotAnswer(q);
-      if (askCounterRef.current !== requestId) return;
-      setAssistantText(result.ok ? result.answer || "I didn't get a reply." : `Warning: ${result.error}`);
-    } finally {
-      if (askCounterRef.current === requestId) setAssistantLoading(false);
-    }
-  };
-
   const fileSelect =
     mode === "single" && files.length > 0 ? (
       <select
@@ -796,20 +758,7 @@ export default function ResultsPage() {
             return next;
           })
         }
-        onAsk={handleAskClick}
         extra={fileSelect}
-      />
-
-      <AskPopover
-        inputOpen={inputOpen}
-        onCloseInput={() => setInputOpen(false)}
-        inputVal={inputVal}
-        setInputVal={setInputVal}
-        onSend={sendAskQuestion}
-        inputRef={askInputRef}
-        assistantVisible={assistantVisible}
-        assistantLoading={assistantLoading}
-        assistantText={assistantText}
       />
 
       <main className="flex-1">

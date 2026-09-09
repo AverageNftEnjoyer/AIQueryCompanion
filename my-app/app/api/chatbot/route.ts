@@ -10,6 +10,10 @@ const REQUEST_TIMEOUT_MS = Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || 50_0
 const MAX_CONTENT = 240_000;
 const OPENAI_BASE_URL = (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/+$/, "");
 const CHATBOT_MODEL = process.env.ANALYSIS_AGENT_MODEL || "gpt-4.1-nano";
+// One turn = one user message + one assistant reply. Capped server-side too,
+// regardless of what the client sends, to bound cost/context size.
+const MAX_TURNS = 8;
+const MAX_HISTORY_MESSAGE_CHARS = 4_000;
 
 function requireEnv(name: "OPENAI_API_KEY"): string {
   const value = process.env[name]?.trim();
@@ -149,7 +153,20 @@ function extractResponseText(payload: unknown): string {
   return typeof content === "string" ? content.trim() : "";
 }
 
-async function askChatModel(systemText: string, userText: string): Promise<string> {
+type ChatTurn = { role: "user" | "assistant"; content: string };
+
+/** Keep only the last MAX_TURNS exchanges (user+assistant pairs), trimmed and validated. */
+function sanitizeHistory(raw: ChatbotBody["history"]): ChatTurn[] {
+  if (!Array.isArray(raw)) return [];
+  const cleaned = raw
+    .filter((h): h is { role: string; content: string } => isJsonRecord(h) && typeof h.content === "string")
+    .filter((h) => h.role === "user" || h.role === "assistant")
+    .map((h) => ({ role: h.role as "user" | "assistant", content: h.content.trim().slice(0, MAX_HISTORY_MESSAGE_CHARS) }))
+    .filter((h) => h.content.length > 0);
+  return cleaned.slice(-MAX_TURNS * 2);
+}
+
+async function askChatModel(systemText: string, history: ChatTurn[], userText: string): Promise<string> {
   const apiKey = requireEnv("OPENAI_API_KEY");
   const res = await fetchWithTimeout(
     `${OPENAI_BASE_URL}/chat/completions`,
@@ -164,6 +181,7 @@ async function askChatModel(systemText: string, userText: string): Promise<strin
         temperature: 0.3,
         messages: [
           { role: "system", content: systemText },
+          ...history,
           { role: "user", content: userText },
         ],
       }),
@@ -375,8 +393,9 @@ export async function POST(req: Request) {
     }
 
     const { system, user } = buildPrompt({ ...body, indexing: "visible", question: body.question || question });
+    const history = sanitizeHistory(body.history);
 
-    const answer = (await askChatModel(system, user)).trim() || "I couldn't generate an answer for that query.";
+    const answer = (await askChatModel(system, history, user)).trim() || "I couldn't generate an answer for that query.";
 
     return NextResponse.json({
       answer,

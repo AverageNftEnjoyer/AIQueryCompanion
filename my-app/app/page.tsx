@@ -1,30 +1,15 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useCallback, useRef } from "react";
 import { ArrowRight, Zap, BarChart3, GitCompare, Brain, Database } from "lucide-react";
 import { useUserPrefs } from "@/hooks/user-prefs";
-import { requestChatbotAnswer } from "@/lib/client/chatbot";
-import { AppHeader, AskPopover } from "@/components/app-header";
+import { AppHeader } from "@/components/app-header";
 
 export default function Page() {
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
-  const botAudioRef = useRef<HTMLAudioElement | null>(null);
-
-  const [assistantVisible, setAssistantVisible] = useState(false);
-  const [assistantLoading, setAssistantLoading] = useState(false);
-  const [assistantText, setAssistantText] = useState<string>("");
-
-  const [inputOpen, setInputOpen] = useState(false);
-  const [inputVal, setInputVal] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const requestCounterRef = useRef(0);
-
-  useEffect(() => {
-    if (inputOpen) setTimeout(() => inputRef.current?.focus(), 0);
-  }, [inputOpen]);
 
   const playSwitch = () => {
     if (!soundOn) return;
@@ -34,18 +19,6 @@ export default function Page() {
       el.pause();
       el.currentTime = 0;
       el.volume = 0.5;
-      el.play()?.catch(() => {});
-    } catch {}
-  };
-
-  const playBot = () => {
-    if (!soundOn) return;
-    const el = botAudioRef.current;
-    if (!el) return;
-    try {
-      el.pause();
-      el.currentTime = 0;
-      el.volume = 0.6;
       el.play()?.catch(() => {});
     } catch {}
   };
@@ -68,41 +41,6 @@ export default function Page() {
     playSwitch();
   }, [setSyncEnabled]);
 
-  const handleAskClick = () => {
-    setInputOpen((v) => !v);
-    setAssistantVisible(false);
-  };
-
-  const sendQuestion = async () => {
-    const q = inputVal.trim();
-    if (!q) return;
-
-    setInputOpen(false);
-    setAssistantVisible(true);
-    setAssistantLoading(true);
-    setAssistantText("");
-    setInputVal("");
-
-    const requestId = requestCounterRef.current + 1;
-    requestCounterRef.current = requestId;
-
-    try {
-      const result = await requestChatbotAnswer(q);
-      if (requestCounterRef.current !== requestId) return;
-
-      if (result.ok) {
-        setAssistantText(result.answer || "I didn't get a reply.");
-        playBot();
-      } else {
-        setAssistantText(`Warning: ${result.error}`);
-      }
-    } finally {
-      if (requestCounterRef.current === requestId) {
-        setAssistantLoading(false);
-      }
-    }
-  };
-
   return (
     <div className="relative min-h-screen bg-background text-foreground">
       <AppHeader
@@ -113,23 +51,9 @@ export default function Page() {
         onToggleTheme={toggleLightUI}
         soundOn={soundOn}
         onToggleSound={handleToggleSound}
-        onAsk={handleAskClick}
-      />
-
-      <AskPopover
-        inputOpen={inputOpen}
-        onCloseInput={() => setInputOpen(false)}
-        inputVal={inputVal}
-        setInputVal={setInputVal}
-        onSend={sendQuestion}
-        inputRef={inputRef}
-        assistantVisible={assistantVisible}
-        assistantLoading={assistantLoading}
-        assistantText={assistantText}
       />
 
       <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
-      <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
       <main className="px-7 pb-7 pt-14">
         <div className="mx-auto max-w-[920px]">

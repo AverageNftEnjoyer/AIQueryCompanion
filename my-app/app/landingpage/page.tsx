@@ -17,8 +17,7 @@ import {
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useUserPrefs } from "@/hooks/user-prefs";
-import { requestChatbotAnswer } from "@/lib/client/chatbot";
-import { AppHeader, AskPopover } from "@/components/app-header";
+import { AppHeader } from "@/components/app-header";
 
 export const dynamic = "force-dynamic";
 const MAX_QUERY_CHARS = 160_000;
@@ -42,7 +41,6 @@ function QueryLensLandingContent() {
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
   const switchAudioRef = useRef<HTMLAudioElement | null>(null);
-  const botAudioRef = useRef<HTMLAudioElement | null>(null);
   const playSwitch = () => {
     if (!soundOn) return;
     const el = switchAudioRef.current;
@@ -69,18 +67,6 @@ function QueryLensLandingContent() {
     setIsLight((v) => !v);
     playSwitch();
   }, [setIsLight]);
-
-  useEffect(() => {
-    const a = botAudioRef.current;
-    if (!a) return;
-    a.muted = !soundOn;
-    if (!soundOn) {
-      try {
-        a.pause();
-        a.currentTime = 0;
-      } catch {}
-    }
-  }, [soundOn]);
 
   type UFile = { name: string; content: string };
 
@@ -383,67 +369,6 @@ function QueryLensLandingContent() {
     window.location.href = "/results";
   };
 
-  // ===== Assistant =====
-  const [assistantVisible, setAssistantVisible] = useState(false);
-  const [assistantLoading, setAssistantLoading] = useState(false);
-  const [assistantText, setAssistantText] = useState<string>("");
-
-  const [inputOpen, setInputOpen] = useState(false);
-  const [inputVal, setInputVal] = useState("");
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const requestCounterRef = useRef(0);
-
-  useEffect(() => {
-    if (inputOpen) setTimeout(() => inputRef.current?.focus(), 0);
-  }, [inputOpen]);
-
-  const playBot = () => {
-    if (!soundOn) return;
-    const el = botAudioRef.current;
-    if (!el) return;
-    try {
-      el.pause();
-      el.currentTime = 0;
-      el.volume = 0.6;
-      el.play()?.catch(() => {});
-    } catch {}
-  };
-
-  const handleAskClick = () => {
-    setInputOpen((v) => !v);
-    setAssistantVisible(false);
-  };
-
-  const sendQuestion = async () => {
-    const q = inputVal.trim();
-    if (!q) return;
-
-    setInputOpen(false);
-    setAssistantVisible(true);
-    setAssistantLoading(true);
-    setAssistantText("");
-    setInputVal("");
-
-    const requestId = requestCounterRef.current + 1;
-    requestCounterRef.current = requestId;
-
-    try {
-      const result = await requestChatbotAnswer(q);
-      if (requestCounterRef.current !== requestId) return;
-
-      if (result.ok) {
-        setAssistantText(result.answer || "I didn't get a reply.");
-        playBot();
-      } else {
-        setAssistantText(`Warning: ${result.error}`);
-      }
-    } finally {
-      if (requestCounterRef.current === requestId) {
-        setAssistantLoading(false);
-      }
-    }
-  };
-
   const routeLabel = landingMode === "analyze" ? "Analysis mode" : "Compare mode";
   const charCount = landingMode === "compare" ? Math.max(oldQuery.length, newQuery.length) : newQuery.length;
 
@@ -457,23 +382,9 @@ function QueryLensLandingContent() {
         onToggleTheme={toggleLightUI}
         soundOn={soundOn}
         onToggleSound={handleToggleSound}
-        onAsk={handleAskClick}
-      />
-
-      <AskPopover
-        inputOpen={inputOpen}
-        onCloseInput={() => setInputOpen(false)}
-        inputVal={inputVal}
-        setInputVal={setInputVal}
-        onSend={sendQuestion}
-        inputRef={inputRef}
-        assistantVisible={assistantVisible}
-        assistantLoading={assistantLoading}
-        assistantText={assistantText}
       />
 
       <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
-      <audio ref={botAudioRef} src="/bot.mp3" preload="metadata" muted={!soundOn} />
 
       <main className="flex flex-1 flex-col px-5 pb-6 pt-8 md:px-7">
         {uploadStatus.status && (
