@@ -1,26 +1,47 @@
 import React from "react";
 import type { Metadata } from "next";
-import { Space_Grotesk, DM_Sans } from "next/font/google";
+import { Source_Serif_4, Public_Sans, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
+import GlobalDotBackground from "@/components/global-dot-background";
 import "./globals.css";
 
-const spaceGrotesk = Space_Grotesk({
+const sourceSerif = Source_Serif_4({
   subsets: ["latin"],
   display: "swap",
-  variable: "--font-space-grotesk",
+  variable: "--font-source-serif",
+  weight: ["400", "600", "700"],
 });
 
-const dmSans = DM_Sans({
+const publicSans = Public_Sans({
   subsets: ["latin"],
   display: "swap",
-  variable: "--font-dm-sans",
+  variable: "--font-public-sans",
+  weight: ["400", "500", "600"],
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-jetbrains-mono",
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
-  title: "AI-Powered Query Companion",
+  title: {
+    default: "Query Analyzer",
+    template: "%s | Query Analyzer",
+  },
   description:
-    "Full-stack tool for comparing Oracle SQL queries with AI-powered analysis and explanations",
-  generator: "v0.app",
+    "Enterprise SQL comparison and AI-assisted analysis platform for engineering teams.",
+  applicationName: "Query Analyzer",
+  creator: "Query Analyzer Team",
+  keywords: [
+    "SQL analysis",
+    "query comparison",
+    "change intelligence",
+    "developer tooling",
+    "Oracle SQL",
+  ],
   icons: {
     icon: [
       { url: "/favicon-16.png", sizes: "16x16", type: "image/png" },
@@ -41,11 +62,11 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${spaceGrotesk.variable} ${dmSans.variable} antialiased`}
+      className={`${sourceSerif.variable} ${publicSans.variable} ${jetbrainsMono.variable} antialiased`}
     >
       <head>
         <meta name="color-scheme" content="light dark" />
-        <meta id="theme-color" name="theme-color" content="#0a0a0a" />
+        <meta id="theme-color" name="theme-color" content="#16151a" />
 
         <script
           dangerouslySetInnerHTML={{
@@ -54,13 +75,8 @@ export default function RootLayout({
   var root = document.documentElement;
   var themeMeta = document.querySelector('meta[name="theme-color"]');
   function setTheme(isLight){
-    if (isLight) {
-      root.classList.add("qa-light"); root.classList.remove("qa-dark");
-      if (themeMeta) themeMeta.setAttribute("content", "#f1f5f9"); // light address bar
-    } else {
-      root.classList.add("qa-dark"); root.classList.remove("qa-light");
-      if (themeMeta) themeMeta.setAttribute("content", "#0a0a0a"); // dark address bar
-    }
+    root.classList.toggle("dark", !isLight);
+    if (themeMeta) themeMeta.setAttribute("content", isLight ? "#f7f6f3" : "#16151a");
   }
   try {
     var raw = localStorage.getItem(KEY);
@@ -78,27 +94,12 @@ export default function RootLayout({
           }}
         />
 
-        <style
-          dangerouslySetInnerHTML={{
-            __html: `
-:root.qa-light, .qa-light body { background-color: #f1f5f9; color-scheme: light; }
-:root.qa-dark,  .qa-dark body  { background-color: #0a0a0a; color-scheme: dark; }
-html, body { min-height: 100%; }
-
-/* Respect users who prefer reduced motion (kills large animations) */
-@media (prefers-reduced-motion: reduce) {
-  .animate-bounce-subtle,
-  .animate-glow-pulse,
-  .animate-mascot-float {
-    animation: none !important;
-  }
-}
-`,
-          }}
-        />
       </head>
-      <body className="font-body min-h-dvh bg-[color:var(--background)]">
-        <ThemeProvider>{children}</ThemeProvider>
+      <body className="relative font-body min-h-dvh bg-[color:var(--background)] overflow-x-hidden">
+        <ThemeProvider>
+          <GlobalDotBackground />
+          <div className="relative z-[2]">{children}</div>
+        </ThemeProvider>
       </body>
     </html>
   );

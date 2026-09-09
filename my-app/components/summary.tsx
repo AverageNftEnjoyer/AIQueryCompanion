@@ -83,44 +83,42 @@ export default function Summary({
   }
 
   return (
-    <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg">
+    <Card ref={summaryRef} className="mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-card border border-border rounded-md">
       <CardContent className="p-5">
         <div className="flex items-center justify-between mb-4">
-          <h3 ref={summaryHeaderRef} tabIndex={-1} className="text-slate-900 font-semibold focus:outline-none">
+          <h3 ref={summaryHeaderRef} tabIndex={-1} className="font-heading text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground focus:outline-none">
             Summary
           </h3>
           <Button
             type="button"
             onClick={fetchSummary}
             disabled={summarizing}
-            className={`inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 ${
-              isLight ? "bg-gray-100 text-gray-900 hover:bg-white" : "bg-gray-100 text-gray-900 hover:bg-white"
-            } shadow-sm transition disabled:opacity-60 disabled:cursor-not-allowed`}
+            className="inline-flex items-center gap-2 h-[26px] px-2.5 rounded-md border border-foreground text-foreground text-xs font-semibold transition hover:bg-surface-2 disabled:opacity-45 disabled:cursor-not-allowed"
             variant="outline"
           >
             {summarizing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
-            <span className="text-sm">Generate Summary</span>
+            <span>Generate summary</span>
           </Button>
         </div>
 
-        <div className="min-h-[28.15rem] bg-gray-50 border border-gray-200 rounded-lg p-4">
+        <div className="min-h-[28.15rem] p-1">
           {summarizing && !summary ? (
             <div className="space-y-4">
-              <div className="inline-flex items-center gap-2 text-gray-700">
+              <div className="inline-flex items-center gap-2 text-foreground">
                 <Loader2 className="h-4 w-4 animate-spin" />
                 <span>Generating summary…</span>
               </div>
               <div className="space-y-2">
-                <div className="h-3 w-full bg-gray-200 rounded animate-pulse" />
-                <div className="h-3 w-[92%] bg-gray-200 rounded animate-pulse" />
-                <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                <div className="h-3 w-[80%] bg-gray-200 rounded animate-pulse" />
+                <div className="h-3 w-full bg-surface-2 rounded animate-pulse" />
+                <div className="h-3 w-[92%] bg-surface-2 rounded animate-pulse" />
+                <div className="h-3 w-[88%] bg-surface-2 rounded animate-pulse" />
+                <div className="h-3 w-[80%] bg-surface-2 rounded animate-pulse" />
               </div>
             </div>
           ) : summary ? (
-            <p className="text-gray-800 text-sm leading-relaxed break-words whitespace-pre-wrap">{summary}</p>
+            <p className="text-foreground text-sm leading-relaxed break-words whitespace-pre-wrap">{summary}</p>
           ) : (
-            <div className="text-gray-600 text-sm">Click “Generate Summary” to produce a detailed write-up.</div>
+            <div className="text-muted-foreground text-sm">Click "Generate summary" to produce a detailed write-up.</div>
           )}
         </div>
       </CardContent>

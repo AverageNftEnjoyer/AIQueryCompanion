@@ -58,6 +58,10 @@ type ChangeExplanation = {
   _suggestions?: string[];
 };
 
+type JsonRecord = Record<string, unknown>;
+type RetryableError = Error & { __retryable?: boolean };
+type AnalyzeRequestBody = { oldQuery: string; newQuery: string };
+
 type Provider = "openai";
 
 const PROVIDER: Provider = "openai";
@@ -77,7 +81,8 @@ const REQUEST_TIMEOUT_MS = Math.min(
   Number(process.env.ANALYZE_REQUEST_TIMEOUT_MS || process.env.FETCH_TIMEOUT_MS || 55000),
   SAFE_BUDGET_MS
 );
-const RETRIES = Math.min(2, Number(process.env.LLM_RETRIES ?? 1));
+const retryConfig = Number(process.env.LLM_RETRIES ?? 1);
+const RETRIES = Math.max(1, Math.min(2, Number.isFinite(retryConfig) ? Math.trunc(retryConfig) : 1));
 
 // —— Model budget knobs —— //
 const MAX_ITEMS_TO_EXPLAIN = Math.max(60, Number(process.env.MAX_ITEMS_TO_EXPLAIN ?? 80));
@@ -89,17 +94,23 @@ const MAX_PAGE_LIMIT = 100;
 
 /* ============================== Small Utilities ============================= */
 
-function isNonEmptyString(x: any): x is string {
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null;
+}
+
+function isNonEmptyString(x: unknown): x is string {
   return typeof x === "string" && x.trim().length > 0;
 }
 
-function validateInput(body: any) {
-  if (!body || !isNonEmptyString(body.oldQuery) || !isNonEmptyString(body.newQuery)) {
+function parseInputBody(body: unknown): AnalyzeRequestBody {
+  if (!isJsonRecord(body) || !isNonEmptyString(body.oldQuery) || !isNonEmptyString(body.newQuery)) {
     throw new Error("oldQuery and newQuery must be non-empty strings.");
   }
-  if (body.oldQuery.length > MAX_QUERY_CHARS || body.newQuery.length > MAX_QUERY_CHARS) {
+  const parsed: AnalyzeRequestBody = { oldQuery: body.oldQuery, newQuery: body.newQuery };
+  if (parsed.oldQuery.length > MAX_QUERY_CHARS || parsed.newQuery.length > MAX_QUERY_CHARS) {
     throw new Error(`Each query must be ≤ ${MAX_QUERY_CHARS.toLocaleString()} characters.`);
   }
+  return parsed;
 }
 
 function clamp(n: number, lo: number, hi: number) {
@@ -111,10 +122,10 @@ function detailFromRequest(_req: Request, _url: URL): DetailMode {
   return "single";
 }
 
-function safeErrMessage(e: any, fallback = "Unexpected error") {
-  const raw = typeof e?.message === "string" ? e.message : fallback;
+function safeErrMessage(e: unknown, fallback = "Unexpected error") {
+  const raw = e instanceof Error ? e.message : (typeof e === "string" ? e : fallback);
   return raw
-    .replace(/(Bearer\s+)[\w\.\-]+/gi, "$1[REDACTED]")
+    .replace(/(Bearer\s+)[\w.-]+/gi, "$1[REDACTED]")
     .replace(/(api-key\s*:\s*)\w+/gi, "$1[REDACTED]")
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]");
 }
@@ -136,15 +147,15 @@ function isRetryableStatus(status: number) {
 }
 
 async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 400) {
-  let lastErr: any;
+  let lastErr: unknown;
   for (let i = 0; i < max; i++) {
     try {
       return await fn();
-    } catch (e: any) {
+    } catch (e: unknown) {
       lastErr = e;
-      const msg = String(e?.message || "");
+      const msg = e instanceof Error ? e.message : String(e ?? "");
       const retryable =
-        e?.__retryable === true ||
+        (isJsonRecord(e) && e.__retryable === true) ||
         /(?:ETIMEDOUT|ECONNRESET|ENETUNREACH|EAI_AGAIN|timeout|aborted|AbortError)/i.test(msg);
       if (!retryable || i === max - 1) break;
       await new Promise((res) => setTimeout(res, baseDelay * Math.pow(2, i)));
@@ -155,7 +166,7 @@ async function withRetries<T>(fn: () => Promise<T>, max = RETRIES, baseDelay = 4
 
 /* --------------------------------- Helpers -------------------------------- */
 
-function asGoodBad(v: any): GoodBad | undefined {
+function asGoodBad(v: unknown): GoodBad | undefined {
   if (typeof v !== "string") return undefined;
   const t = v.trim().toLowerCase();
   if (t === "good" || t === "bad") return t;
@@ -164,25 +175,37 @@ function asGoodBad(v: any): GoodBad | undefined {
 
 function coerceExplanations(content: string): ChangeExplanation[] {
   try {
-    const parsed = JSON.parse(content);
-    const out = (parsed?.explanations || []) as any[];
+    const parsed: unknown = JSON.parse(content);
+    const out = isJsonRecord(parsed) && Array.isArray(parsed.explanations) ? parsed.explanations : [];
     return out
-      .filter((x) => typeof x?.index === "number" && (typeof x?.text === "string" || typeof x?.explanation === "string"))
+      .filter((x) => {
+        if (!isJsonRecord(x)) return false;
+        return typeof x.index === "number" && (typeof x.text === "string" || typeof x.explanation === "string");
+      })
       .map((x) => {
+        if (!isJsonRecord(x)) {
+          return { index: -1, explanation: "" };
+        }
         const explanation = String((x.text ?? x.explanation) || "").trim();
         const item: ChangeExplanation = {
-          index: x.index,
+          index: Number(x.index),
           explanation,
           syntax: asGoodBad(x.syntax),
           performance: asGoodBad(x.performance),
         };
-        if (typeof x.syntax_explanation === "string") (item as any)._syntax_explanation = x.syntax_explanation.trim();
-        if (typeof x.performance_explanation === "string") (item as any)._performance_explanation = x.performance_explanation.trim();
-        if (Array.isArray(x.clauses)) (item as any)._clauses = x.clauses;
-        if (typeof x.change_kind === "string") (item as any)._change_kind = x.change_kind;
-        if (typeof x.business_impact === "string") (item as any)._business_impact = x.business_impact;
-        if (typeof x.risk === "string") (item as any)._risk = x.risk;
-        if (Array.isArray(x.suggestions)) (item as any)._suggestions = x.suggestions;
+        if (typeof x.syntax_explanation === "string") item._syntax_explanation = x.syntax_explanation.trim();
+        if (typeof x.performance_explanation === "string") item._performance_explanation = x.performance_explanation.trim();
+        if (Array.isArray(x.clauses)) item._clauses = x.clauses.filter((v): v is string => typeof v === "string");
+        if (typeof x.change_kind === "string") item._change_kind = x.change_kind;
+        if (x.business_impact === "clear" || x.business_impact === "weak" || x.business_impact === "none") {
+          item._business_impact = x.business_impact;
+        }
+        if (x.risk === "low" || x.risk === "medium" || x.risk === "high") {
+          item._risk = x.risk;
+        }
+        if (Array.isArray(x.suggestions)) {
+          item._suggestions = x.suggestions.filter((v): v is string => typeof v === "string");
+        }
         return item;
       });
   } catch {
@@ -196,6 +219,25 @@ function clipSqlForModel(sql: string, budget = ANALYSIS_MODEL_CLIP_BYTES): strin
   const head = raw.slice(0, Math.floor(budget * 0.6));
   const tail = raw.slice(-Math.floor(budget * 0.35));
   return `${head}\n/* ...clipped for model... */\n${tail}`;
+}
+
+function normalizeMeta(explanation: ChangeExplanation): {
+  clauses: string[];
+  change_kind?: string;
+  business_impact: "clear" | "weak" | "none";
+  risk: "low" | "medium" | "high";
+  suggestions: string[];
+} {
+  return {
+    clauses: Array.isArray(explanation._clauses) ? explanation._clauses : [],
+    change_kind: typeof explanation._change_kind === "string" ? explanation._change_kind : undefined,
+    business_impact:
+      explanation._business_impact === "clear" || explanation._business_impact === "weak"
+        ? explanation._business_impact
+        : "none",
+    risk: explanation._risk === "medium" || explanation._risk === "high" ? explanation._risk : "low",
+    suggestions: Array.isArray(explanation._suggestions) ? explanation._suggestions.slice(0, 2) : [],
+  };
 }
 
 /* ================== Derive groups EXACTLY like <Changes /> ================== */
@@ -438,6 +480,41 @@ function buildUserPayload(oldQuery: string, newQuery: string, changes: ChangeIte
 
 /* ========================== OpenAI Agent / Model call ========================== */
 
+function makeRetryableError(message: string): RetryableError {
+  const err = new Error(message) as RetryableError;
+  err.__retryable = true;
+  return err;
+}
+
+function extractResponsesText(payload: unknown): string {
+  if (!isJsonRecord(payload)) return "";
+  if (typeof payload.output_text === "string") return payload.output_text;
+  if (!Array.isArray(payload.output)) return "";
+
+  return payload.output
+    .flatMap((entry) => {
+      if (!isJsonRecord(entry) || !Array.isArray(entry.content)) return [];
+      return entry.content;
+    })
+    .map((part) => {
+      if (typeof part === "string") return part;
+      if (!isJsonRecord(part)) return "";
+      if (typeof part.text === "string") return part.text;
+      if (isJsonRecord(part.text) && typeof part.text.value === "string") return part.text.value;
+      return "";
+    })
+    .filter((text) => typeof text === "string" && text.trim().length > 0)
+    .join("\n");
+}
+
+function extractChatCompletionText(payload: unknown): string {
+  if (!isJsonRecord(payload) || !Array.isArray(payload.choices)) return "";
+  const first = payload.choices[0];
+  if (!isJsonRecord(first) || !isJsonRecord(first.message)) return "";
+  const content = first.message.content;
+  return typeof content === "string" ? content.trim() : "";
+}
+
 async function callLLM(systemPrompt: string, userContent: string): Promise<{ text: string; model: string; via: "agent" | "model" }> {
   if (!OPENAI_API_KEY) throw new Error("Missing OPENAI_API_KEY");
 
@@ -469,27 +546,15 @@ async function callLLM(systemPrompt: string, userContent: string): Promise<{ tex
 
         if (isRetryableStatus(r.status)) {
           const errText = await r.text().catch(() => "");
-          const e = new Error(`OpenAI Responses ${r.status}: ${errText || "retryable error"}`) as any;
-          e.__retryable = true;
-          throw e;
+          throw makeRetryableError(`OpenAI Responses ${r.status}: ${errText || "retryable error"}`);
         }
         if (!r.ok) {
           const errText = await r.text().catch(() => "");
           throw new Error(`OpenAI Responses ${r.status}: ${errText}`);
         }
 
-        const j = await r.json().catch(() => ({}));
-        const text =
-          (j?.output_text ??
-            (Array.isArray(j?.output)
-              ? j.output
-                  .flatMap((o: any) => (Array.isArray(o?.content) ? o.content : []))
-                  .map((c: any) => c?.text)
-                  .filter(Boolean)
-                  .join("\n")
-              : "")) ||
-          j?.choices?.[0]?.message?.content?.trim() ||
-          "";
+        const j: unknown = await r.json().catch(() => ({}));
+        const text = extractResponsesText(j) || extractChatCompletionText(j);
 
         return { text, model: `agent:${ANALYSIS_AGENT_ID}`, via: "agent" as const };
       });
@@ -528,17 +593,15 @@ async function callLLM(systemPrompt: string, userContent: string): Promise<{ tex
 
       if (isRetryableStatus(r.status)) {
         const errText = await r.text().catch(() => "");
-        const e = new Error(`OpenAI Chat ${r.status}: ${errText || "retryable error"}`) as any;
-        e.__retryable = true;
-        throw e;
+        throw makeRetryableError(`OpenAI Chat ${r.status}: ${errText || "retryable error"}`);
       }
       if (!r.ok) {
         const errText = await r.text().catch(() => "");
         throw new Error(`OpenAI Chat ${r.status}: ${errText}`);
       }
 
-      const j = await r.json().catch(() => ({}));
-      const text = j?.choices?.[0]?.message?.content?.trim() ?? "";
+      const j: unknown = await r.json().catch(() => ({}));
+      const text = extractChatCompletionText(j);
       return { text, model: DEFAULT_MODEL, via: "model" as const };
     });
 
@@ -547,7 +610,35 @@ async function callLLM(systemPrompt: string, userContent: string): Promise<{ tex
 
 /* =============================== In-memory cache =============================== */
 
-const cache = new Map<string, any>();
+const CACHE_MAX_ENTRIES = Math.max(20, Number(process.env.ANALYZE_CACHE_MAX_ENTRIES ?? 200));
+const CACHE_TTL_MS = Math.max(30_000, Number(process.env.ANALYZE_CACHE_TTL_MS ?? 5 * 60_000));
+type CacheEntry = { value: unknown; expiresAt: number };
+const cache = new Map<string, CacheEntry>();
+
+function getCachedValue(key: string): unknown | undefined {
+  const entry = cache.get(key);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return undefined;
+  }
+  // Refresh recency for basic LRU behavior.
+  cache.delete(key);
+  cache.set(key, entry);
+  return entry.value;
+}
+
+function setCachedValue(key: string, value: unknown) {
+  if (cache.has(key)) {
+    cache.delete(key);
+  }
+  while (cache.size >= CACHE_MAX_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    cache.delete(oldestKey);
+  }
+  cache.set(key, { value, expiresAt: Date.now() + CACHE_TTL_MS });
+}
 function hashPair(a: string, b: string) {
   let h = 2166136261;
   const s = a + "\u0000" + b;
@@ -560,10 +651,12 @@ function hashPair(a: string, b: string) {
 export async function POST(req: Request) {
   try {
     const body = await req.json().catch(() => null);
+    let input: AnalyzeRequestBody;
     try {
-      validateInput(body);
-    } catch (e: any) {
-      return NextResponse.json({ error: e.message }, { status: 400, headers: { "Cache-Control": "no-store" } });
+      input = parseInputBody(body);
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : String(e);
+      return NextResponse.json({ error: message }, { status: 400, headers: { "Cache-Control": "no-store" } });
     }
 
     const url = new URL(req.url);
@@ -578,7 +671,7 @@ export async function POST(req: Request) {
 
     const detail: DetailMode = detailFromRequest(req, url); // always "single"
 
-    const { oldQuery, newQuery } = body as { oldQuery: string; newQuery: string };
+    const { oldQuery, newQuery } = input;
     const baseKey = hashPair(oldQuery, newQuery);
 
     // IMPORTANT: diff on RAW so line numbers match the on-screen comparison
@@ -653,7 +746,7 @@ export async function POST(req: Request) {
         page: { cursor, limit, nextCursor, total: explainTargets.length },
       };
 
-      cache.set(`${baseKey}:prep:${cursor}:${limit}:${detail}`, responsePayload);
+      setCachedValue(`${baseKey}:prep:${cursor}:${limit}:${detail}`, responsePayload);
       return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } });
     }
 
@@ -684,8 +777,8 @@ export async function POST(req: Request) {
         explanationsText = r.text;
         usedModel = r.model;
         via = r.via;
-      } catch (e: any) {
-        lastError = String(e?.message || e);
+      } catch (e: unknown) {
+        lastError = e instanceof Error ? e.message : String(e ?? "");
       }
 
       const parsed = (() => {
@@ -716,14 +809,7 @@ export async function POST(req: Request) {
         explanation = m.explanation.trim();
         syntax = (m?.syntax === "bad" ? "bad" : "good") as GoodBad;
         performance = (m?.performance === "bad" ? "bad" : "good") as GoodBad;
-        meta = {
-          clauses: Array.isArray((m as any)._clauses) ? (m as any)._clauses : [],
-          change_kind: typeof (m as any)._change_kind === "string" ? (m as any)._change_kind : undefined,
-          business_impact:
-            (m as any)._business_impact === "clear" || (m as any)._business_impact === "weak" ? (m as any)._business_impact : "none",
-          risk: (m as any)._risk === "medium" || (m as any)._risk === "high" ? (m as any)._risk : "low",
-          suggestions: Array.isArray((m as any)._suggestions) ? (m as any)._suggestions.slice(0, 2) : [],
-        };
+        meta = normalizeMeta(m);
       } else if (lastError) {
         const friendly =
           /AbortError|aborted|timeout/i.test(lastError)
@@ -771,8 +857,9 @@ export async function POST(req: Request) {
 
     /* ======================== MODE: page (batch page) ======================== */
     const cacheKey = `${baseKey}:${cursor}:${limit}:page:${detail}`;
-    if (cache.has(cacheKey)) {
-      return NextResponse.json(cache.get(cacheKey), { headers: { "Cache-Control": "no-store" } });
+    const cachedPage = getCachedValue(cacheKey);
+    if (cachedPage) {
+      return NextResponse.json(cachedPage, { headers: { "Cache-Control": "no-store" } });
     }
 
     const pageItems = explainTargets.slice(cursor, cursor + limit);
@@ -799,8 +886,8 @@ export async function POST(req: Request) {
       explanationsText = r.text;
       modelUsed = r.model;
       via = r.via;
-    } catch (e: any) {
-      lastError = String(e?.message || e);
+    } catch (e: unknown) {
+      lastError = e instanceof Error ? e.message : String(e ?? "");
     }
 
     const parsed = (() => {
@@ -836,9 +923,9 @@ export async function POST(req: Request) {
       }
 
       const extras: string[] = [];
-      if (m?.syntax === "bad" && (m as any)._syntax_explanation) extras.push(`Syntax: ${(m as any)._syntax_explanation}`);
-      if (m?.performance === "bad" && (m as any)._performance_explanation)
-        extras.push(`Performance: ${(m as any)._performance_explanation}`);
+      if (m?.syntax === "bad" && m._syntax_explanation) extras.push(`Syntax: ${m._syntax_explanation}`);
+      if (m?.performance === "bad" && m._performance_explanation)
+        extras.push(`Performance: ${m._performance_explanation}`);
       if (extras.length) explanation += ` ${extras.join(" ")}`;
 
       return {
@@ -847,27 +934,16 @@ export async function POST(req: Request) {
         explanation,
         syntax: (m?.syntax === "bad" ? "bad" : "good") as GoodBad,
         performance: (m?.performance === "bad" ? "bad" : "good") as GoodBad,
-        meta: m
-          ? {
-              clauses: Array.isArray((m as any)._clauses) ? (m as any)._clauses : [],
-              change_kind: typeof (m as any)._change_kind === "string" ? (m as any)._change_kind : undefined,
-              business_impact:
-                (m as any)._business_impact === "clear" || (m as any)._business_impact === "weak"
-                  ? (m as any)._business_impact
-                  : "none",
-              risk: (m as any)._risk === "medium" || (m as any)._risk === "high" ? (m as any)._risk : "low",
-              suggestions: Array.isArray((m as any)._suggestions) ? (m as any)._suggestions.slice(0, 2) : [],
-            }
-          : undefined,
+        meta: m ? normalizeMeta(m) : undefined,
       };
     });
 
-    const counts = finalChanges.reduce(
+    const counts = finalChanges.reduce<Record<ChangeType, number>>(
       (acc, c) => {
-        (acc as any)[c.type]++;
+        acc[c.type] += 1;
         return acc;
       },
-      { addition: 0, deletion: 0, modification: 0 } as Record<ChangeType, number>
+      { addition: 0, deletion: 0, modification: 0 }
     );
 
     const summary =
@@ -896,10 +972,11 @@ export async function POST(req: Request) {
       }),
     };
 
-    cache.set(cacheKey, responsePayload);
+    setCachedValue(cacheKey, responsePayload);
     return NextResponse.json(responsePayload, { headers: { "Cache-Control": "no-store" } });
-  } catch (err: any) {
-    const msg = String(err?.name || "") + ": " + safeErrMessage(err);
+  } catch (err: unknown) {
+    const prefix = err instanceof Error ? err.name : "Error";
+    const msg = `${prefix}: ${safeErrMessage(err)}`;
     return NextResponse.json({ error: msg }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
 }

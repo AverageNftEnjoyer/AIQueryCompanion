@@ -7,17 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { MiniMap } from "@/components/minimap";
-import {
-  Home,
-  Bell,
-  BellOff,
-  Zap,
-  AlertCircle,
-  ChevronDown,
-  Link2,
-  Sun,
-  Moon,
-} from "lucide-react";
+import { AlertCircle, Zap } from "lucide-react";
 import { QueryComparison, type QueryComparisonHandle } from "@/components/query-comparison";
 import {
   generateQueryDiff,
@@ -28,6 +18,8 @@ import {
 import AnalysisPanel from "@/components/analysis";
 import { useUserPrefs } from "@/hooks/user-prefs";
 import { Changes } from "@/components/changes";
+import { AppHeader, AskPopover } from "@/components/app-header";
+import { requestChatbotAnswer } from "@/lib/client/chatbot";
 
 type ChangeType = "addition" | "modification" | "deletion";
 type Side = "old" | "new" | "both";
@@ -39,19 +31,6 @@ type FileItem = { id: number; name: string; content: string };
 type SingleIncoming = { name: string; content: string };
 
 const MAX_QUERY_CHARS = 160_000;
-
-const gridBg = (
-  <div className="pointer-events-none absolute inset-0 opacity-90">
-    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(120,119,198,0.08),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(16,185,129,0.08),transparent_60%)]" />
-    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(255,255,255,0.04)_24px)]" />
-  </div>
-);
-const gridBgLight = (
-  <div className="pointer-events-none absolute inset-0 opacity-80">
-    <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,_rgba(0,0,0,0.035),transparent_60%),radial-gradient(ellipse_at_bottom,_rgba(0,0,0,0.035),transparent_60%)]" />
-    <div className="absolute inset-0 mix-blend-overlay bg-[repeating-linear-gradient(0deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px),repeating-linear-gradient(90deg,transparent,transparent_23px,rgba(0,0,0,0.03)_24px)]" />
-  </div>
-);
 
 // ===== Session payload stored per file/session =====
 export type PanelSession = {
@@ -89,7 +68,7 @@ export type PanelSession = {
   summaryText: string;
 
   // Chat
-  chatMessages: { role: "user" | "assistant" | "system"; content: string }[];
+  chatMessages: { role: "user" | "assistant"; content: string }[];
   chatLoading: boolean;
 };
 
@@ -113,11 +92,9 @@ function makeEmptyPanelSession(): PanelSession {
 
 function SingleQueryView({
   query,
-  isLight,
   scrollRef,
 }: {
   query: string;
-  isLight: boolean;
   scrollRef: React.RefObject<HTMLDivElement>;
 }) {
   const lines = useMemo(() => {
@@ -126,30 +103,30 @@ function SingleQueryView({
   }, [query]);
 
   return (
-    <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
-      <Card className="h-full bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)]">
-        <CardContent className="p-5 h-full min-h-0 flex flex-col">
+    <div className="h-full min-w-0 flex-1 overflow-hidden rounded-md">
+      <Card className="h-full rounded-md border border-border bg-card">
+        <CardContent className="flex h-full min-h-0 flex-col p-3">
           <div
             ref={scrollRef}
-            className="flex-1 min-h-0 rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
+            className="hover-scroll min-h-0 flex-1 overflow-auto rounded-md border border-border bg-code-bg focus:outline-none"
             style={{ scrollbarGutter: "stable" }}
             data-single-container="1"
           >
             <div
-              className="relative w-max min-w-full p-2 font-mono text-[12px] leading-[1.22] text-slate-800"
+              className="relative w-max min-w-full p-2 font-mono text-[12px] leading-[1.22] text-code-fg"
               style={{ fontVariantLigatures: "none", MozTabSize: 4 as any, OTabSize: 4 as any, tabSize: 4 as any }}
             >
               {lines.length ? (
                 lines.map((line, idx) => (
-                  <div key={idx} data-side="single" data-line={idx + 1} id={`single-line-${idx + 1}`} className="group flex items-start gap-2 px-2 py-[2px] rounded">
-                    <span className="sticky left-0 z-10 w-10 pr-2 text-right select-none text-slate-500 bg-transparent">
+                  <div key={idx} data-side="single" data-line={idx + 1} id={`single-line-${idx + 1}`} className="group flex items-start gap-2 px-2 py-[2px]">
+                    <span className="sticky left-0 z-10 w-10 select-none pr-2 text-right text-code-gutter">
                       {idx + 1}
                     </span>
                     <code className="block whitespace-pre pr-2 leading-[1.22]">{line}</code>
                   </div>
                 ))
               ) : (
-                <div className="text-sm text-slate-500 p-2">No query provided.</div>
+                <div className="p-2 text-sm text-muted-foreground">No query provided.</div>
               )}
             </div>
           </div>
@@ -159,7 +136,7 @@ function SingleQueryView({
   );
 }
 
-function FancyLoader({ isLight }: { isLight: boolean }) {
+function FancyLoader() {
   const messages = [
     "Generating semantic diff, risk notes, and explanations…",
     "Analyzing SQL syntax and detecting anomalies…",
@@ -195,34 +172,25 @@ function FancyLoader({ isLight }: { isLight: boolean }) {
     };
   }, []);
 
-  const barBase = "rounded-sm animate-bounce";
-  const barShade1 = isLight ? "bg-gray-800" : "bg-white/90";
-  const barShade2 = isLight ? "bg-gray-700" : "bg-white/80";
-  const barShade3 = isLight ? "bg-gray-600" : "bg-white/70";
-
-  const cardBg = isLight ? "bg-black/5 border-black/10" : "bg-white/5 border-white/10";
-  const pulseBg = isLight ? "bg-black/10" : "bg-white/10";
-  const textColor = isLight ? "text-gray-700" : "text-white/70";
-
   return (
-    <div className="w-full flex flex-col items-center justify-center py-16">
-      <div className="flex items-end gap-1.5 mb-6">
-        <span className={`w-2 h-5 ${barShade1} ${barBase}`} />
-        <span className={`w-2 h-7 ${barShade2} ${barBase}`} style={{ animationDelay: "120ms" }} />
-        <span className={`w-2 h-9 ${barShade3} ${barBase}`} style={{ animationDelay: "240ms" }} />
-        <span className={`w-2 h-7 ${barShade2} ${barBase}`} style={{ animationDelay: "360ms" }} />
-        <span className={`w-2 h-5 ${barShade1} ${barBase}`} style={{ animationDelay: "480ms" }} />
+    <div className="flex w-full flex-col items-center justify-center py-16">
+      <div className="mb-6 flex items-end gap-1.5">
+        <span className="h-5 w-2 animate-bounce rounded-sm bg-primary" />
+        <span className="h-7 w-2 animate-bounce rounded-sm bg-primary" style={{ animationDelay: "120ms" }} />
+        <span className="h-9 w-2 animate-bounce rounded-sm bg-primary" style={{ animationDelay: "240ms" }} />
+        <span className="h-7 w-2 animate-bounce rounded-sm bg-primary" style={{ animationDelay: "360ms" }} />
+        <span className="h-5 w-2 animate-bounce rounded-sm bg-primary" style={{ animationDelay: "480ms" }} />
       </div>
 
-      <div className={`w-full max-w-3xl rounded-xl border ${cardBg} backdrop-blur p-6`}>
-        <div className={`h-4 w-40 ${pulseBg} rounded mb-4 animate-pulse`} />
+      <div className="w-full max-w-3xl rounded-md border border-border bg-card p-6">
+        <div className="mb-4 h-4 w-40 animate-pulse rounded bg-surface-2" />
         <div className="space-y-2">
-          <div className={`h-3 w/full ${pulseBg} rounded animate-pulse`} />
-          <div className={`h-3 w-[92%] ${pulseBg} rounded animate-pulse`} />
-          <div className={`h-3 w-[84%] ${pulseBg} rounded animate-pulse`} />
+          <div className="h-3 w-full animate-pulse rounded bg-surface-2" />
+          <div className="h-3 w-[92%] animate-pulse rounded bg-surface-2" />
+          <div className="h-3 w-[84%] animate-pulse rounded bg-surface-2" />
         </div>
-        <div className={`mt-6 flex items-center gap-2 ${textColor}`} aria-live="polite">
-          <Zap className="w-4 h-4 animate-pulse" />
+        <div className="mt-6 flex items-center gap-2 text-muted-foreground" aria-live="polite">
+          <Zap className="h-4 w-4 animate-pulse" />
           <span className={`transition-opacity duration-300 ${fading ? "opacity-0" : "opacity-100"}`}>{messages[index]}</span>
         </div>
       </div>
@@ -266,10 +234,7 @@ export default function ResultsPage() {
 
   const { isLight, soundOn, syncEnabled, setIsLight, setSoundOn, setSyncEnabled } = useUserPrefs();
 
-  const topPaneHeights =
-    mode === "single"
-      ? "h:[88svh] md:h-[90dvh] lg:h-[92dvh] 2xl:h-[86dvh] min-h-[560px] max-h-[1400px]"
-      : "h-[80svh] md:h-[88dvh] lg:h-[90dvh] 2xl:h-[84dvh] min-h-[560px] max-h-[1400px]";
+  const topPaneHeights = mode === "single" ? "h-[62dvh] min-h-[420px]" : "h-[42dvh] min-h-[300px]";
 
   const [typeFilter, setTypeFilter] = useState<ChangeType | "all">("all");
   const [sideFilter, setSideFilter] = useState<Side | "all">("all");
@@ -306,7 +271,6 @@ export default function ResultsPage() {
   const saveCurrentSession = () => {
     const k = currentSessionKeyRef.current;
     if (!k) return;
-    // state is already kept in sessionRef via React setters below
   };
   const loadSession = (k: string) => {
     currentSessionKeyRef.current = k;
@@ -729,11 +693,6 @@ export default function ResultsPage() {
     };
   }, [soundOn]);
 
-  const pageBgClass = isLight ? "bg-slate-100 text-slate-900" : "bg-neutral-950 text-white";
-  const headerBgClass = isLight
-    ? "bg-slate-50/95 border-slate-200 text-slate-900 shadow-[0_1px_0_rgba(0,0,0,0.04)]"
-    : "bg-black/30 border-white/10 text-white";
-
   // derive current panel session
   const panelSession = sessionRef.current.get(currentSessionKeyRef.current)?.panel ?? makeEmptyPanelSession();
   const setPanelSession = (updater: React.SetStateAction<PanelSession>) => {
@@ -746,215 +705,197 @@ export default function ResultsPage() {
   };
   const [, setTick] = useState(0);
 
+  // ===== Header Ask assistant =====
+  const [assistantVisible, setAssistantVisible] = useState(false);
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantText, setAssistantText] = useState<string>("");
+  const [inputOpen, setInputOpen] = useState(false);
+  const [inputVal, setInputVal] = useState("");
+  const askInputRef = useRef<HTMLInputElement | null>(null);
+  const askCounterRef = useRef(0);
+
+  useEffect(() => {
+    if (inputOpen) setTimeout(() => askInputRef.current?.focus(), 0);
+  }, [inputOpen]);
+
+  const handleAskClick = () => {
+    setInputOpen((v) => !v);
+    setAssistantVisible(false);
+  };
+
+  const sendAskQuestion = async () => {
+    const q = inputVal.trim();
+    if (!q) return;
+    setInputOpen(false);
+    setAssistantVisible(true);
+    setAssistantLoading(true);
+    setAssistantText("");
+    setInputVal("");
+    const requestId = askCounterRef.current + 1;
+    askCounterRef.current = requestId;
+    try {
+      const result = await requestChatbotAnswer(q);
+      if (askCounterRef.current !== requestId) return;
+      setAssistantText(result.ok ? result.answer || "I didn't get a reply." : `Warning: ${result.error}`);
+    } finally {
+      if (askCounterRef.current === requestId) setAssistantLoading(false);
+    }
+  };
+
+  const fileSelect =
+    mode === "single" && files.length > 0 ? (
+      <select
+        value={singleSel >= 0 ? singleSel : 0}
+        onChange={(e) => setSingleSel(Number(e.target.value))}
+        className="mr-1 h-[30px] min-w-[200px] rounded-md border border-border bg-card px-2.5 font-mono text-xs text-foreground"
+        title="Select query"
+      >
+        {files.map((f) => (
+          <option key={f.id} value={f.id}>
+            {f.name}
+          </option>
+        ))}
+      </select>
+    ) : undefined;
+
   return (
-    <div className={`min-h-screen relative ${pageBgClass}`}>
-      {isLight ? gridBgLight : gridBg}
+    <div className="relative flex min-h-screen flex-col bg-background text-foreground">
+      <AppHeader
+        routeLabel={mode === "single" ? "Analysis mode" : "Compare results"}
+        syncEnabled={syncEnabled}
+        onToggleSync={() => setSyncEnabled((v) => !v)}
+        syncDisabled={mode === "single"}
+        isLight={isLight}
+        onToggleTheme={() => setIsLight((v) => !v)}
+        soundOn={soundOn}
+        onToggleSound={() =>
+          setSoundOn((prev) => {
+            const next = !prev;
+            if (!next) {
+              [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach((a) => {
+                try {
+                  if (a) {
+                    a.muted = true;
+                    a.pause();
+                    a.currentTime = 0;
+                  }
+                } catch {}
+              });
+            } else {
+              const el = switchAudioRef.current;
+              if (el) {
+                try {
+                  el.muted = false;
+                  el.pause();
+                  el.currentTime = 0;
+                  el.volume = 0.5;
+                  el.play().catch(() => {});
+                } catch {}
+              }
+            }
+            return next;
+          })
+        }
+        onAsk={handleAskClick}
+        extra={fileSelect}
+      />
 
-      {/* HEADER — single mode gets a file dropdown; compare mode gets two dropdowns in toolbar below */}
-      <header className={`relative z-10 border ${headerBgClass} backdrop-blur`}>
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 py-3 md:py-2">
-          <div className="grid grid-cols-3 items-center gap-3">
-            {/* Left: Home */}
-            <div className="flex">
-              <Link
-                href="/"
-                className={`inline-flex items-center justify-center w-10 h-10 rounded-lg transition border ${
-                  isLight ? "bg-black/5 hover:bg-black/10 border-black/10 text-gray-700" : "bg-white/5 hover:bg-white/10 border-white/10 text-white"
-                }`}
-              >
-                <Home className="w-5 h-5" />
-              </Link>
-            </div>
+      <AskPopover
+        inputOpen={inputOpen}
+        onCloseInput={() => setInputOpen(false)}
+        inputVal={inputVal}
+        setInputVal={setInputVal}
+        onSend={sendAskQuestion}
+        inputRef={askInputRef}
+        assistantVisible={assistantVisible}
+        assistantLoading={assistantLoading}
+        assistantText={assistantText}
+      />
 
-            {/* Center: Title */}
-            <div className="flex items-center justify-center">
-              <span className={`${isLight ? "text-gray-700" : "text-white"} inline-flex items-center gap-2`}>
-                <span className="font-heading font-semibold text-lg">{mode === "single" ? "Analysis Mode" : "Compare Mode"}</span>
-              </span>
-            </div>
-
-            {/* Right: controls + single-mode file dropdown */}
-            <div className="flex items-center justify-end gap-2">
-              {mode === "single" && files.length > 0 && (
-                <select
-                  value={singleSel >= 0 ? singleSel : 0}
-                  onChange={(e) => setSingleSel(Number(e.target.value))}
-                  className={`text-xs sm:text-sm px-2 py-1 rounded-md border min-w-[220px] ${
-                    isLight ? "bg-white border-slate-300 text-slate-800" : "bg-neutral-900 border-white/15 text-white"
-                  }`}
-                  title="Select query"
-                >
-                  {files.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-
-              <button
-                type="button"
-                onClick={() => setSyncEnabled((v) => !v)}
-                title="Toggle synced scrolling"
-                className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
-                disabled={mode === "single"}
-              >
-                <Link2
-                  className={`h-5 w-5 transition ${
-                    mode === "single"
-                      ? isLight
-                        ? "text-gray-300"
-                        : "text-white/30"
-                      : isLight
-                      ? syncEnabled
-                        ? "text-gray-700"
-                        : "text-gray-400"
-                      : syncEnabled
-                      ? "text-white"
-                      : "text-white/60"
-                  }`}
-                />
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setIsLight((v) => !v)}
-                title={isLight ? "Switch to Dark Background" : "Switch to Light Background"}
-                className={`relative p-2 rounded-full transition ${isLight ? "hover:bg-black/10" : "hover:bg-white/10"}`}
-              >
-                {isLight ? <Sun className="h-5 w-5 text-gray-700" /> : <Moon className="h-5 w-5 text-white" />}
-              </button>
-
-              <button
-                type="button"
-                onClick={() =>
-                  setSoundOn((prev) => {
-                    const next = !prev;
-                    if (!next) {
-                      [doneAudioRef.current, switchAudioRef.current, miniClickAudioRef.current, chatbotAudioRef.current].forEach((a) => {
-                        try {
-                          if (a) {
-                            a.muted = true;
-                            a.pause();
-                            a.currentTime = 0;
-                          }
-                        } catch {}
-                      });
-                    } else {
-                      const el = switchAudioRef.current;
-                      if (el) {
-                        try {
-                          el.muted = false;
-                          el.pause();
-                          el.currentTime = 0;
-                          el.volume = 0.5;
-                          el.play().catch(() => {});
-                        } catch {}
-                      }
-                    }
-                    return next;
-                  })
-                }
-                aria-pressed={soundOn}
-                title={soundOn ? "Mute sounds" : "Enable sounds"}
-                className={`inline-flex items-center justify-center w-8 h-8 rounded-lg transition border border-transparent ${
-                  isLight ? "hover:bg-black/10" : "hover:bg-white/10"
-                }`}
-              >
-                {soundOn ? <Bell className={`h-5 w-5 ${isLight ? "text-gray-700" : "text-white"}`} /> : <BellOff className={`h-5 w-5 ${isLight ? "text-gray-400" : "text-white/60"}`} />}
-                <span className="sr-only">{soundOn ? "Mute sounds" : "Enable sounds"}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <main className="relative z-10">
+      <main className="flex-1">
         <audio ref={doneAudioRef} src="/loadingdone.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={switchAudioRef} src="/switch.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={miniClickAudioRef} src="/minimapbar.mp3" preload="metadata" muted={!soundOn} />
         <audio ref={chatbotAudioRef} src="/chatbot.mp3" preload="metadata" muted={!soundOn} />
 
-        <div className="mx-auto w-full max-w-[1800px] px-3 md:px-4 lg:px-6 pt-1 pb-20 md:pb-4">
-          {loading && !error && <FancyLoader isLight={isLight} />}
+        <div className="mx-auto w-full max-w-[1800px] px-4 pb-6 pt-4">
+          {loading && !error && <FancyLoader />}
 
           {!loading && error && (
-            <Alert className={`${isLight ? "bg-white border-red-500/40" : "bg-black/40"} backdrop-blur text-inherit`}>
-              <AlertCircle className={`w-5 h-5 ${isLight ? "text-red-600" : "text-red-400"}`} />
+            <Alert className="rounded-md border border-destructive bg-card">
+              <AlertCircle className="h-5 w-5 text-destructive" />
               <AlertDescription className="flex-1">
-                <strong className={isLight ? "text-red-700" : "text-red-300"}>Error:</strong> {error}
+                <strong className="text-destructive">Error:</strong> {error}
               </AlertDescription>
-              <Button asChild variant="outline" className={`${isLight ? "border-black/20 text-gray-900 hover:bg-black/10" : "border-white/20 text-white/90 hover:bg-white/10"}`}>
+              <Button asChild variant="outline" className="border-border text-foreground hover:bg-surface-2">
                 <Link href="/">Go Home</Link>
               </Button>
             </Alert>
           )}
 
           {!loading && !error && (
-            <div className="space-y-6">
-              {/* Compare toolbar with centered stat chips */}
+            <div className="flex flex-col gap-3">
+              {/* Compare toolbar with stat chips */}
               {mode === "compare" && (
-                <section className="mt-1">
-                  <div
-                    className={`sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-3 flex flex-col gap-2 rounded-lg px-3 py-2 ${
-                      isLight ? "bg-white border border-slate-200 shadow-sm" : "bg-white/5 border border-white/10"
-                    }`}
-                  >
-                    {/* LEFT: old file */}
-                    <div className="justify-self-start">
-                      <select
-                        value={oldSel}
-                        onChange={(e) => setOldSel(Number(e.target.value))}
-                        className={`text-xs sm:text-sm px-2 py-1 rounded-md border min-w-[180px] ${
-                          isLight ? "bg-white border-slate-300 text-slate-800" : "bg-neutral-900 border-white/15 text-white"
-                        }`}
-                        title="Old file"
-                      >
-                        {files.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                <section className="flex flex-col items-center gap-2 rounded-md border border-border bg-card px-3 py-2 sm:grid sm:grid-cols-[1fr_auto_1fr] sm:items-center sm:gap-3">
+                  <div className="justify-self-start">
+                    <select
+                      value={oldSel}
+                      onChange={(e) => setOldSel(Number(e.target.value))}
+                      className="h-[30px] min-w-[180px] rounded-md border border-border bg-card px-2.5 font-mono text-xs text-foreground"
+                      title="Old file"
+                    >
+                      {files.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                    {/* CENTER: stat chips */}
-                    <div className="justify-self-center flex items-center justify-center gap-2 text-xs">
-                      <span className="px-2 py-1 rounded bg-emerald-500/15 border border-emerald-500/30">{additions} additions</span>
-                      <span className="px-2 py-1 rounded bg-amber-500/15 border border-amber-500/30">{modifications} modifications</span>
-                      <span className="px-2 py-1 rounded bg-rose-500/15 border border-rose-500/30">{deletions} deletions</span>
-                      <span className={`px-2 py-1 rounded ${isLight ? "bg-black/5 border-black/15" : "bg-white/10 border-white/20"}`}>{unchanged} unchanged</span>
-                    </div>
+                  <div className="flex items-center justify-center gap-2 justify-self-center text-xs">
+                    <span className="inline-flex items-center gap-1.5 rounded-md bg-diff-add-bg px-2.5 py-1 font-semibold text-diff-add-fg">
+                      <span className="h-2 w-2 rounded-[2px]" style={{ background: "var(--diff-add-edge)" }} />
+                      {additions} additions
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-md bg-diff-mod-bg px-2.5 py-1 font-semibold text-diff-mod-fg">
+                      <span className="h-2 w-2 rounded-[2px]" style={{ background: "var(--diff-mod-edge)" }} />
+                      {modifications} modifications
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 rounded-md bg-diff-del-bg px-2.5 py-1 font-semibold text-diff-del-fg">
+                      <span className="h-2 w-2 rounded-[2px]" style={{ background: "var(--diff-del-edge)" }} />
+                      {deletions} deletions
+                    </span>
+                    <span className="rounded-md border border-border px-2.5 py-1 font-semibold text-muted-foreground">
+                      {unchanged} unchanged
+                    </span>
+                  </div>
 
-                    {/* RIGHT: new file */}
-                    <div className="justify-self-end">
-                      <select
-                        value={newSel}
-                        onChange={(e) => setNewSel(Number(e.target.value))}
-                        className={`text-xs sm:text-sm px-2 py-1 rounded-md border min-w-[180px] ${
-                          isLight ? "bg-white border-slate-300 text-slate-800" : "bg-neutral-900 border-white/15 text-white"
-                        }`}
-                        title="New file"
-                      >
-                        {files.map((f) => (
-                          <option key={f.id} value={f.id}>
-                            {f.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                  <div className="justify-self-end">
+                    <select
+                      value={newSel}
+                      onChange={(e) => setNewSel(Number(e.target.value))}
+                      className="h-[30px] min-w-[180px] rounded-md border border-border bg-card px-2.5 font-mono text-xs text-foreground"
+                      title="New file"
+                    >
+                      {files.map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </section>
               )}
 
-              <section className="mt-1">
-                <div ref={comparisonSectionRef} className={`flex flex-col md:flex-row items-stretch gap-3 ${topPaneHeights} min-h-0`}>
+              <section>
+                <div ref={comparisonSectionRef} className={`flex flex-col items-stretch gap-2 md:flex-row ${topPaneHeights} min-h-0`}>
                   {mode === "single" ? (
                     <>
-                      <div className="md:flex-[2] min-w-0 h-full">
-                        <SingleQueryView query={singleQuery} isLight={isLight} scrollRef={singleScrollRef} />
+                      <div className="h-full min-w-0 md:flex-[2]">
+                        <SingleQueryView query={singleQuery} scrollRef={singleScrollRef} />
                       </div>
-                      <div className="md:flex-[1] min-w-0 h-full mt-3 md:mt-0">
+                      <div className="mt-3 h-full min-w-0 md:mt-0 md:flex-[1]">
                         <AnalysisPanel
                           isLight={isLight}
                           canonicalOld={""}
@@ -973,11 +914,11 @@ export default function ResultsPage() {
                     </>
                   ) : (
                     <>
-                      <div className="flex-1 min-w-0 h-full rounded-xl overflow-hidden">
+                      <div className="h-full min-w-0 flex-1 overflow-hidden rounded-md">
                         <QueryComparison ref={cmpRef} oldQuery={oldQuery} newQuery={newQuery} showTitle={false} syncScrollEnabled={syncEnabled} />
                       </div>
 
-                      <div className="hidden md:flex h-full items-stretch gap-2">
+                      <div className="hidden h-full items-stretch gap-1.5 md:flex">
                         <MiniMap
                           alignedRows={alignedRows}
                           forceSide="old"
@@ -988,7 +929,7 @@ export default function ResultsPage() {
                             cmpRef.current.scrollTo({ side: "old", line });
                           }}
                           onFlashRange={({ startLine, endLine }) => cmpRef.current?.flashRange?.("old", startLine, endLine)}
-                          className={`w-6 h-full rounded-md ${isLight ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40" : "bg-white/5 border border-white/10 hover:border-white/20"}`}
+                          className="h-full w-3.5 rounded-md border border-border bg-surface-2"
                           soundEnabled={soundOn}
                         />
                         <MiniMap
@@ -1001,68 +942,52 @@ export default function ResultsPage() {
                             cmpRef.current.scrollTo({ side: "new", line });
                           }}
                           onFlashRange={({ startLine, endLine }) => cmpRef.current?.flashRange?.("new", startLine, endLine)}
-                          className={`w-6 h-full rounded-md ${isLight ? "bg-white border border-black ring-2 ring-black/30 hover:ring-black/40" : "bg-white/5 border border-white/10 hover:border-white/20"}`}
+                          className="h-full w-3.5 rounded-md border border-border bg-surface-2"
                           soundEnabled={soundOn}
                         />
                       </div>
                     </>
                   )}
                 </div>
-                <div className={`relative z-20 flex items-center justify-center text-xs mt-3 ${isLight ? "text-gray-500" : "text-white/60"}`}>
-                  <ChevronDown className="w-4 h-4 mr-1 animate-bounce" />
-                  {mode === "single" ? "Use the right panel for AI Tools" : "Scroll for Changes & AI Analysis"}
-                </div>
               </section>
 
               {mode === "compare" ? (
-                <section className="mt-6 md:mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
-                  <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                    <Changes
-                      oldQuery={oldQuery}
-                      newQuery={newQuery}
-                      isLight={isLight}
-                      typeFilter={typeFilter}
-                      sideFilter={sideFilter}
-                      onChangeTypeFilter={setTypeFilter}
-                      onChangeSideFilter={setSideFilter}
-                      onJump={(side, line) => {
-                        if (!cmpRef.current) return;
-                        playMiniClick();
-                        comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-                        cmpRef.current.scrollTo({ side, line, flash: true });
-                      }}
-                    />
-                  </div>
+                <section className="mt-2 grid grid-cols-1 items-stretch gap-4 lg:grid-cols-2">
+                  <Changes
+                    oldQuery={oldQuery}
+                    newQuery={newQuery}
+                    isLight={isLight}
+                    typeFilter={typeFilter}
+                    sideFilter={sideFilter}
+                    onChangeTypeFilter={setTypeFilter}
+                    onChangeSideFilter={setSideFilter}
+                    onJump={(side, line) => {
+                      if (!cmpRef.current) return;
+                      playMiniClick();
+                      comparisonSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      cmpRef.current.scrollTo({ side, line, flash: true });
+                    }}
+                  />
 
-                  <div className="space-y-5 sm:space-y-6 md:space-y-8">
-                    <AnalysisPanel
-                      isLight={isLight}
-                      canonicalOld={oldQuery}
-                      canonicalNew={newQuery}
-                      cmpRef={cmpRef}
-                      onJump={(side, line) => jumpAndFlash(side, line)}
-                      externalMessages={panelSession.chatMessages}
-                      setExternalMessages={(fn) => setPanelSession((p) => ({ ...p, chatMessages: typeof fn === "function" ? (fn as any)(p.chatMessages) : fn }))}
-                      externalLoading={panelSession.chatLoading}
-                      setExternalLoading={(v) => setPanelSession((p) => ({ ...p, chatLoading: typeof v === "function" ? (v as any)(p.chatLoading) : v }))}
-                      externalSession={panelSession}
-                      setExternalSession={setPanelSession}
-                    />
-                  </div>
+                  <AnalysisPanel
+                    isLight={isLight}
+                    canonicalOld={oldQuery}
+                    canonicalNew={newQuery}
+                    cmpRef={cmpRef}
+                    onJump={(side, line) => jumpAndFlash(side, line)}
+                    externalMessages={panelSession.chatMessages}
+                    setExternalMessages={(fn) => setPanelSession((p) => ({ ...p, chatMessages: typeof fn === "function" ? (fn as any)(p.chatMessages) : fn }))}
+                    externalLoading={panelSession.chatLoading}
+                    setExternalLoading={(v) => setPanelSession((p) => ({ ...p, chatLoading: typeof v === "function" ? (v as any)(p.chatLoading) : v }))}
+                    externalSession={panelSession}
+                    setExternalSession={setPanelSession}
+                  />
                 </section>
               ) : null}
             </div>
           )}
         </div>
       </main>
-      <style>{`
-        .chatpanel-fit .h-\\[34rem\\] { height: 100% !important; }
-        .qa-persist-highlight {
-          background: rgba(250, 204, 21, 0.35) !important;
-          box-shadow: 0 0 0 2px rgba(250, 204, 21, 0.55) inset;
-          transition: background 150ms ease-in;
-        }
-      `}</style>
     </div>
   );
 }

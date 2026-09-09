@@ -40,7 +40,11 @@ export default [
       ...nextPlugin.configs["core-web-vitals"].rules,
 
       "no-console": ["warn", { allow: ["warn", "error"] }],
+      "no-empty": ["warn", { allowEmptyCatch: true }],
+      "no-useless-escape": "warn",
+      "prefer-const": "warn",
       "no-unused-vars": "off",
+      "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": [
         "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }

@@ -111,14 +111,14 @@ export function canonicalizeSQL(input: string): string {
     i = nl === -1 ? lf.length : nl + 1;
   }
 
-  let cleaned = out.replace(/\n{3,}/g, "\n");
+  const cleaned = out.replace(/\n{3,}/g, "\n");
 
   const lines = cleaned.split("\n");
   const merged: string[] = [];
   const numberLineRE = /^\d+(?:\.\d+)?(?:,|\)|,\)|\),)?$/;
 
   for (let idx = 0; idx < lines.length; idx++) {
-    let line = lines[idx];
+    const line = lines[idx];
     const t = line.trim();
     if (!t) continue;
 
@@ -340,14 +340,14 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
         else j++;
       }
       const lit = line.slice(i, Math.min(j + 1, hardStop));
-      nodes.push(<span key={i} className="text-emerald-700 dark:text-emerald-400">{lit}</span>);
+      nodes.push(<span key={i} className="sql-str">{lit}</span>);
       i = Math.min(j + 1, hardStop);
       continue;
     }
 
     const num = line.slice(i).match(/^\d+(\.\d+)?/);
     if (num) {
-      nodes.push(<span key={i} className="text-violet-700 dark:text-violet-400">{num[0]}</span>);
+      nodes.push(<span key={i} className="sql-num">{num[0]}</span>);
       i += num[0].length;
       continue;
     }
@@ -355,7 +355,7 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
     const word = line.slice(i).match(/^[A-Za-z_][A-Za-z0-9_]*/)?.[0];
     if (word) {
       if (KW.has(word.toUpperCase())) {
-        nodes.push(<span key={i} className="text-sky-700 dark:text-sky-400 font-semibold">{word.toUpperCase()}</span>);
+        nodes.push(<span key={i} className="sql-kw">{word.toUpperCase()}</span>);
       } else {
         nodes.push(<span key={i}>{word}</span>);
       }
@@ -368,7 +368,7 @@ export function renderHighlightedSQL(line: string): React.ReactNode[] {
   }
 
   if (commentIdx >= 0) {
-    nodes.push(<span key="cmt" className="text-gray-500 dark:text-gray-400 italic">{line.slice(commentIdx)}</span>);
+    nodes.push(<span key="cmt" className="sql-cmt">{line.slice(commentIdx)}</span>);
   }
 
   return nodes;

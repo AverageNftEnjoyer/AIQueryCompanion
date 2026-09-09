@@ -209,8 +209,7 @@ export function MiniMap({
     <div
       ref={rootRef}
       className={[
-        "relative rounded-md overflow-hidden cursor-pointer",
-        "bg-white/5 border border-white/10 hover:border-white/20",
+        "relative overflow-hidden cursor-pointer",
         className || "",
       ].join(" ")}
       style={{ height: "100%" }}

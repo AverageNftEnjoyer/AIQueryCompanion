@@ -37,6 +37,8 @@ interface HardcodeFinding {
   severity?: "info" | "warn" | "error";
 }
 
+type ChatMessage = { role: "user" | "assistant"; content: string };
+
 interface Props {
   isLight: boolean;
   canonicalOld: string;
@@ -45,8 +47,8 @@ interface Props {
   onJump?: (side: Exclude<Side, "both">, line: number) => void;
   fullHeight?: boolean;
 
-  externalMessages: any[];
-  setExternalMessages: React.Dispatch<React.SetStateAction<any[]>>;
+  externalMessages: ChatMessage[];
+  setExternalMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
   externalLoading: boolean;
   setExternalLoading: React.Dispatch<React.SetStateAction<boolean>>;
 
@@ -58,7 +60,7 @@ interface Props {
 const toLF = (s: string) => s.replace(/\r\n/g, "\n");
 
 export default function AnalysisPanel({
-  isLight,
+  isLight: _isLight,
   canonicalOld,
   canonicalNew,
   cmpRef,
@@ -71,6 +73,7 @@ export default function AnalysisPanel({
   externalSession,
   setExternalSession,
 }: Props) {
+  const errorMessage = (err: unknown, fallback: string) => (err instanceof Error ? err.message : fallback);
   const clickAudioRef = React.useRef<HTMLAudioElement | null>(null);
   const [soundEnabled] = React.useState(true);
   const playClick = () => {
@@ -206,7 +209,7 @@ export default function AnalysisPanel({
         if (!res.ok) throw new Error(data?.error || `Prep failed (${res.status})`);
         return data;
       }
-      let page = await prepPage(0);
+      const page = await prepPage(0);
       let placeholders: ChangeItem[] = page?.analysis?.changes ?? [];
       let nextCursor: number | null = page?.page?.nextCursor ?? null;
       const total: number = page?.page?.total ?? placeholders.length;
@@ -246,8 +249,8 @@ export default function AnalysisPanel({
         await new Promise((r) => setTimeout(r, 120));
       }
       setExternalSession((p) => ({ ...p, streaming: false }));
-    } catch (e: any) {
-      setExternalSession((p) => ({ ...p, streaming: false, error: e?.message || "Unexpected error while analyzing changes." }));
+    } catch (e: unknown) {
+      setExternalSession((p) => ({ ...p, streaming: false, error: errorMessage(e, "Unexpected error while analyzing changes.") }));
     }
   }
 
@@ -266,36 +269,37 @@ export default function AnalysisPanel({
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || `Scan failed (${res.status})`);
-      const items = data?.analysis?.changes ?? [];
-      const normalized: HardcodeFinding[] = items.map((it: any) => {
+      const items: unknown[] = Array.isArray(data?.analysis?.changes) ? data.analysis.changes : [];
+      const normalized: HardcodeFinding[] = items.map((it) => {
+        const record = (typeof it === "object" && it !== null ? it : {}) as Record<string, unknown>;
         const ln =
-          typeof it?.lineNumberNew === "number"
-            ? it.lineNumberNew
-            : typeof it?.lineNumber === "number"
-            ? it.lineNumber
+          typeof record.lineNumberNew === "number"
+            ? record.lineNumberNew
+            : typeof record.lineNumber === "number"
+            ? record.lineNumber
             : 0;
-        const desc = String(it?.description ?? "unknown");
-        const serverSeverity = (it?.severity as "block" | "warn" | "info" | undefined) || undefined;
+        const desc = String(record.description ?? "unknown");
+        const serverSeverity = (record.severity as "block" | "warn" | "info" | undefined) || undefined;
         const severity: "error" | "warn" | "info" = (() => {
           if (serverSeverity === "block") return "error";
           if (serverSeverity === "warn") return "warn";
           if (serverSeverity === "info") return "info";
           const dl = desc.toLowerCase();
           if (dl.includes("secret/credential") || dl.includes("env-or-schema")) return "error";
-          if (it?.syntax === "bad") return "warn";
+          if (record.syntax === "bad") return "warn";
           return "info";
         })();
         return {
           kind: desc,
-          detail: String(it?.explanation ?? ""),
+          detail: String(record.explanation ?? ""),
           lineNumber: Number(ln),
           side: "new",
           severity,
         };
       });
       setExternalSession((p) => ({ ...p, hcFindings: normalized, hcLoading: false }));
-    } catch (e: any) {
-      setExternalSession((p) => ({ ...p, hcLoading: false, hcError: e?.message || "Unexpected error while scanning for hardcoding." }));
+    } catch (e: unknown) {
+      setExternalSession((p) => ({ ...p, hcLoading: false, hcError: errorMessage(e, "Unexpected error while scanning for hardcoding.") }));
     }
   }
 
@@ -316,9 +320,9 @@ export default function AnalysisPanel({
       if (!res.ok) throw new Error(data?.error || `Summarize failed (${res.status})`);
       const t = String(data?.tldr || "").trim();
       setExternalSession((p) => ({ ...p, sumLoading: false, summaryText: t }));
-    } catch (e: any) {
-      if (e?.name === "AbortError") return;
-      setExternalSession((p) => ({ ...p, sumLoading: false, sumError: e?.message || "Unexpected error while generating summary." }));
+    } catch (e: unknown) {
+      if (e instanceof Error && e.name === "AbortError") return;
+      setExternalSession((p) => ({ ...p, sumLoading: false, sumError: errorMessage(e, "Unexpected error while generating summary.") }));
     }
   }
 
@@ -331,33 +335,23 @@ export default function AnalysisPanel({
 
   return (
     <Card
-      className={`mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-slate-50 border-slate-200 shadow-lg ${
+      className={`mt-4 sm:mt-5 md:mt-0 scroll-mt-24 bg-card border border-border rounded-md ${
         fullHeight ? "h-full" : ""
       }`}
     >
-      <CardContent className={`p-5 ${fullHeight ? "h-full flex flex-col min-h-0" : ""}`}>
+      <CardContent className={`p-0 ${fullHeight ? "h-full flex flex-col min-h-0" : ""}`}>
         <audio ref={clickAudioRef} src="/minimapbar.mp3" preload="auto" muted={!soundEnabled} />
 
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-slate-900 font-semibold">AI Tools</h3>
+        <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border shrink-0">
+          <h3 className="font-heading text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">AI tools</h3>
           <div className="flex items-center gap-2">
-            {showGenerateButton && (
-              <button
-                onClick={handleGenerate}
-                disabled={generateDisabled}
-                title="Generate"
-                className="inline-flex items-center gap-2 h-8 px-3 rounded-full border border-gray-300 bg-gray-100 text-gray-900 shadow-sm hover:bg-white transition disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <span className="text-sm">Generate</span>
-              </button>
-            )}
-            <div className="inline-flex rounded-full border border-gray-300 bg-gray-100 p-0.5">
+            <div className="inline-flex rounded-md border border-border overflow-hidden">
               {canonicalOld && (
                 <button
                   type="button"
                   onClick={() => setExternalSession((p) => ({ ...p, mode: "analysis" }))}
-                  className={`px-3 h-8 rounded-full text-sm transition ${
-                    externalSession.mode === "analysis" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                  className={`h-[26px] px-2.5 text-xs border-l border-border first:border-l-0 transition ${
+                    externalSession.mode === "analysis" ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground hover:bg-surface-2"
                   }`}
                   title="Model-driven change analysis"
                 >
@@ -367,8 +361,8 @@ export default function AnalysisPanel({
               <button
                 type="button"
                 onClick={() => setExternalSession((p) => ({ ...p, mode: "hardcode" }))}
-                className={`px-3 h-8 rounded-full text-sm transition ${
-                  externalSession.mode === "hardcode" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                className={`h-[26px] px-2.5 text-xs border-l border-border first:border-l-0 transition ${
+                  externalSession.mode === "hardcode" ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground hover:bg-surface-2"
                 }`}
               >
                 Hardcoding
@@ -376,8 +370,8 @@ export default function AnalysisPanel({
               <button
                 type="button"
                 onClick={() => setExternalSession((p) => ({ ...p, mode: "summary" }))}
-                className={`px-3 h-8 rounded-full text-sm transition ${
-                  externalSession.mode === "summary" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                className={`h-[26px] px-2.5 text-xs border-l border-border first:border-l-0 transition ${
+                  externalSession.mode === "summary" ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground hover:bg-surface-2"
                 }`}
               >
                 Summary
@@ -385,32 +379,42 @@ export default function AnalysisPanel({
               <button
                 type="button"
                 onClick={() => setExternalSession((p) => ({ ...p, mode: "chat" }))}
-                className={`px-3 h-8 rounded-full text-sm transition ${
-                  externalSession.mode === "chat" ? "bg-white text-gray-900 shadow" : "text-gray-600 hover:text-gray-900"
+                className={`h-[26px] px-2.5 text-xs border-l border-border first:border-l-0 transition ${
+                  externalSession.mode === "chat" ? "bg-primary text-primary-foreground font-semibold" : "text-muted-foreground hover:bg-surface-2"
                 }`}
               >
                 Chat
               </button>
             </div>
+            {showGenerateButton && (
+              <button
+                onClick={handleGenerate}
+                disabled={generateDisabled}
+                title="Generate"
+                className="h-[26px] px-2.5 rounded-md border border-foreground text-xs font-semibold text-foreground transition hover:bg-surface-2 disabled:opacity-45 disabled:cursor-not-allowed"
+              >
+                Generate
+              </button>
+            )}
           </div>
         </div>
 
         <div
           className={`${
             fullHeight ? "flex-1 min-h-0" : "h-[27.7rem]"
-          } bg-gray-50 border border-gray-200 rounded-lg p-4 overflow-y-auto`}
+          } overflow-y-auto`}
         >
           {externalSession.mode === "analysis" ? (
             externalSession.error ? (
-              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
+              <div className="m-3.5 rounded-md border border-destructive bg-diff-del-bg p-4 text-sm text-destructive">
                 {externalSession.error}
               </div>
             ) : externalSession.streaming && externalSession.changes.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-center text-gray-700 space-y-5">
-                <div className="relative w-14 h-14">
-                  <div className="absolute inset-0 rounded-full border-2 border-gray-300/60 animate-[spin_2.2s_linear_infinite]" />
-                  <div className="absolute inset-2 rounded-full border-t-2 border-gray-700 animate-[spin_1.2s_linear_infinite]" />
-                  <div className="absolute inset-4 rounded-full bg-gray-300/20 animate-pulse" />
+              <div className="flex h-full flex-col items-center justify-center space-y-5 py-10 text-center text-foreground">
+                <div className="relative h-14 w-14">
+                  <div className="absolute inset-0 rounded-full border-2 border-border animate-[spin_2.2s_linear_infinite]" />
+                  <div className="absolute inset-2 rounded-full border-t-2 border-[var(--primary)] animate-[spin_1.2s_linear_infinite]" />
+                  <div className="absolute inset-4 rounded-full bg-surface-2 animate-pulse" />
                 </div>
                 <div className="text-sm font-medium transition-opacity duration-500">
                   {analysisMessages[analysisMsgIdx]}
@@ -420,13 +424,19 @@ export default function AnalysisPanel({
                 `}</style>
               </div>
             ) : externalSession.changes.length > 0 ? (
-              <div className="space-y-4">
+              <div>
                 {externalSession.changes.map((chg, i) => {
                   const sideForJump: Exclude<Side, "both"> = chg.side === "old" ? "old" : "new";
                   const dispLine =
                     sideForJump === "old"
                       ? toDisplayLine("old", chg.lineNumber)
                       : toDisplayLine("new", chg.lineNumber);
+                  const chipClass =
+                    chg.type === "addition"
+                      ? "bg-diff-add-bg text-diff-add-fg"
+                      : chg.type === "deletion"
+                      ? "bg-diff-del-bg text-diff-del-fg"
+                      : "bg-diff-mod-bg text-diff-mod-fg";
                   return (
                     <button
                       key={i}
@@ -444,79 +454,54 @@ export default function AnalysisPanel({
                           (e.currentTarget as HTMLButtonElement).blur();
                         }
                       }}
-                      className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                      className="flex w-full items-start gap-3.5 border-b border-border px-3.5 py-3 text-left transition hover:bg-surface-2 focus:outline-none focus:ring-0"
                     >
-                      <div className="flex items-start gap-4">
-                        <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                          <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                            Line {dispLine}
+                      <div className="flex w-[104px] shrink-0 flex-col items-start gap-1">
+                        <span className="font-mono text-[11px] text-muted-foreground">Line {dispLine}</span>
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-[0.04em] ${chipClass}`}>
+                          {chg.type}
+                        </span>
+                        <div className="flex flex-col gap-0.5 pt-1">
+                          <span className={`text-[10px] font-semibold ${chg.syntax === "good" ? "text-diff-add-fg" : "text-diff-del-fg"}`}>
+                            Syntax {chg.syntax === "good" ? "Good" : "Bad"}
                           </span>
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                              chg.type === "addition"
-                                ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                : chg.type === "deletion"
-                                ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                                : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                            }`}
-                          >
-                            {chg.type}
+                          <span className={`text-[10px] font-semibold ${chg.performance === "good" ? "text-diff-add-fg" : "text-diff-del-fg"}`}>
+                            Perf {chg.performance === "good" ? "Good" : "Bad"}
                           </span>
-                          <div className="flex flex-col gap-1 pt-1">
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                                chg.syntax === "good"
-                                  ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                  : "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                              }`}
-                            >
-                              Syntax: {chg.syntax === "good" ? "Good" : "Bad"}
-                            </span>
-                            <span
-                              className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                                chg.performance === "good"
-                                  ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                                  : "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                              }`}
-                            >
-                              Performance: {chg.performance === "good" ? "Good" : "Bad"}
-                            </span>
+                        </div>
+                      </div>
+                      <div className="flex-1">
+                        {chg.explanation === "Pending…" ? (
+                          <div className="space-y-2" aria-busy="true" aria-live="polite">
+                            <div className="h-3 w-[95%] animate-pulse rounded bg-surface-2" />
+                            <div className="h-3 w-[90%] animate-pulse rounded bg-surface-2" />
+                            <div className="h-3 w-[88%] animate-pulse rounded bg-surface-2" />
+                            <div className="h-3 w-[82%] animate-pulse rounded bg-surface-2" />
                           </div>
-                        </div>
-                        <div className="flex-1">
-                          {chg.explanation === "Pending…" ? (
-                            <div className="space-y-2" aria-busy="true" aria-live="polite">
-                              <div className="h-3 w-[95%] bg-gray-200 rounded animate-pulse" />
-                              <div className="h-3 w-[90%] bg-gray-200 rounded animate-pulse" />
-                              <div className="h-3 w-[88%] bg-gray-200 rounded animate-pulse" />
-                              <div className="h-3 w-[82%] bg-gray-200 rounded animate-pulse" />
-                            </div>
-                          ) : (
-                            <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap transition-opacity duration-300 opacity-100">
-                              {chg.explanation}
-                            </p>
-                          )}
-                        </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap text-xs leading-[1.55] text-foreground transition-opacity duration-300">
+                            {chg.explanation}
+                          </p>
+                        )}
                       </div>
                     </button>
                   );
                 })}
               </div>
             ) : (
-              <div className="text-gray-700 text-sm">{externalSession.analysisBanner}</div>
+              <div className="px-3.5 py-3 text-sm text-muted-foreground">{externalSession.analysisBanner}</div>
             )
           ) : externalSession.mode === "hardcode" ? (
             externalSession.hcError ? (
-              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
+              <div className="m-3.5 rounded-md border border-destructive bg-diff-del-bg p-4 text-sm text-destructive">
                 {externalSession.hcError}
               </div>
             ) : externalSession.hcLoading ? (
-              <div className="flex flex-col items-center justify-center h-full text-center text-gray-700 space-y-5">
-                <div className="relative w-16 h-16">
-                  <div className="absolute inset-0 rounded-full bg-gray-300 opacity-20 animate-ping" />
-                  <div className="absolute inset-0 rounded-full border-2 border-dashed border-gray-400 animate-[spin_6s_linear_infinite]" />
-                  <div className="absolute inset-3 rounded-full border-t-2 border-gray-700 animate-[spin_1.4s_linear_infinite]" />
-                  <div className="absolute left-1/2 top-0 w-0.5 h-3 bg-gray-700 rounded origin-bottom animate-[spin_1.4s_linear_infinite]" />
+              <div className="flex h-full flex-col items-center justify-center space-y-5 py-10 text-center text-foreground">
+                <div className="relative h-16 w-16">
+                  <div className="absolute inset-0 rounded-full bg-surface-2 opacity-60 animate-ping" />
+                  <div className="absolute inset-0 rounded-full border-2 border-dashed border-border animate-[spin_6s_linear_infinite]" />
+                  <div className="absolute inset-3 rounded-full border-t-2 border-[var(--primary)] animate-[spin_1.4s_linear_infinite]" />
                 </div>
                 <div className="text-sm font-medium transition-opacity duration-500">
                   {hcMessages[hcMsgIdx]}
@@ -526,9 +511,15 @@ export default function AnalysisPanel({
                 `}</style>
               </div>
             ) : externalSession.hcFindings.length > 0 ? (
-              <div className="space-y-4">
+              <div>
                 {externalSession.hcFindings.map((f, i) => {
                   const dispLine = toDisplayLine("new", f.lineNumber);
+                  const chipClass =
+                    f.severity === "error"
+                      ? "bg-diff-del-bg text-diff-del-fg"
+                      : f.severity === "warn"
+                      ? "bg-diff-mod-bg text-diff-mod-fg"
+                      : "border border-border text-muted-foreground";
                   return (
                     <button
                       key={i}
@@ -546,49 +537,37 @@ export default function AnalysisPanel({
                           (e.currentTarget as HTMLButtonElement).blur();
                         }
                       }}
-                      className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-4 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                      className="flex w-full items-start gap-3.5 border-b border-border px-3.5 py-3 text-left transition hover:bg-surface-2 focus:outline-none focus:ring-0"
                     >
-                      <div className="flex items-start gap-4">
-                        <div className="shrink-0 flex flex-col items-start gap-1 min-w-[120px]">
-                          <span className="px-2 py-1 rounded text-xs font-medium bg-slate-100 text-slate-700">
-                            Line {dispLine}
-                          </span>
-                          <span
-                            className={`px-2 py-0.5 rounded text-[10px] font-medium transition ${
-                              f.severity === "error"
-                                ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                                : f.severity === "warn"
-                                ? "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                                : "bg-gray-100 text-gray-700 group-hover:bg-gray-200"
-                            }`}
-                          >
-                            {f.severity === "error" ? "Flagged" : f.severity === "warn" ? "Review" : "Info"}
-                          </span>
-                        </div>
-                        <div className="flex-1">
-                          <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{f.detail}</p>
-                        </div>
+                      <div className="flex w-[104px] shrink-0 flex-col items-start gap-1">
+                        <span className="font-mono text-[11px] text-muted-foreground">Line {dispLine}</span>
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-semibold uppercase tracking-[0.04em] ${chipClass}`}>
+                          {f.severity === "error" ? "Flagged" : f.severity === "warn" ? "Review" : "Info"}
+                        </span>
+                      </div>
+                      <div className="flex-1">
+                        <p className="whitespace-pre-wrap text-xs leading-[1.55] text-foreground">{f.detail}</p>
                       </div>
                     </button>
                   );
                 })}
               </div>
             ) : (
-              <div className="text-gray-600 text-sm">Run Generate to scan for hardcoded values or configuration issues.</div>
+              <div className="px-3.5 py-3 text-sm text-muted-foreground">Run Generate to scan for hardcoded values or configuration issues.</div>
             )
           ) : externalSession.mode === "summary" ? (
             externalSession.sumError ? (
-              <div className="bg-rose-50 border border-rose-200 rounded-lg p-4 text-sm text-rose-700">
+              <div className="m-3.5 rounded-md border border-destructive bg-diff-del-bg p-4 text-sm text-destructive">
                 {externalSession.sumError}
               </div>
             ) : externalSession.sumLoading ? (
-              <div className="flex flex-col items-center justify-center h-full text-center text-gray-700 space-y-5">
-                <div className="relative w-16 h-16">
-                  <div className="absolute inset-0 rounded-lg bg-gray-300/20 animate-pulse" />
-                  <div className="absolute inset-0 rounded-lg border border-gray-300/50" />
-                  <div className="absolute left-2 right-2 top-3 h-2 rounded bg-gray-300 animate-[shimmer_1.5s_ease_infinite]" />
-                  <div className="absolute left-2 right-4 top-6 h-2 rounded bg-gray-200 animate-[shimmer_1.6s_ease_infinite]" />
-                  <div className="absolute left-2 right-8 top-9 h-2 rounded bg-gray-200 animate-[shimmer_1.7s_ease_infinite]" />
+              <div className="flex h-full flex-col items-center justify-center space-y-5 py-10 text-center text-foreground">
+                <div className="relative h-16 w-16">
+                  <div className="absolute inset-0 rounded-md bg-surface-2 animate-pulse" />
+                  <div className="absolute inset-0 rounded-md border border-border" />
+                  <div className="absolute left-2 right-2 top-3 h-2 rounded bg-surface-2 animate-[shimmer_1.5s_ease_infinite]" />
+                  <div className="absolute left-2 right-4 top-6 h-2 rounded bg-surface-2 animate-[shimmer_1.6s_ease_infinite]" />
+                  <div className="absolute left-2 right-8 top-9 h-2 rounded bg-surface-2 animate-[shimmer_1.7s_ease_infinite]" />
                 </div>
                 <div className="text-sm font-medium transition-opacity duration-500">
                   {summaryMessages[sumMsgIdx]}
@@ -602,12 +581,12 @@ export default function AnalysisPanel({
                 `}</style>
               </div>
             ) : externalSession.summaryText ? (
-              <p className="text-gray-800 text-sm leading-relaxed whitespace-pre-wrap">{externalSession.summaryText}</p>
+              <p className="whitespace-pre-wrap px-3.5 py-3 text-sm leading-relaxed text-foreground">{externalSession.summaryText}</p>
             ) : (
-              <div className="text-gray-600 text-sm">Click Generate to produce a concise overview.</div>
+              <div className="px-3.5 py-3 text-sm text-muted-foreground">Click Generate to produce a concise overview.</div>
             )
           ) : (
-            <div className="h-full">
+            <div className="h-full p-3.5">
               <ChatPanel
                 rawOld={canonicalOld}
                 rawNew={canonicalNew}

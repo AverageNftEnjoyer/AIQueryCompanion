@@ -156,11 +156,11 @@ const ChatPanel = memo(function ChatPanel({
             <div
               key={i}
               className={[
-                "rounded-2xl px-3.5 py-2.5 text-[13.5px] leading-relaxed shadow-sm transition",
+                "rounded-md px-3.5 py-2.5 text-[13.5px] leading-relaxed transition",
                 "max-w-[92%] sm:max-w-[85%] md:max-w-[78%]",
                 m.role === "user"
-                  ? "ml-auto bg-gray-100 text-gray-900 border border-gray-200"
-                  : "mr-auto bg-white text-gray-900 border border-gray-200 animate-speech-pop"
+                  ? "ml-auto bg-primary text-primary-foreground"
+                  : "mr-auto bg-surface-2 text-foreground animate-speech-pop"
               ].join(" ")}
             >
               {m.content}
@@ -168,13 +168,13 @@ const ChatPanel = memo(function ChatPanel({
           ))}
 
           {loading && (
-            <div className="mr-auto rounded-2xl px-3.5 py-2.5 bg-white border border-gray-200 text-[13.5px] text-gray-600 shadow-sm animate-speech-pop">
+            <div className="mr-auto rounded-md bg-surface-2 px-3.5 py-2.5 text-[13.5px] text-muted-foreground animate-speech-pop">
               <div className="flex items-center gap-2">
                 <div className="flex items-center justify-center gap-1 h-4">
                   {[0, 1, 2].map((i) => (
                     <span
                       key={i}
-                      className="w-2 h-2 rounded-full bg-gray-500"
+                      className="w-2 h-2 rounded-full bg-muted-foreground"
                       style={{
                         animation: "dotFlash 1.2s infinite ease-in-out",
                         animationDelay: `${i * 0.2}s`
@@ -182,14 +182,14 @@ const ChatPanel = memo(function ChatPanel({
                     />
                   ))}
                 </div>
-                <span className="text-gray-500">Thinking…</span>
+                <span className="text-muted-foreground">Thinking…</span>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      <div className="mt-2 shrink-0 border-t border-gray-200 pt-2 bg-transparent">
+      <div className="mt-2 shrink-0 border-t border-border pt-2 bg-transparent">
         <div className="flex gap-2">
           <input
             ref={inputRef}
@@ -201,7 +201,7 @@ const ChatPanel = memo(function ChatPanel({
                 if (!loading) void send();
               }
             }}
-            className="flex-1 h-10 rounded-xl border border-gray-300 bg-white px-3 text-[13.5px] text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-4 focus:ring-gray-200"
+            className="flex-1 h-10 rounded-md border border-border bg-card px-3 text-[13.5px] text-foreground placeholder:text-muted-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
         </div>
       </div>

@@ -51,13 +51,13 @@ function QueryComparisonInner(
   const rows: AlignedRow[] = useMemo(() => buildAlignedRows(comparison), [comparison]);
 
   const theme = {
-    baseRow: "group flex items-start gap-3 px-3 py-[2px] border-l-4 border-transparent",
-    added: "bg-emerald-100 border-l-4 border-emerald-600",
-    removed: "bg-rose-100 border-l-4 border-rose-600",
-    modified: "bg-amber-100 border-l-4 border-amber-600",
-    code: "text-slate-800",
-    num: "text-slate-500",
-    header: "text-slate-700",
+    baseRow: "group flex items-start gap-2.5 px-2.5 border-l-[3px] border-transparent",
+    added: "bg-diff-add-bg border-l-[3px] border-l-[var(--diff-add-edge)]",
+    removed: "bg-diff-del-bg border-l-[3px] border-l-[var(--diff-del-edge)]",
+    modified: "bg-diff-mod-bg border-l-[3px] border-l-[var(--diff-mod-edge)]",
+    code: "text-code-fg",
+    num: "text-code-gutter",
+    header: "text-foreground",
   } as const;
 
   const leftRef = useRef<HTMLDivElement>(null);
@@ -195,13 +195,13 @@ function QueryComparisonInner(
       <div
         ref={refDiv}
         onScroll={() => onPaneScroll(which)}
-        className="flex-1 min-h-0 rounded-lg border border-slate-200 bg-slate-50 overflow-auto hover-scroll focus:outline-none"
+        className="flex-1 min-h-0 bg-code-bg overflow-auto hover-scroll focus:outline-none"
         style={heightStyle}
         aria-label={ariaLabel}
         tabIndex={0}
       >
         <div
-          className="relative w-max p-2 font-mono text-[11px] leading-[1.15] text-slate-800"
+          className="relative w-max p-2 font-mono text-[11px] leading-[1.45] text-code-fg"
           style={{
             fontVariantLigatures: "none",
             MozTabSize: 4 as unknown as string,
@@ -241,7 +241,7 @@ function QueryComparisonInner(
                 {...(typeof rawLine === "number" ? { "data-rawline": rawLine } : {})}
                 className={`${theme.baseRow} ${rowBg} relative`}
               >
-                <span className={`sticky left-0 z-10 w-12 pr-2 text-right select-none ${theme.num} bg-transparent shrink-0`}>
+                <span className={`sticky left-0 z-10 w-5 pr-2 text-right select-none ${theme.num} bg-transparent shrink-0`}>
                   {displayLine}
                 </span>
                 <code className="block whitespace-pre pr-4">
@@ -258,70 +258,39 @@ function QueryComparisonInner(
   return (
     <>
       <div className={`${className ?? ""} h-full min-h-0`}>
-        <Card className="mb-6 h-full min-h-0 flex flex-col bg-slate-50 border-slate-200 shadow-[0_1px_0_rgba(0,0,0,0.04)]">
+        <Card className="h-full min-h-0 flex flex-col bg-card border border-border rounded-md overflow-hidden">
           {showTitle && (
             <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 font-heading text-slate-900">
+              <CardTitle className="flex items-center gap-2 font-heading text-foreground">
                 <BarChart3 className="w-5 h-5" />
                 Query Comparison
               </CardTitle>
             </CardHeader>
           )}
-          <CardContent className="pt-2 h-full min-h-0 flex flex-col">
-            <div className="grid lg:grid-cols-2 gap-6 h-full min-h-0">
-              <div className="flex flex-col h-full min-h-0">
-                <h3 className={`font-semibold mb-2 ${theme.header}`}>Original Query</h3>
+          <CardContent className="p-0 h-full min-h-0 flex flex-col">
+            <div className="grid lg:grid-cols-2 gap-1.5 h-full min-h-0 p-1.5">
+              <div className="flex flex-col h-full min-h-0 rounded-md border border-border overflow-hidden bg-card">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
+                  <span className="font-heading text-xs font-semibold uppercase tracking-[0.08em] text-foreground">
+                    Original query
+                  </span>
+                  <span className="text-xs text-muted-foreground">v1</span>
+                </div>
                 {renderSide("old", "Original query")}
               </div>
-              <div className="flex flex-col h-full min-h-0">
-                <h3 className={`font-semibold mb-2 ${theme.header}`}>Updated Query</h3>
+              <div className="flex flex-col h-full min-h-0 rounded-md border border-border overflow-hidden bg-card">
+                <div className="flex items-center justify-between px-3 py-2 border-b border-border shrink-0">
+                  <span className="font-heading text-xs font-semibold uppercase tracking-[0.08em] text-foreground">
+                    Updated query
+                  </span>
+                  <span className="text-xs text-muted-foreground">v2</span>
+                </div>
                 {renderSide("new", "Updated query")}
               </div>
             </div>
           </CardContent>
         </Card>
       </div>
-
-      <style jsx global>{`
-      .flash-highlight {
-        animation: qc-rect-flash 1.2s ease-out;
-      }
-
-      @keyframes qc-rect-flash {
-        0% {
-          background-color: rgba(250, 204, 21, 0.25); /* soft yellow fill */
-          box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.8); /* rectangular edge */
-        }
-        40% {
-          background-color: rgba(250, 204, 21, 0.15);
-          box-shadow: inset 0 0 0 2px rgba(250, 204, 21, 0.5);
-        }
-        100% {
-          background-color: transparent;
-          box-shadow: inset 0 0 0 0 rgba(250, 204, 21, 0);
-        }
-      }
-
-        .hover-scroll::-webkit-scrollbar {
-          width: 10px;
-          height: 10px;
-        }
-        .hover-scroll::-webkit-scrollbar-track {
-          background: #f8fafc;
-        }
-        .hover-scroll::-webkit-scrollbar-thumb {
-          background-color: #cbd5e1;
-          border-radius: 6px;
-          border: 2px solid #f8fafc;
-        }
-        .hover-scroll::-webkit-scrollbar-thumb:hover {
-          background-color: #94a3b8;
-        }
-        .hover-scroll {
-          scrollbar-width: thin;
-          scrollbar-color: #cbd5e1 #f8fafc;
-        }
-      `}</style>
     </>
   );
 }

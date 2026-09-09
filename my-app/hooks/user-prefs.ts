@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export const PREFS_KEY = "qa:prefs:v1";
 
@@ -10,19 +10,36 @@ type Prefs = {
   syncEnabled: boolean;
 };
 
+type BooleanUpdater = boolean | ((x: boolean) => boolean);
+
 const DEFAULT: Prefs = {
   isLight: false, 
   soundOn: true,
   syncEnabled: true,
 };
 
+function isPrefsPatch(value: unknown): value is Partial<Prefs> {
+  return typeof value === "object" && value !== null;
+}
+
+function resolveUpdater(current: boolean, updater: BooleanUpdater): boolean {
+  return typeof updater === "function" ? updater(current) : updater;
+}
+
+function logPrefsWarning(context: string, err: unknown) {
+  const message = err instanceof Error ? err.message : String(err);
+  console.warn(`[user-prefs] ${context}: ${message}`);
+}
+
 function load(): Prefs {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     if (!raw) return DEFAULT;
-    const parsed = JSON.parse(raw);
+    const parsed: unknown = JSON.parse(raw);
+    if (!isPrefsPatch(parsed)) return DEFAULT;
     return { ...DEFAULT, ...parsed };
-  } catch {
+  } catch (err) {
+    logPrefsWarning("failed to load preferences from localStorage", err);
     return DEFAULT;
   }
 }
@@ -30,39 +47,30 @@ function load(): Prefs {
 function save(p: Prefs) {
   try {
     localStorage.setItem(PREFS_KEY, JSON.stringify(p));
-  } catch {}
+  } catch (err) {
+    logPrefsWarning("failed to save preferences to localStorage", err);
+  }
 }
 
 export function useUserPrefs() {
-
-  const [prefs, setPrefs] = useState<Prefs>(() => {
-    if (typeof window === "undefined") return DEFAULT;
-
-    const fromStorage = load();
-    try {
-      const hasStored = !!localStorage.getItem(PREFS_KEY);
-      const root = document.documentElement;
-      const hasLight = root.classList.contains("qa-light");
-      const hasDark = root.classList.contains("qa-dark");
-
-      if (!hasStored && (hasLight || hasDark)) {
-        return {
-          ...DEFAULT,
-          isLight: hasLight,
-        };
-      }
-    } catch {
-    }
-    return fromStorage;
-  });
+  // Always start from DEFAULT on both server and the first client render so the
+  // two markups match; the real, possibly-personalized value is hydrated right
+  // after mount below. Reading localStorage inside the useState initializer
+  // would make the client's first render disagree with the server's and trigger
+  // a React hydration mismatch.
+  const [prefs, setPrefs] = useState<Prefs>(DEFAULT);
+  const hydratedRef = useRef(false);
 
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key === PREFS_KEY && e.newValue) {
         try {
-          const next = JSON.parse(e.newValue);
+          const next: unknown = JSON.parse(e.newValue);
+          if (!isPrefsPatch(next)) return;
           setPrefs((p) => ({ ...p, ...next }));
-        } catch {}
+        } catch (err) {
+          logPrefsWarning("failed to parse synced storage update", err);
+        }
       }
     };
     window.addEventListener("storage", onStorage);
@@ -70,31 +78,38 @@ export function useUserPrefs() {
   }, []);
 
   useEffect(() => {
+    // Skip the very first (pre-hydration) commit — it still holds DEFAULT and
+    // would otherwise clobber the real stored prefs before they're loaded below.
+    if (!hydratedRef.current) return;
     save(prefs);
   }, [prefs]);
 
+  // Runs after the save-guard effect above (declaration order), so on the
+  // initial commit the guard still sees hydratedRef.current === false.
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    const root = document.documentElement;
-    if (prefs.isLight) {
-      root.classList.add("qa-light");
-      root.classList.remove("qa-dark");
-    } else {
-      root.classList.add("qa-dark");
-      root.classList.remove("qa-light");
-    }
+    setPrefs(load());
+    hydratedRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    // Skip the pre-hydration commit too: app/layout.tsx's inline script already
+    // set the correct class synchronously before hydration, from the same
+    // localStorage key. Re-applying DEFAULT here first would flash the wrong
+    // theme for a frame before the load-on-mount effect corrects it.
+    if (!hydratedRef.current) return;
+    document.documentElement.classList.toggle("dark", !prefs.isLight);
   }, [prefs.isLight]);
 
-  const setIsLight = useCallback((v: boolean | ((x: boolean) => boolean)) => {
-    setPrefs((p) => ({ ...p, isLight: typeof v === "function" ? (v as any)(p.isLight) : v }));
+  const setIsLight = useCallback((v: BooleanUpdater) => {
+    setPrefs((p) => ({ ...p, isLight: resolveUpdater(p.isLight, v) }));
   }, []);
 
-  const setSoundOn = useCallback((v: boolean | ((x: boolean) => boolean)) => {
-    setPrefs((p) => ({ ...p, soundOn: typeof v === "function" ? (v as any)(p.soundOn) : v }));
+  const setSoundOn = useCallback((v: BooleanUpdater) => {
+    setPrefs((p) => ({ ...p, soundOn: resolveUpdater(p.soundOn, v) }));
   }, []);
 
-  const setSyncEnabled = useCallback((v: boolean | ((x: boolean) => boolean)) => {
-    setPrefs((p) => ({ ...p, syncEnabled: typeof v === "function" ? (v as any)(p.syncEnabled) : v }));
+  const setSyncEnabled = useCallback((v: BooleanUpdater) => {
+    setPrefs((p) => ({ ...p, syncEnabled: resolveUpdater(p.syncEnabled, v) }));
   }, []);
 
   return { ...prefs, setIsLight, setSoundOn, setSyncEnabled };

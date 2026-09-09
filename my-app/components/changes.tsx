@@ -68,12 +68,12 @@ function buildNewDisplayLineMaps(rows: AlignedRow[]) {
     displayLine += 1;
     displayLineByRowIndex[i] = displayLine;
 
-    if (isNum((r as any)?.new?.lineNumber)) {
-      newLineToDisplay.set((r as any).new.lineNumber, displayLine);
+    if (isNum(r.new?.lineNumber)) {
+      newLineToDisplay.set(r.new.lineNumber, displayLine);
     }
 
-    if (r.kind === "deletion" && isNum((r as any)?.old?.lineNumber)) {
-      oldLineToDisplay.set((r as any).old.lineNumber, displayLine);
+    if (r.kind === "deletion" && isNum(r.old?.lineNumber)) {
+      oldLineToDisplay.set(r.old.lineNumber, displayLine);
     }
   }
 
@@ -294,7 +294,7 @@ function deriveGroupsWithNewAnchors(rows: AlignedRow[]): ChangeItem[] {
 export function Changes({
   oldQuery,
   newQuery,
-  isLight,
+  isLight: _isLight,
   typeFilter,
   sideFilter,
   onChangeTypeFilter,
@@ -302,6 +302,11 @@ export function Changes({
   onJump,
   loadingChip,
 }: Props) {
+  const parseTypeFilter = (value: string): ChangeType | "all" =>
+    value === "addition" || value === "modification" || value === "deletion" || value === "all" ? value : "all";
+  const parseSideFilter = (value: string): Side | "all" =>
+    value === "old" || value === "new" || value === "both" || value === "all" ? value : "all";
+
   const o = toLF(oldQuery);
   const n = toLF(newQuery);
 
@@ -339,15 +344,15 @@ export function Changes({
   };
 
   return (
-    <Card className="bg-white border-slate-200 ring-1 ring-black/5 shadow-[0_1px_0_rgba(0,0,0,0.05),0_10px_30px_rgba(0,0,0,0.10)] dark:ring-0 dark:border-gray-200 dark:shadow-lg">
-      <CardContent className="p-5">
+    <Card className="bg-card border border-border rounded-md">
+      <CardContent className="p-0">
         <audio ref={clickAudioRef} src="/minimapbar.mp3" preload="auto" muted={!soundEnabled} />
 
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-slate-900 font-semibold">
-            Changes {loadingChip ? <Loader2 className="inline-block h-4 w-4 ml-2 animate-spin text-slate-400" /> : null}
+        <div className="flex items-center justify-between px-3.5 py-2.5 border-b border-border">
+          <h3 className="font-heading text-[13px] font-semibold uppercase tracking-[0.06em] text-foreground">
+            Changes {loadingChip ? <Loader2 className="inline-block h-3.5 w-3.5 ml-2 animate-spin text-muted-foreground" /> : null}
           </h3>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
             {(typeFilter !== "all" || sideFilter !== "all") && (
               <button
                 type="button"
@@ -355,7 +360,7 @@ export function Changes({
                   onChangeTypeFilter("all");
                   onChangeSideFilter("all");
                 }}
-                className="h-8 px-3 text-sm rounded border border-gray-300 bg-white text-black"
+                className="h-[26px] px-2.5 text-xs rounded-md border border-border bg-card text-foreground hover:bg-surface-2 transition"
                 title="Clear filters"
               >
                 Clear
@@ -364,12 +369,12 @@ export function Changes({
 
             <select
               id="typeFilter"
-              className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
+              className="h-[26px] px-2 rounded-md border border-border text-xs bg-card text-foreground"
               value={typeFilter}
-              onChange={(e) => onChangeTypeFilter(e.target.value as any)}
+              onChange={(e) => onChangeTypeFilter(parseTypeFilter(e.target.value))}
               title="Filter by type"
             >
-              <option value="all">All Types</option>
+              <option value="all">All types</option>
               <option value="addition">Additions</option>
               <option value="modification">Modifications</option>
               <option value="deletion">Deletions</option>
@@ -377,9 +382,9 @@ export function Changes({
 
             <select
               id="sideFilter"
-              className="h-8 px-2 rounded border border-gray-300 text-sm bg-white text-black"
+              className="h-[26px] px-2 rounded-md border border-border text-xs bg-card text-foreground"
               value={sideFilter}
-              onChange={(e) => onChangeSideFilter(e.target.value as any)}
+              onChange={(e) => onChangeSideFilter(parseSideFilter(e.target.value))}
               title="Filter by side"
             >
               <option value="all">Both</option>
@@ -389,18 +394,24 @@ export function Changes({
           </div>
         </div>
 
-        <div className="h-[28rem] scroll-overlay focus:outline-none pr-3" tabIndex={0}>
+        <div className="h-[28rem] scroll-overlay focus:outline-none" tabIndex={0}>
           {filtered.length > 0 ? (
-            <div className="space-y-3">
+            <div>
               {filtered.map((chg, idx) => {
                 const label =
                   chg.span && chg.span > 1
                     ? `lines ${chg.lineNumber}-${chg.lineNumber + chg.span - 1}`
                     : `line ${chg.lineNumber}`;
+                const chipClass =
+                  chg.type === "addition"
+                    ? "bg-diff-add-bg text-diff-add-fg"
+                    : chg.type === "deletion"
+                    ? "bg-diff-del-bg text-diff-del-fg"
+                    : "bg-diff-mod-bg text-diff-mod-fg";
                 return (
                   <button
                     key={`${chg.type}-${chg.side}-${chg.lineNumber}-${chg.span ?? 1}-${idx}`}
-                    className="group w-full text-left bg-gray-50 border border-gray-200 rounded-lg p-3 cursor-pointer transition hover:bg-amber-50 hover:border-amber-300 hover:shadow-sm active:bg-amber-100 active:border-amber-300 focus:outline-none focus:ring-0"
+                    className="flex w-full items-start gap-3 px-3.5 py-[11px] border-b border-border text-left transition hover:bg-surface-2 active:bg-surface-2 focus:outline-none focus:ring-0"
                     onClick={(e) => {
                       e.preventDefault();
                       playClick();
@@ -416,29 +427,19 @@ export function Changes({
                       }
                     }}
                   >
-                    <div className="flex items-center gap-2 mb-2">
-                      <span
-                        className={`px-2 py-1 rounded text-xs font-medium transition ${
-                          chg.type === "addition"
-                            ? "bg-emerald-100 text-emerald-700 group-hover:bg-emerald-200"
-                            : chg.type === "deletion"
-                            ? "bg-rose-100 text-rose-700 group-hover:bg-rose-200"
-                            : "bg-amber-100 text-amber-700 group-hover:bg-amber-200"
-                        }`}
-                      >
-                        {chg.type}
-                      </span>
-                      <span className="text-xs text-gray-500">
-                        {chg.side} · {label}
-                      </span>
-                    </div>
-                    <p className="text-gray-800 text-sm">{chg.description}</p>
+                    <span className={`shrink-0 px-2 py-0.5 rounded-md text-[11px] font-semibold uppercase tracking-[0.04em] ${chipClass}`}>
+                      {chg.type}
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] text-muted-foreground pt-0.5">
+                      {chg.side} · {label}
+                    </span>
+                    <p className="text-xs leading-[1.5] text-foreground">{chg.description}</p>
                   </button>
                 );
               })}
             </div>
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-500">
+            <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
               <p>No changes detected.</p>
             </div>
           )}

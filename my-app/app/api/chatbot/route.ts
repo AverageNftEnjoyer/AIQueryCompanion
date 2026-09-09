@@ -8,14 +8,12 @@ import { canonicalizeSQL } from "@/lib/query-differ";
 const REQUEST_TIMEOUT_MS = 50_000;
 const MAX_CONTENT = 240_000;
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_ASSISTANT_ID = process.env.OPENAI_ASSISTANT_ID;
-
-if (!OPENAI_API_KEY) {
-  throw new Error("Missing OPENAI_API_KEY in environment");
-}
-if (!OPENAI_ASSISTANT_ID) {
-  throw new Error("Missing OPENAI_ASSISTANT_ID in environment");
+function requireEnv(name: "OPENAI_API_KEY" | "OPENAI_ASSISTANT_ID"): string {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    throw new Error(`Missing ${name} in environment`);
+  }
+  return value;
 }
 
 interface ChatbotBody {
@@ -32,17 +30,35 @@ interface ChatbotBody {
   history?: { role: string; content: string }[];
 }
 
-function safeErrMessage(e: any, fallback = "Unexpected error") {
-  const raw = typeof e?.message === "string" ? e.message : fallback;
+type JsonRecord = Record<string, unknown>;
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null;
+}
+
+function getRecordString(value: unknown, key: string): string | undefined {
+  if (!isJsonRecord(value)) return undefined;
+  const candidate = value[key];
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function safeErrMessage(e: unknown, fallback = "Unexpected error") {
+  const raw =
+    typeof e === "string"
+      ? e
+      : e instanceof Error
+        ? e.message
+        : getRecordString(e, "message") ?? fallback;
   return raw
-    .replace(/(Bearer\s+)[\w.\-]+/gi, "$1[REDACTED]")
+    .replace(/(Bearer\s+)[\w.-]+/gi, "$1[REDACTED]")
     .replace(/(api[-_ ]?key\s*[:=]\s*)\w+/gi, "$1[REDACTED]")
     .replace(/https?:\/\/[^\s)]+/gi, "[redacted-url]");
 }
 
 function openAIHeaders() {
+  const apiKey = requireEnv("OPENAI_API_KEY");
   return {
-    Authorization: `Bearer ${OPENAI_API_KEY}`,
+    Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
     "OpenAI-Beta": "assistants=v2",
   };
@@ -112,7 +128,7 @@ function sliceLines(text: string, start1: number, end1?: number) {
 function parseLineQuery(
   q: string
 ): { target: "old" | "new" | null; start: number; end?: number } | null {
-  const re = /\b(?:(old|new)\s*)?line\s+(\d+)(?:\s*[-–]\s*(\d+))?\b/i;
+  const re = /\b(?:(old|new)\s*)?line\s+(\d+)(?:\s*(?:-|\u2013|\u2014)\s*(\d+))?\b/i;
   const m = q.match(re);
   if (!m) return null;
   const rawTarget = m[1]?.toLowerCase();
@@ -144,18 +160,65 @@ function findLastUnscopedLine(history: ChatbotBody["history"]): number | null {
 }
 
 /* ------------------------------ Assistants API ------------------------------ */
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function requireId(payload: unknown, context: string): string {
+  const id = getRecordString(payload, "id");
+  if (!id) {
+    throw new Error(`Missing id in ${context} response.`);
+  }
+  return id;
+}
+
+function extractRunStatus(payload: unknown): string {
+  const status = getRecordString(payload, "status");
+  if (!status) {
+    throw new Error("Missing run status in Assistants response.");
+  }
+  return status;
+}
+
+function extractAssistantAnswer(payload: unknown): string | null {
+  if (!isJsonRecord(payload)) return null;
+  const data = payload.data;
+  if (!Array.isArray(data)) return null;
+
+  for (const message of data) {
+    if (!isJsonRecord(message) || message.role !== "assistant") continue;
+    if (!Array.isArray(message.content)) continue;
+
+    for (const part of message.content) {
+      if (!isJsonRecord(part)) continue;
+      const text = part.text;
+      const value = getRecordString(text, "value");
+      if (value?.trim()) return value.trim();
+    }
+  }
+
+  return null;
+}
+
 async function createThread() {
-  const res = await fetch("https://api.openai.com/v1/threads", {
+  const res = await fetchWithTimeout("https://api.openai.com/v1/threads", {
     method: "POST",
     headers: openAIHeaders(),
     body: JSON.stringify({}),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const payload: unknown = await res.json();
+  return { id: requireId(payload, "thread create") };
 }
 
 async function addMessage(threadId: string, fullContent: string) {
-  const res = await fetch(`https://api.openai.com/v1/threads/${threadId}/messages`, {
+  const res = await fetchWithTimeout(`https://api.openai.com/v1/threads/${threadId}/messages`, {
     method: "POST",
     headers: openAIHeaders(),
     body: JSON.stringify({ role: "user", content: fullContent }),
@@ -165,33 +228,35 @@ async function addMessage(threadId: string, fullContent: string) {
 }
 
 async function runAssistant(threadId: string) {
-  const res = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs`, {
+  const assistantId = requireEnv("OPENAI_ASSISTANT_ID");
+  const res = await fetchWithTimeout(`https://api.openai.com/v1/threads/${threadId}/runs`, {
     method: "POST",
     headers: openAIHeaders(),
-    body: JSON.stringify({ assistant_id: OPENAI_ASSISTANT_ID }),
+    body: JSON.stringify({ assistant_id: assistantId }),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json();
+  const payload: unknown = await res.json();
+  return { id: requireId(payload, "run create") };
 }
 
 async function pollRun(threadId: string, runId: string) {
   let status = "in_progress";
-  let run: any;
+  let run: unknown = null;
   while (status === "in_progress" || status === "queued") {
     await new Promise((r) => setTimeout(r, 1200));
-    const res = await fetch(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
+    const res = await fetchWithTimeout(`https://api.openai.com/v1/threads/${threadId}/runs/${runId}`, {
       headers: openAIHeaders(),
       cache: "no-store",
     });
     if (!res.ok) throw new Error(await res.text());
     run = await res.json();
-    status = run.status;
+    status = extractRunStatus(run);
   }
   return run;
 }
 
 async function getMessages(threadId: string) {
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `https://api.openai.com/v1/threads/${threadId}/messages?limit=10`,
     { headers: openAIHeaders() }
   );
@@ -364,7 +429,7 @@ export async function POST(req: Request) {
 
     // If user said just "line N", prefer NEW; validate range against NEW first.
     const parsed = parseLineQuery(body.question || question);
-    if (compareMode && parsed && parsed.target == null) {
+    if (compareMode && parsed && parsed.target == null && bothPresent) {
       const n = parsed.start;
       const end = parsed.end;
       const withinNew = n >= 1 && n <= newLines.length;
@@ -403,17 +468,15 @@ export async function POST(req: Request) {
     await pollRun(thread.id, run.id);
     const messages = await getMessages(thread.id);
 
-    const assistantMsg = messages.data.find((m: any) => m.role === "assistant");
-    const answer =
-      assistantMsg?.content?.[0]?.text?.value ??
-      "I couldn’t generate an answer for that query.";
+    const answer = extractAssistantAnswer(messages) ?? "I couldn't generate an answer for that query.";
 
     return NextResponse.json({
       answer,
       meta: { mode: "assistant", playSound: true },
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     const msg = safeErrMessage(err);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    const status = /AbortError|aborted|timeout|timed out/i.test(msg) ? 504 : 500;
+    return NextResponse.json({ error: msg }, { status });
   }
 }
