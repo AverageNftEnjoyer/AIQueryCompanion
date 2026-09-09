@@ -185,10 +185,7 @@ function AskWidget() {
 
           <div ref={listRef} className="scroll-overlay min-h-0 flex-1 overflow-y-auto p-3">
             {messages.length === 0 && !loading ? (
-              <p className="p-1 text-sm leading-relaxed text-muted-foreground">
-                Ask a question about SQL, this workspace, or anything you're reviewing. Follow-ups keep the last{" "}
-                {MAX_TURNS} exchanges of context.
-              </p>
+              <p className="p-1 text-sm leading-relaxed text-muted-foreground">Ready to assist.</p>
             ) : (
               <div className="space-y-2">
                 {messages.map((m, i) => (

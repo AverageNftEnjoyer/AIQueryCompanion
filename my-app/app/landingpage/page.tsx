@@ -455,7 +455,7 @@ function QueryLensLandingContent() {
                 </div>
                 <div className="min-h-0 flex-1 bg-code-bg p-4">
                   <Textarea
-                    placeholder="Paste your original Oracle SQL query here..."
+                    placeholder="Paste your original SQL query here..."
                     value={oldQuery}
                     onChange={(e) => setOldQuery(e.target.value)}
                     spellCheck={false}
@@ -507,7 +507,7 @@ function QueryLensLandingContent() {
                 </div>
                 <div className="min-h-0 flex-1 bg-code-bg p-4">
                   <Textarea
-                    placeholder="Paste your updated Oracle SQL query here..."
+                    placeholder="Paste your updated SQL query here..."
                     value={newQuery}
                     onChange={(e) => setNewQuery(e.target.value)}
                     spellCheck={false}
@@ -606,7 +606,7 @@ function QueryLensLandingContent() {
                 </div>
                 <div className="min-h-0 flex-1 bg-code-bg p-4">
                   <Textarea
-                    placeholder="Paste your Oracle SQL query here..."
+                    placeholder="Paste your SQL query here..."
                     value={newQuery}
                     onChange={(e) => setNewQuery(e.target.value)}
                     spellCheck={false}
